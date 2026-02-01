@@ -1,3 +1,7 @@
+# VR-only fork of Perfect Dark, targeting standalone VR headsets
+
+------------------------------
+
 # Perfect Dark port
 
 This repository contains a work-in-progress port of the [Perfect Dark decompilation](https://github.com/n64decomp/perfect_dark) to modern platforms.
