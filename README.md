@@ -1,4 +1,5 @@
 # VR-only fork of Perfect Dark, targeting standalone VR headsets
+This fork is focused on developing VR features, but VR support is not yet included as the code is still under development and VR support is not stable enough for public release.
 
 ------------------------------
 
