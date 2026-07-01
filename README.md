@@ -6,7 +6,10 @@ You must already have a Perfect Dark ROM to run the game. Only the NTSC version 
 Put your Perfect Dark NTSC ROM named `pd.ntsc-final.z64` into the "data" folder.
 
 **On Meta Quest Standalone**  
-Put your Perfect Dark NTSC ROM named `pd.ntsc-final.z64` into "Android/data/com.perfectdark.port/files/data".  
+- Place your Perfect Dark NTSC ROM in your Downloads folder. If you are unsure of how to do this use [SideQuest](https://sidequestvr.com/)  
+- Install the APK via [SideQuest](https://sidequestvr.com/) or ADB  
+- Open the game which can be found under Unknown Sources (open the system menu and press Menu underneath the magnifying glass)  
+- Press "Select ROM" and select the ROM from your Downloads folder
   
 
 **VR-only fork of Perfect Dark**  
