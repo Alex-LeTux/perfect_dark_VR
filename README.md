@@ -1,4 +1,4 @@
-# Perfect Dark VR Beta 1.0
+# Perfect Dark VR Beta
 **How to play:**   
 You must already have a Perfect Dark ROM to run the game. Only the NTSC version works with the VR build.
 
