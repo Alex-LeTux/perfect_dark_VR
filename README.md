@@ -1,3 +1,14 @@
+# Perfect Dark VR Beta 1.0
+**How to play:**   
+You must already have a Perfect Dark ROM to run the game. Only the NTSC version works with the VR build.
+
+**On PCVR**   
+Put your Perfect Dark NTSC ROM named `pd.ntsc-final.z64` into the "data" folder.
+
+**On Meta Quest Standalone**  
+Put your Perfect Dark NTSC ROM named `pd.ntsc-final.z64` into "Android/data/com.perfectdark.port/files/data".  
+  
+
 # VR-only fork of Perfect Dark, targeting standalone VR headsets and PCVR
 This fork is focused on developing VR features, but VR support is not yet included as the code is still under development and VR support is not stable enough for public release.
 
