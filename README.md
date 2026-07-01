@@ -3,7 +3,7 @@
 You must already have a Perfect Dark ROM to run the game. Only the NTSC version works with the VR build.
 
 **On PCVR**   
-- Put your Perfect Dark NTSC ROM named `pd.ntsc-final.z64` into the "data" folder.
+- Rename your Perfect Dark NTSC ROM to `pd.ntsc-final.z64`, then place it in the "data" folder.
 
 **On Meta Quest Standalone**  
 - Press "Select ROM" and select the ROM from your Downloads folder 
