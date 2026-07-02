@@ -1,0 +1,70 @@
+name: Bug Report
+description: Report a bug in the VR mod.
+title: "[Bug]: "
+labels:
+  - bug
+
+body:
+  - type: input
+    id: headset
+    attributes:
+      label: VR Headset Model
+      description: Please specify the exact model of your VR headset.
+      placeholder: e.g. Meta Quest 2, Meta Quest 3, PSVR2, HTC Vive Pro
+    validations:
+      required: true
+
+  - type: input
+    id: build_version
+    attributes:
+      label: Build Version
+      description: Enter the version of the VR mod you are using.
+      placeholder: e.g. v0.9.3
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: runtime
+    attributes:
+      label: Runtime / Platform
+      description: Select all that apply.
+      options:
+        - label: PCVR SteamVR
+        - label: PCVR Virtual Desktop
+        - label: PCVR Meta Runtime
+        - label: PCVR ALVR
+        - label: Standalone
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Bug Description
+      description: Describe the problem.
+      placeholder: What happened?
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to Reproduce
+      placeholder: |
+        1.
+        2.
+        3.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected Behavior
+      placeholder: What did you expect to happen?
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional Information
+      description: Attach logs, screenshots, videos, or any other useful information.
