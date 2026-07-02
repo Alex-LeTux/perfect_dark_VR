@@ -1,5 +1,5 @@
 name: Bug Report
-description: Report a bug in the VR mod.
+description: Report a bug in the VR build.
 title: "[Bug]: "
 labels:
   - bug
@@ -18,7 +18,7 @@ body:
     id: build_version
     attributes:
       label: Build Version
-      description: Enter the version of the VR mod you are using.
+      description: Enter the version of the VR build you are using.
       placeholder: e.g. v1.1
     validations:
       required: true
