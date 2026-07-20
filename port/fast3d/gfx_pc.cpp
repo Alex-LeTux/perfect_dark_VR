@@ -2814,13 +2814,15 @@ extern "C" void gfx_run(Gfx* commands) {
                16 * sizeof(float));
 
 
-        float offsets[6] = {
-                tx0 * s_vr_proj_col_major[0], vr_get_eye_proj_mtx(0)[8], tx_HUD0 * vr_get_eye_proj_mtx(0)[0],
-                tx1 * s_vr_proj_col_major[0], vr_get_eye_proj_mtx(1)[8], tx_HUD1 * vr_get_eye_proj_mtx(1)[0]
+        float offsets[8] = {
+                tx0 * vr_get_eye_proj_mtx(0)[0], vr_get_eye_proj_mtx(0)[8],
+                tx_HUD0 * vr_get_eye_proj_mtx(0)[0], vr_get_eye_proj_mtx(0)[9],
+                tx1 * vr_get_eye_proj_mtx(1)[0], vr_get_eye_proj_mtx(1)[8],
+                tx_HUD1 * vr_get_eye_proj_mtx(1)[0], vr_get_eye_proj_mtx(1)[9]
         };
 
-        gfx_rapi->set_eye_offsets(offsets[0], offsets[1], offsets[2],
-                                  offsets[3], offsets[4], offsets[5]);
+        gfx_rapi->set_eye_offsets(offsets[0], offsets[1], offsets[2], offsets[3],
+                                  offsets[4], offsets[5], offsets[6], offsets[7]);
 
 
         // 1) Acquire + attach swapchain to g_multiviewFBO
