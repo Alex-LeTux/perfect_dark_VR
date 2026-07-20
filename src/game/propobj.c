@@ -78,6 +78,11 @@
 #include "types.h"
 #include "string.h"
 
+
+//VR
+extern bool g_DisableGrabViaB;
+//---
+
 void rng2SetSeed(u32 seed);
 
 struct weaponobj *g_Proxies[30];
@@ -13751,6 +13756,7 @@ Gfx *objRender(struct prop *prop, Gfx *gdl, bool xlupass)
 
 	if ((obj->flags2 & OBJFLAG2_CANFILLVIEWPORT) == 0 && func0f08e5a8(prop->rooms, &screenbox) > 0) {
 		gdl = bgScissorWithinViewport(gdl, screenbox.xmin, screenbox.ymin, screenbox.xmax, screenbox.ymax);
+
 	} else {
 		gdl = bgScissorToViewport(gdl);
 	}
@@ -16230,14 +16236,15 @@ bool propobjInteract(struct prop *prop)
 		} else {
 			result = propPickupByPlayer(prop, 1);
 		}
-	} else if (currentPlayerTryMountHoverbike(prop) == false
-			&& (obj->flags3 & OBJFLAG3_GRABBABLE)
-			&& g_Vars.currentplayer->bondmovemode == MOVEMODE_WALK
-			&& bmoveGetCrouchPos() == CROUCHPOS_STAND
-			&& g_Vars.currentplayer->crouchoffset == 0
-			&& g_Vars.currentplayer->onladder == false) {
-		bmoveGrabProp(prop);
-	}
+    } else if (currentPlayerTryMountHoverbike(prop) == false
+               && !g_DisableGrabViaB // VR Grab only whehe grip button pressed
+               && (obj->flags3 & OBJFLAG3_GRABBABLE)
+               && g_Vars.currentplayer->bondmovemode == MOVEMODE_WALK
+               && bmoveGetCrouchPos() == CROUCHPOS_STAND
+               && g_Vars.currentplayer->crouchoffset == 0
+               && g_Vars.currentplayer->onladder == false) {
+        bmoveGrabProp(prop);
+    }
 
 	if (g_Vars.normmplayerisrunning) {
 		scenarioHandleActivatedProp(g_Vars.currentplayer->prop->chr, prop);
@@ -18970,6 +18977,7 @@ bool doorIsPosInRange(struct doorobj *door, struct coord *pos, f32 distance, boo
 	return false;
 }
 
+
 bool doorIsObjInRange(struct doorobj *door, struct defaultobj *obj, bool isbike)
 {
 	struct modelrodata_bbox *bbox = objFindBboxRodata(obj);
@@ -20440,6 +20448,7 @@ void door0f08f604(struct doorobj *door, f32 *arg1, f32 *arg2, f32 *arg3, f32 *ar
 	f32 cosine;
 	f32 sine;
 
+
 	if (g_Vars.currentplayer->eyespy && g_Vars.currentplayer->eyespy->active) {
 		playerprop = g_Vars.currentplayer->eyespy->prop;
 	} else {
@@ -20951,7 +20960,7 @@ Gfx *countdownTimerRender(Gfx *gdl)
 		f32 value60 = g_CountdownTimerValue60;
 		u32 stack;
 		s32 viewright = viGetViewLeft() + (viGetViewWidth() >> 1);
-		s32 y = viGetViewTop() + viGetViewHeight() - 18;
+		s32 y = viGetViewTop() + viGetViewHeight() - 110; // VR
 		s32 playercount = PLAYERCOUNT();
 		char *fmt = ":\n";
 

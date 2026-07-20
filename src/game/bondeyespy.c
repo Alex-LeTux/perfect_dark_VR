@@ -961,13 +961,13 @@ void eyespyProcessInput(bool allowbuttons)
 		// Update theta
 		g_Vars.currentplayer->eyespy->theta += c1stickx * 0.0625f * g_Vars.lvupdate60freal;
 
-		while (g_Vars.currentplayer->eyespy->theta < 0.0f) {
+/*		while (g_Vars.currentplayer->eyespy->theta < 0.0f) { // Removed for VR
 			g_Vars.currentplayer->eyespy->theta += 360.0f;
 		}
 
 		while (g_Vars.currentplayer->eyespy->theta >= 360.0f) {
 			g_Vars.currentplayer->eyespy->theta -= 360.0f;
-		}
+		}*/
 
 		g_Vars.currentplayer->eyespy->costheta = cosf(g_Vars.currentplayer->eyespy->theta * 0.017453292384744f);
 		g_Vars.currentplayer->eyespy->sintheta = sinf(g_Vars.currentplayer->eyespy->theta * 0.017453292384744f);

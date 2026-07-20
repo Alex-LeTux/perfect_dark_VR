@@ -10,12 +10,21 @@
 #include "data.h"
 #include "game/stagetable.h"
 
+#ifdef ANDROID
+#include <android/log.h>
+#define LOGI(...) __android_log_print(ANDROID_LOG_INFO,  "PD-VR", __VA_ARGS__)
+#else
+#define LOGI(...) printf(__VA_ARGS__)
+#endif
+
 #define MOD_TEXTURES_DIR "textures"
 #define MOD_ANIMATIONS_DIR "animations"
 #define MOD_SEQUENCES_DIR "sequences"
 
 extern struct stagemusic g_StageTracks[];
 extern struct stageallocation g_StageAllocations8Mb[];
+
+
 
 #define PARSE_STAGE_FLOAT(sec, name, v, min, max) \
 	p = modConfigParseFloatValue(p, token, &v); \
@@ -57,7 +66,7 @@ static inline char *modConfigParseFileValue(char *p, char *token, s32 *filenum)
 {
 	p = strParseToken(p, token, NULL);
 	if (!token[0]) {
-		return NULL; // empty 
+		return NULL; // empty
 	}
 	// check if it is a number already
 	s32 num = strtol(token, NULL, 0);
@@ -79,7 +88,7 @@ static inline char *modConfigParseIntValue(char *p, char *token, s32 *out)
 {
 	p = strParseToken(p, token, NULL);
 	if (!token[0]) {
-		return NULL; // empty 
+		return NULL; // empty
 	}
 	char *endp = token;
 	const s32 num = strtol(token, &endp, 0);
@@ -94,7 +103,7 @@ static inline char *modConfigParseFloatValue(char *p, char *token, f32 *out)
 {
 	p = strParseToken(p, token, NULL);
 	if (!token[0]) {
-		return NULL; // empty 
+		return NULL; // empty
 	}
 	char *endp = token;
 	const f32 num = strtof(token, &endp);
@@ -285,6 +294,7 @@ static char *modConfigParseStageWeather(char *p, char *token, s32 stagenum)
 
 static char *modConfigParseStage(char *p, char *token)
 {
+
 	// stage number
 	p = strParseToken(p, token, NULL);
 	const s32 stagenum = strtol(token, NULL, 0);
@@ -420,7 +430,7 @@ s32 modTextureLoad(u16 num, void *dst, u32 dstSize)
 {
 	static s32 dirExists = -1;
 	if (dirExists < 0) {
-		dirExists = (fsFileSize(MOD_TEXTURES_DIR "/") >= 0);
+		dirExists = (fsFileSize(MOD_TEXTURES_DIR) >= 0);
 	}
 
 	if (!dirExists) {
@@ -440,9 +450,10 @@ s32 modTextureLoad(u16 num, void *dst, u32 dstSize)
 
 void *modSequenceLoad(u16 num, u32 *outSize)
 {
+
 	static s32 dirExists = -1;
 	if (dirExists < 0) {
-		dirExists = (fsFileSize(MOD_SEQUENCES_DIR "/") >= 0);
+		dirExists = (fsFileSize(MOD_SEQUENCES_DIR) >= 0);
 	}
 
 	if (!dirExists) {
@@ -464,6 +475,7 @@ void *modSequenceLoad(u16 num, u32 *outSize)
 
 void *modAnimationLoadData(u16 num)
 {
+
 	char path[FS_MAXPATH + 1];
 	// load the animation data
 	snprintf(path, sizeof(path), MOD_ANIMATIONS_DIR "/%04x.bin", num);
@@ -476,9 +488,10 @@ void *modAnimationLoadData(u16 num)
 
 s32 modAnimationLoadDescriptor(u16 num, struct animtableentry *anim)
 {
+
 	static s32 dirExists = -1;
 	if (dirExists < 0) {
-		dirExists = (fsFileSize(MOD_ANIMATIONS_DIR "/") >= 0);
+		dirExists = (fsFileSize(MOD_ANIMATIONS_DIR) >= 0);
 	}
 
 	if (!dirExists) {

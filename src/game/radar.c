@@ -17,6 +17,9 @@
 #include "gbiex.h"
 #include "types.h"
 
+f32 g_RadarScale = 0.85f; // Global VR scale factor
+
+
 u32 g_RadarX;
 u32 g_RadarY;
 
@@ -132,11 +135,13 @@ Gfx *radarDrawDot(Gfx *gdl, struct prop *prop, struct coord *dist, u32 colour1, 
 	spcc = (atan2f(dist->x, dist->z) * 180.0f) / M_PI + g_Vars.currentplayer->vv_theta + 180.0f;
 	sqdist = sqrtf(dist->z * dist->z + dist->x * dist->x) * (1.0f / 250.0f);
 
-	if (sqdist < 16.0f) {
-		shiftamount = 0;
-	} else {
-		sqdist = 16.0f;
-		shiftamount = 1;
+    // VR
+    f32 radarRadius = 16.0f * g_RadarScale;
+    if (sqdist < radarRadius) {
+        shiftamount = 0;
+    } else {
+        sqdist = radarRadius;
+        shiftamount = 1;
 	}
 
 	x = g_RadarX + (s32)(sinf(spcc * 0.017453292384744f) * sqdist);
@@ -306,6 +311,10 @@ Gfx *radarRender(Gfx *gdl)
 
 	g_RadarY = viGetViewTop() + (PAL ? 29 : 26);
 
+    // VR offset position radar
+    g_RadarX += -120;
+    g_RadarY += 130;
+
 	if (playercount == 2) {
 		if (IS4MB()) {
 			g_RadarY -= 6;
@@ -333,7 +342,9 @@ Gfx *radarRender(Gfx *gdl)
 #endif
 	}
 
-	gdl = radarRenderBackground(gdl, tconfig, g_RadarX, g_RadarY, 0x10);
+    // VR
+    gdl = radarRenderBackground(gdl, tconfig, g_RadarX, g_RadarY, (s32)(0x10 * g_RadarScale));
+
 	gdl = func0f153134(gdl);
 
 	// Draw dots for human players

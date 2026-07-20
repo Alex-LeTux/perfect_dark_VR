@@ -86,5 +86,6 @@ public class SDL {
         }
     }
 
+
     protected static Context mContext;
 }

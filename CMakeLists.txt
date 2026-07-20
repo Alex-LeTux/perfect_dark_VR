@@ -168,13 +168,17 @@ include_directories("${CMAKE_BINARY_DIR}/src/generated/${ROMID}")
 include_directories("${CMAKE_SOURCE_DIR}/src/lib/ultra/audio")
 include_directories("${CMAKE_SOURCE_DIR}/port/include")
 include_directories("${CMAKE_BINARY_DIR}/port/include")
+include_directories("${CMAKE_BINARY_DIR}/port/vr")
+include_directories("${CMAKE_SOURCE_DIR}/openxr/include/openxr")
+include_directories("${CMAKE_BINARY_DIR}/port/vr/imgui")
+
 
 # Set Release optimization to -Og until I fix the -O2 issues
 if(NOT (CMAKE_BUILD_TYPE STREQUAL "Debug"))
   add_compile_options(-Og)
 endif()
 
-# Common CFLAGS
+# Common CFLAGS   
 add_compile_options(
   -fno-inline-functions
   -fno-strict-aliasing
@@ -384,3 +388,74 @@ if(NINTENDO_SWITCH)
     COMMAND elf2nro ${CMAKE_BINARY_DIR}/${BIN_NAME}.stripped.elf ${CMAKE_BINARY_DIR}/${BIN_NAME}.nro --icon=${CMAKE_SOURCE_DIR}/dist/nswitch/icon.jpg --nacp=${BIN_NAME}.nacp
   )
 endif()
+
+# ---------------------------------------------------------------
+# OpenXR
+# Android & Windows : loader pré-compilé fourni dans le repo
+# Autres (Linux, etc.) : find_package système
+# ---------------------------------------------------------------
+if(ANDROID)
+  message(STATUS "OpenXR: using bundled Android loader")
+  add_compile_definitions(XR_USE_PLATFORM_ANDROID=1)
+  include_directories(${CMAKE_SOURCE_DIR}/OpenXR/include)
+  add_library(openxr_loader SHARED IMPORTED)
+  set_target_properties(openxr_loader PROPERTIES
+    IMPORTED_LOCATION
+    ${CMAKE_SOURCE_DIR}/OpenXR/Libs/Android/arm64-v8a/Debug/libopenxr_loader.so
+  )
+
+elseif(WIN32)
+  message(STATUS "OpenXR: using bundled Windows loader")
+  add_compile_definitions(XR_USE_PLATFORM_WIN32=1)
+  include_directories(${CMAKE_SOURCE_DIR}/OpenXR/include)
+  add_library(openxr_loader SHARED IMPORTED)
+
+  if(TARGET_IS_64BIT)
+    # x64 — loader 64-bit
+    set_target_properties(openxr_loader PROPERTIES
+      IMPORTED_LOCATION  ${CMAKE_SOURCE_DIR}/OpenXR/Libs/Windows/x64/openxr_loader.dll
+      IMPORTED_IMPLIB    ${CMAKE_SOURCE_DIR}/OpenXR/Libs/Windows/x64/openxr_loader.lib
+    )
+    message(STATUS "OpenXR: Windows x64 loader selected")
+  else()
+    # x86 (i686) — loader 32-bit
+    set_target_properties(openxr_loader PROPERTIES
+      IMPORTED_LOCATION  ${CMAKE_SOURCE_DIR}/OpenXR/Libs/Windows/x32/openxr_loader.dll
+      IMPORTED_IMPLIB    ${CMAKE_SOURCE_DIR}/OpenXR/Libs/Windows/x32/openxr_loader.lib
+    )
+    message(STATUS "OpenXR: Windows x86 (32-bit) loader selected")
+  endif()
+
+else()
+  # Linux, macOS, etc. — find_package système
+  message(STATUS "OpenXR: using system package")
+  find_package(OpenXR REQUIRED)
+  if(OpenXR_FOUND)
+    list(APPEND LIBS OpenXR::openxr_loader)
+  else()
+    list(APPEND LIBS "openxr_loader")
+  endif()
+endif()
+
+if(ANDROID OR WIN32)
+  target_link_libraries(pd openxr_loader)
+endif()
+if(ANDROID)
+  target_link_libraries(pd android log)
+endif()
+
+if(WIN32)
+  if(TARGET_IS_64BIT)
+    set(OPENXR_DLL "${CMAKE_SOURCE_DIR}/OpenXR/Libs/Windows/x64/openxr_loader.dll")
+  else()
+    set(OPENXR_DLL "${CMAKE_SOURCE_DIR}/OpenXR/Libs/Windows/x32/openxr_loader.dll")
+  endif()
+
+  add_custom_command(TARGET pd POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+      "${OPENXR_DLL}"
+      "$<TARGET_FILE_DIR:pd>/openxr_loader.dll"
+    COMMENT "Copying openxr_loader.dll to output directory"
+  )
+endif()
+# ---------------------------------------------------------------

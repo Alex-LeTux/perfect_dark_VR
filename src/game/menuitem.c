@@ -1967,12 +1967,13 @@ Gfx *menuitemObjectivesRender(Gfx *gdl, struct menurendercontext *context)
 
 Gfx *menuitemModelRender(Gfx *gdl, struct menurendercontext *context)
 {
+
 	if (context->item->flags & MENUITEMFLAG_LIST_CUSTOMRENDER) {
 		struct menuitemrenderdata renderdata;
 		union handlerdata data;
 
 		renderdata.x = context->x;
-		renderdata.y = context->y;
+		renderdata.y = context->y ;
 		renderdata.width = context->width;
 
 		if (context->dialog->transitionfrac < 0) {

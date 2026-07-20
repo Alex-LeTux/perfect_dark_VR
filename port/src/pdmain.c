@@ -2,6 +2,14 @@
 
 #include <ultra64.h>
 #include <PR/ultrasched.h>
+
+#include "../vr/vr_log.h"
+
+#ifdef ANDROID
+#include <android/log.h>
+#include <EGL/egl.h>
+#endif
+
 #include "lib/sched.h"
 #include "lib/vars.h"
 #include "constants.h"
@@ -77,6 +85,19 @@
 extern u8 *g_MempHeap;
 extern u32 g_MempHeapSize;
 
+
+extern void vr_initialize();
+extern bool vr_is_initialized();
+extern bool vr_begin_frame_and_update_poses();
+extern void vr_poll_events();
+extern void vr_end_frame_and_submit();
+extern bool g_frameStarted;
+bool vr_init_done = false;
+extern void vrShowWaitingWindow(const char *bmpPath);
+extern bool vrWaitForRuntime(int waitSeconds);
+extern void vrSettingsLoad();
+extern float XrFov;
+
 void rngSetSeed(u32 seed);
 
 bool var8005d9b0 = false;
@@ -100,188 +121,209 @@ s32 g_MainChangeToStageNum = -1;
 bool g_MainIsDebugMenuOpen = false;
 
 struct stageallocation g_StageAllocations8Mb[] = {
-	{ STAGE_CITRAINING,    "-ml0 -me0 -mgfx120 -mvtx98 -ma400"             },
-	{ STAGE_DEFECTION,     "-ml0 -me0 -mgfx110 -mgfxtra80 -mvtx100 -ma700" },
-	{ STAGE_INVESTIGATION, "-ml0 -me0 -mgfx110 -mgfxtra80 -mvtx100 -ma700" },
-	{ STAGE_EXTRACTION,    "-ml0 -me0 -mgfx110 -mgfxtra80 -mvtx100 -ma700" },
-	{ STAGE_CHICAGO,       "-ml0 -me0 -mgfx110 -mgfxtra80 -mvtx100 -ma700" },
-	{ STAGE_G5BUILDING,    "-ml0 -me0 -mgfx110 -mgfxtra80 -mvtx100 -ma700" },
-	{ STAGE_VILLA,         "-ml0 -me0 -mgfx110 -mgfxtra80 -mvtx100 -ma600" },
-	{ STAGE_INFILTRATION,  "-ml0 -me0 -mgfx110 -mgfxtra80 -mvtx100 -ma500" },
-	{ STAGE_RESCUE,        "-ml0 -me0 -mgfx110 -mgfxtra80 -mvtx100 -ma500" },
-	{ STAGE_ESCAPE,        "-ml0 -me0 -mgfx110 -mgfxtra80 -mvtx100 -ma500" },
-	{ STAGE_AIRBASE,       "-ml0 -me0 -mgfx110 -mgfxtra80 -mvtx100 -ma700" },
-	{ STAGE_AIRFORCEONE,   "-ml0 -me0 -mgfx110 -mgfxtra80 -mvtx100 -ma700" },
-	{ STAGE_CRASHSITE,     "-ml0 -me0 -mgfx110 -mgfxtra80 -mvtx100 -ma700" },
-	{ STAGE_PELAGIC,       "-ml0 -me0 -mgfx110 -mgfxtra80 -mvtx100 -ma700" },
-	{ STAGE_DEEPSEA,       "-ml0 -me0 -mgfx110 -mgfxtra80 -mvtx100 -ma700" },
-	{ STAGE_DEFENSE,       "-ml0 -me0 -mgfx110 -mgfxtra80 -mvtx100 -ma700" },
-	{ STAGE_ATTACKSHIP,    "-ml0 -me0 -mgfx110 -mgfxtra80 -mvtx100 -ma700" },
-	{ STAGE_SKEDARRUINS,   "-ml0 -me0 -mgfx110 -mgfxtra80 -mvtx100 -ma700" },
-	{ STAGE_MP_SKEDAR,     "-ml0 -me0 -mgfx200 -mvtx200 -ma400"            },
-	{ STAGE_MP_RAVINE,     "-ml0 -me0 -mgfx200 -mvtx200 -ma400"            },
-	{ STAGE_MP_PIPES,      "-ml0 -me0 -mgfx200 -mvtx200 -ma400"            },
-	{ STAGE_MP_G5BUILDING, "-ml0 -me0 -mgfx200 -mvtx200 -ma400"            },
-	{ STAGE_MP_SEWERS,     "-ml0 -me0 -mgfx200 -mvtx200 -ma400"            },
-	{ STAGE_MP_WAREHOUSE,  "-ml0 -me0 -mgfx200 -mvtx200 -ma400"            },
-	{ STAGE_MP_BASE,       "-ml0 -me0 -mgfx200 -mvtx200 -ma400"            },
-	{ STAGE_MP_COMPLEX,    "-ml0 -me0 -mgfx200 -mvtx200 -ma400"            },
-	{ STAGE_MP_TEMPLE,     "-ml0 -me0 -mgfx200 -mvtx200 -ma400"            },
-	{ STAGE_MP_FELICITY,   "-ml0 -me0 -mgfx200 -mvtx200 -ma400"            },
-	{ STAGE_MP_AREA52,     "-ml0 -me0 -mgfx200 -mvtx200 -ma400"            },
-	{ STAGE_MP_GRID,       "-ml0 -me0 -mgfx200 -mvtx200 -ma400"            },
-	{ STAGE_MP_CARPARK,    "-ml0 -me0 -mgfx200 -mvtx200 -ma400"            },
-	{ STAGE_MP_RUINS,      "-ml0 -me0 -mgfx200 -mvtx200 -ma400"            },
-	{ STAGE_MP_FORTRESS,   "-ml0 -me0 -mgfx200 -mvtx200 -ma400"            },
-	{ STAGE_MP_VILLA,      "-ml0 -me0 -mgfx200 -mvtx200 -ma400"            },
-	{ STAGE_TEST_RUN,      "-ml0 -me0 -mgfx200 -mvtx200 -ma400"            },
-	{ STAGE_TEST_MP2,      "-ml0 -me0 -mgfx200 -mvtx200 -ma400"            },
-	{ STAGE_TEST_MP6,      "-ml0 -me0 -mgfx200 -mvtx200 -ma400"            },
-	{ STAGE_TEST_MP7,      "-ml0 -me0 -mgfx200 -mvtx200 -ma400"            },
-	{ STAGE_TEST_MP8,      "-ml0 -me0 -mgfx200 -mvtx200 -ma400"            },
-	{ STAGE_TEST_MP14,     "-ml0 -me0 -mgfx200 -mvtx200 -ma400"            },
-	{ STAGE_TEST_MP16,     "-ml0 -me0 -mgfx200 -mvtx200 -ma400"            },
-	{ STAGE_TEST_MP17,     "-ml0 -me0 -mgfx200 -mvtx200 -ma400"            },
-	{ STAGE_TEST_MP18,     "-ml0 -me0 -mgfx200 -mvtx200 -ma400"            },
-	{ STAGE_TEST_MP19,     "-ml0 -me0 -mgfx200 -mvtx200 -ma400"            },
-	{ STAGE_TEST_MP20,     "-ml0 -me0 -mgfx200 -mvtx200 -ma400"            },
-	{ STAGE_TEST_ASH,      "-ml0 -me0 -mgfx120 -mvtx98 -ma400"             },
-	{ STAGE_28,            "-ml0 -me0 -mgfx120 -mvtx98 -ma400"             },
-	{ STAGE_MBR,           "-ml0 -me0 -mgfx120 -mvtx100 -ma700"            },
-	{ STAGE_TEST_SILO,     "-ml0 -me0 -mgfx200 -mvtx200 -ma400"            },
-	{ STAGE_24,            "-ml0 -me0 -mgfx120 -mvtx98 -ma400"             },
-	{ STAGE_MAIANSOS,      "-ml0 -me0 -mgfx120 -mvtx100 -ma500"            },
-	{ STAGE_RETAKING,      "-ml0 -me0 -mgfx120 -mvtx98 -ma400"             },
-	{ STAGE_TEST_DEST,     "-ml0 -me0 -mgfx120 -mvtx98 -ma400"             },
-	{ STAGE_2B,            "-ml0 -me0 -mgfx120 -mvtx98 -ma400"             },
-	{ STAGE_WAR,           "-ml0 -me0 -mgfx120 -mvtx98 -ma400"             },
-	{ STAGE_TEST_UFF,      "-ml0 -me0 -mgfx120 -mvtx98 -ma400"             },
-	{ STAGE_TEST_OLD,      "-ml0 -me0 -mgfx120 -mvtx98 -ma400"             },
-	{ STAGE_DUEL,          "-ml0 -me0 -mgfx120 -mvtx100 -ma700"            },
-	{ STAGE_TEST_LAM,      "-ml0 -me0 -mgfx120 -mvtx98 -ma400"             },
-	{ STAGE_TEST_ARCH,     "-ml0 -me0 -mgfx200 -mvtx200 -ma400"            },
-	{ STAGE_TEST_LEN,      "-ml0 -me0 -mgfx120 -mvtx98 -ma300"             },
-	{ STAGE_TITLE,         "-ml0 -me0 -mgfx80 -mvtx20 -ma001"              },
-	{ 0,                   "-ml0 -me0 -mgfx120 -mvtx98 -ma300"             },
+        { STAGE_CITRAINING,    "-ml0 -me0 -mgfx120 -mvtx98 -ma400"             },
+        { STAGE_DEFECTION,     "-ml0 -me0 -mgfx110 -mgfxtra80 -mvtx100 -ma700" },
+        { STAGE_INVESTIGATION, "-ml0 -me0 -mgfx110 -mgfxtra80 -mvtx100 -ma700" },
+        { STAGE_EXTRACTION,    "-ml0 -me0 -mgfx110 -mgfxtra80 -mvtx100 -ma700" },
+        { STAGE_CHICAGO,       "-ml0 -me0 -mgfx110 -mgfxtra80 -mvtx100 -ma700" },
+        { STAGE_G5BUILDING,    "-ml0 -me0 -mgfx110 -mgfxtra80 -mvtx100 -ma700" },
+        { STAGE_VILLA,         "-ml0 -me0 -mgfx110 -mgfxtra80 -mvtx100 -ma600" },
+        { STAGE_INFILTRATION,  "-ml0 -me0 -mgfx110 -mgfxtra80 -mvtx100 -ma500" },
+        { STAGE_RESCUE,        "-ml0 -me0 -mgfx110 -mgfxtra80 -mvtx100 -ma500" },
+        { STAGE_ESCAPE,        "-ml0 -me0 -mgfx110 -mgfxtra80 -mvtx100 -ma500" },
+        { STAGE_AIRBASE,       "-ml0 -me0 -mgfx110 -mgfxtra80 -mvtx100 -ma700" },
+        { STAGE_AIRFORCEONE,   "-ml0 -me0 -mgfx110 -mgfxtra80 -mvtx100 -ma700" },
+        { STAGE_CRASHSITE,     "-ml0 -me0 -mgfx110 -mgfxtra80 -mvtx100 -ma700" },
+        { STAGE_PELAGIC,       "-ml0 -me0 -mgfx110 -mgfxtra80 -mvtx100 -ma700" },
+        { STAGE_DEEPSEA,       "-ml0 -me0 -mgfx110 -mgfxtra80 -mvtx100 -ma700" },
+        { STAGE_DEFENSE,       "-ml0 -me0 -mgfx110 -mgfxtra80 -mvtx100 -ma700" },
+        { STAGE_ATTACKSHIP,    "-ml0 -me0 -mgfx110 -mgfxtra80 -mvtx100 -ma700" },
+        { STAGE_SKEDARRUINS,   "-ml0 -me0 -mgfx110 -mgfxtra80 -mvtx100 -ma700" },
+        { STAGE_MP_SKEDAR,     "-ml0 -me0 -mgfx200 -mvtx200 -ma400"            },
+        { STAGE_MP_RAVINE,     "-ml0 -me0 -mgfx200 -mvtx200 -ma400"            },
+        { STAGE_MP_PIPES,      "-ml0 -me0 -mgfx200 -mvtx200 -ma400"            },
+        { STAGE_MP_G5BUILDING, "-ml0 -me0 -mgfx200 -mvtx200 -ma400"            },
+        { STAGE_MP_SEWERS,     "-ml0 -me0 -mgfx200 -mvtx200 -ma400"            },
+        { STAGE_MP_WAREHOUSE,  "-ml0 -me0 -mgfx200 -mvtx200 -ma400"            },
+        { STAGE_MP_BASE,       "-ml0 -me0 -mgfx200 -mvtx200 -ma400"            },
+        { STAGE_MP_COMPLEX,    "-ml0 -me0 -mgfx200 -mvtx200 -ma400"            },
+        { STAGE_MP_TEMPLE,     "-ml0 -me0 -mgfx200 -mvtx200 -ma400"            },
+        { STAGE_MP_FELICITY,   "-ml0 -me0 -mgfx200 -mvtx200 -ma400"            },
+        { STAGE_MP_AREA52,     "-ml0 -me0 -mgfx200 -mvtx200 -ma400"            },
+        { STAGE_MP_GRID,       "-ml0 -me0 -mgfx200 -mvtx200 -ma400"            },
+        { STAGE_MP_CARPARK,    "-ml0 -me0 -mgfx200 -mvtx200 -ma400"            },
+        { STAGE_MP_RUINS,      "-ml0 -me0 -mgfx200 -mvtx200 -ma400"            },
+        { STAGE_MP_FORTRESS,   "-ml0 -me0 -mgfx200 -mvtx200 -ma400"            },
+        { STAGE_MP_VILLA,      "-ml0 -me0 -mgfx200 -mvtx200 -ma400"            },
+        { STAGE_TEST_RUN,      "-ml0 -me0 -mgfx200 -mvtx200 -ma400"            },
+        { STAGE_TEST_MP2,      "-ml0 -me0 -mgfx200 -mvtx200 -ma400"            },
+        { STAGE_TEST_MP6,      "-ml0 -me0 -mgfx200 -mvtx200 -ma400"            },
+        { STAGE_TEST_MP7,      "-ml0 -me0 -mgfx200 -mvtx200 -ma400"            },
+        { STAGE_TEST_MP8,      "-ml0 -me0 -mgfx200 -mvtx200 -ma400"            },
+        { STAGE_TEST_MP14,     "-ml0 -me0 -mgfx200 -mvtx200 -ma400"            },
+        { STAGE_TEST_MP16,     "-ml0 -me0 -mgfx200 -mvtx200 -ma400"            },
+        { STAGE_TEST_MP17,     "-ml0 -me0 -mgfx200 -mvtx200 -ma400"            },
+        { STAGE_TEST_MP18,     "-ml0 -me0 -mgfx200 -mvtx200 -ma400"            },
+        { STAGE_TEST_MP19,     "-ml0 -me0 -mgfx200 -mvtx200 -ma400"            },
+        { STAGE_TEST_MP20,     "-ml0 -me0 -mgfx200 -mvtx200 -ma400"            },
+        { STAGE_TEST_ASH,      "-ml0 -me0 -mgfx120 -mvtx98 -ma400"             },
+        { STAGE_28,            "-ml0 -me0 -mgfx120 -mvtx98 -ma400"             },
+        { STAGE_MBR,           "-ml0 -me0 -mgfx120 -mvtx100 -ma700"            },
+        { STAGE_TEST_SILO,     "-ml0 -me0 -mgfx200 -mvtx200 -ma400"            },
+        { STAGE_24,            "-ml0 -me0 -mgfx120 -mvtx98 -ma400"             },
+        { STAGE_MAIANSOS,      "-ml0 -me0 -mgfx120 -mvtx100 -ma500"            },
+        { STAGE_RETAKING,      "-ml0 -me0 -mgfx120 -mvtx98 -ma400"             },
+        { STAGE_TEST_DEST,     "-ml0 -me0 -mgfx120 -mvtx98 -ma400"             },
+        { STAGE_2B,            "-ml0 -me0 -mgfx120 -mvtx98 -ma400"             },
+        { STAGE_WAR,           "-ml0 -me0 -mgfx120 -mvtx98 -ma400"             },
+        { STAGE_TEST_UFF,      "-ml0 -me0 -mgfx120 -mvtx98 -ma400"             },
+        { STAGE_TEST_OLD,      "-ml0 -me0 -mgfx120 -mvtx98 -ma400"             },
+        { STAGE_DUEL,          "-ml0 -me0 -mgfx120 -mvtx100 -ma700"            },
+        { STAGE_TEST_LAM,      "-ml0 -me0 -mgfx120 -mvtx98 -ma400"             },
+        { STAGE_TEST_ARCH,     "-ml0 -me0 -mgfx200 -mvtx200 -ma400"            },
+        { STAGE_TEST_LEN,      "-ml0 -me0 -mgfx120 -mvtx98 -ma300"             },
+        { STAGE_TITLE,         "-ml0 -me0 -mgfx80 -mvtx20 -ma001"              },
+        { 0,                   "-ml0 -me0 -mgfx120 -mvtx98 -ma300"             },
 };
 
 struct stageallocation g_StageAllocations4Mb[] = {
-	{ STAGE_MP_SKEDAR,     "-ml0 -me0 -mgfx96 -mvtx96 -ma140"              },
-	{ STAGE_MP_PIPES,      "-ml0 -me0 -mgfx96 -mvtx96 -ma140"              },
-	{ STAGE_MP_AREA52,     "-ml0 -me0 -mgfx96 -mvtx96 -ma140"              },
-	{ STAGE_MP_RAVINE,     "-ml0 -me0 -mgfx96 -mvtx96 -ma140"              },
-	{ STAGE_MP_G5BUILDING, "-ml0 -me0 -mgfx96 -mvtx96 -ma140"              },
-	{ STAGE_MP_SEWERS,     "-ml0 -me0 -mgfx96 -mvtx96 -ma140"              },
-	{ STAGE_MP_WAREHOUSE,  "-ml0 -me0 -mgfx96 -mvtx96 -ma140"              },
-	{ STAGE_MP_BASE,       "-ml0 -me0 -mgfx96 -mvtx96 -ma140"              },
-	{ STAGE_MP_COMPLEX,    "-ml0 -me0 -mgfx96 -mvtx96 -ma140"              },
-	{ STAGE_MP_TEMPLE,     "-ml0 -me0 -mgfx96 -mvtx96 -ma140"              },
-	{ STAGE_MP_FELICITY,   "-ml0 -me0 -mgfx96 -mvtx96 -ma140"              },
-	{ STAGE_MP_GRID,       "-ml0 -me0 -mgfx96 -mvtx96 -ma140"              },
-	{ STAGE_TEST_RUN,      "-ml0 -me0 -mgfx96 -mvtx96 -ma140"              },
-	{ STAGE_MP_CARPARK,    "-ml0 -me0 -mgfx96 -mvtx96 -ma140"              },
-	{ STAGE_MP_RUINS,      "-ml0 -me0 -mgfx96 -mvtx96 -ma140"              },
-	{ STAGE_MP_FORTRESS,   "-ml0 -me0 -mgfx96 -mvtx96 -ma130"              },
-	{ STAGE_MP_VILLA,      "-ml0 -me0 -mgfx96 -mvtx96 -ma140"              },
-	{ STAGE_TEST_MP2,      "-ml0 -me0 -mgfx96 -mvtx96 -ma115"              },
-	{ STAGE_TEST_MP6,      "-ml0 -me0 -mgfx96 -mvtx96 -ma115"              },
-	{ STAGE_TEST_MP7,      "-ml0 -me0 -mgfx96 -mvtx96 -ma115"              },
-	{ STAGE_TEST_MP8,      "-ml0 -me0 -mgfx96 -mvtx96 -ma115"              },
-	{ STAGE_TEST_MP14,     "-ml0 -me0 -mgfx96 -mvtx96 -ma115"              },
-	{ STAGE_TEST_MP16,     "-ml0 -me0 -mgfx96 -mvtx96 -ma115"              },
-	{ STAGE_TEST_MP17,     "-ml0 -me0 -mgfx96 -mvtx96 -ma115"              },
-	{ STAGE_TEST_MP18,     "-ml0 -me0 -mgfx96 -mvtx96 -ma115"              },
-	{ STAGE_TEST_MP19,     "-ml0 -me0 -mgfx96 -mvtx96 -ma115"              },
-	{ STAGE_TEST_MP20,     "-ml0 -me0 -mgfx96 -mvtx96 -ma115"              },
-	{ STAGE_TEST_LEN,      "-ml0 -me0 -mgfx100 -mvtx96 -ma120"             },
-	{ STAGE_4MBMENU,       "-mgfx100 -mvtx50 -ma50"                        },
-	{ STAGE_TITLE,         "-ml0 -me0 -mgfx80 -mvtx20 -ma001"              },
-	{ 0,                   "-ml0 -me0 -mgfx100 -mvtx96 -ma300"             },
+        { STAGE_MP_SKEDAR,     "-ml0 -me0 -mgfx96 -mvtx96 -ma140"              },
+        { STAGE_MP_PIPES,      "-ml0 -me0 -mgfx96 -mvtx96 -ma140"              },
+        { STAGE_MP_AREA52,     "-ml0 -me0 -mgfx96 -mvtx96 -ma140"              },
+        { STAGE_MP_RAVINE,     "-ml0 -me0 -mgfx96 -mvtx96 -ma140"              },
+        { STAGE_MP_G5BUILDING, "-ml0 -me0 -mgfx96 -mvtx96 -ma140"              },
+        { STAGE_MP_SEWERS,     "-ml0 -me0 -mgfx96 -mvtx96 -ma140"              },
+        { STAGE_MP_WAREHOUSE,  "-ml0 -me0 -mgfx96 -mvtx96 -ma140"              },
+        { STAGE_MP_BASE,       "-ml0 -me0 -mgfx96 -mvtx96 -ma140"              },
+        { STAGE_MP_COMPLEX,    "-ml0 -me0 -mgfx96 -mvtx96 -ma140"              },
+        { STAGE_MP_TEMPLE,     "-ml0 -me0 -mgfx96 -mvtx96 -ma140"              },
+        { STAGE_MP_FELICITY,   "-ml0 -me0 -mgfx96 -mvtx96 -ma140"              },
+        { STAGE_MP_GRID,       "-ml0 -me0 -mgfx96 -mvtx96 -ma140"              },
+        { STAGE_TEST_RUN,      "-ml0 -me0 -mgfx96 -mvtx96 -ma140"              },
+        { STAGE_MP_CARPARK,    "-ml0 -me0 -mgfx96 -mvtx96 -ma140"              },
+        { STAGE_MP_RUINS,      "-ml0 -me0 -mgfx96 -mvtx96 -ma140"              },
+        { STAGE_MP_FORTRESS,   "-ml0 -me0 -mgfx96 -mvtx96 -ma130"              },
+        { STAGE_MP_VILLA,      "-ml0 -me0 -mgfx96 -mvtx96 -ma140"              },
+        { STAGE_TEST_MP2,      "-ml0 -me0 -mgfx96 -mvtx96 -ma115"              },
+        { STAGE_TEST_MP6,      "-ml0 -me0 -mgfx96 -mvtx96 -ma115"              },
+        { STAGE_TEST_MP7,      "-ml0 -me0 -mgfx96 -mvtx96 -ma115"              },
+        { STAGE_TEST_MP8,      "-ml0 -me0 -mgfx96 -mvtx96 -ma115"              },
+        { STAGE_TEST_MP14,     "-ml0 -me0 -mgfx96 -mvtx96 -ma115"              },
+        { STAGE_TEST_MP16,     "-ml0 -me0 -mgfx96 -mvtx96 -ma115"              },
+        { STAGE_TEST_MP17,     "-ml0 -me0 -mgfx96 -mvtx96 -ma115"              },
+        { STAGE_TEST_MP18,     "-ml0 -me0 -mgfx96 -mvtx96 -ma115"              },
+        { STAGE_TEST_MP19,     "-ml0 -me0 -mgfx96 -mvtx96 -ma115"              },
+        { STAGE_TEST_MP20,     "-ml0 -me0 -mgfx96 -mvtx96 -ma115"              },
+        { STAGE_TEST_LEN,      "-ml0 -me0 -mgfx100 -mvtx96 -ma120"             },
+        { STAGE_4MBMENU,       "-mgfx100 -mvtx50 -ma50"                        },
+        { STAGE_TITLE,         "-ml0 -me0 -mgfx80 -mvtx20 -ma001"              },
+        { 0,                   "-ml0 -me0 -mgfx100 -mvtx96 -ma300"             },
 };
 
 Gfx var8005dcc8[] = {
-	gsSPSegment(0x00, 0x00000000),
-	gsSPDisplayList(&var800613a0),
-	gsSPDisplayList(&var80061380),
-	gsDPFullSync(),
-	gsSPEndDisplayList(),
+        gsSPSegment(0x00, 0x00000000),
+        gsSPDisplayList(&var800613a0),
+        gsSPDisplayList(&var80061380),
+        gsDPFullSync(),
+        gsSPEndDisplayList(),
 };
 
 s32 g_MainIsBooting = 1;
 
+
+static bool gVrFovApplied = false;
+static void VrApplySettingsOnStart(void)
+{
+    if (!gVrFovApplied && vr_init_done && XrFov != 0.0f) {
+        for (s32 j = 0; j < MAX_PLAYERS; j++) {
+            g_PlayerExtCfg[j].fovy = XrFov;
+            g_PlayerExtCfg[j].fovzoommult = g_PlayerExtCfg[j].fovzoom
+                                           ? (g_PlayerExtCfg[j].fovy / 60.0f) : 1.0f;
+            g_TickRateDiv = 0;
+        }
+        gVrFovApplied = true;
+    }
+}
+
 void mainInit(void)
 {
-	s32 x;
-	s32 i;
-	s32 j;
-	u32 addr;
 
-	faultInit();
-	dmaInit();
-	amgrInit();
-	varsInit();
-	mempInit();
-	memaInit();
-	joyInit();
-	joyReset();
+    s32 x;
+    s32 i;
+    s32 j;
+    u32 addr;
 
-	var8005d9b0 = rmonIsDisabled();
 
-	g_Is4Mb = (osGetMemSize() <= 0x400000);
-	g_VmShowStats = 0;
 
-	// no copyright screen
-	viSetMode(VIMODE_HI);
-	viConfigureForLegal();
-	viBlack(true);
-	viUpdateMode();
+    faultInit();
+    dmaInit();
+    amgrInit();
+    varsInit();
+    mempInit();
+    memaInit();
+    joyInit();
+    joyReset();
 
-	filesInit();
+    var8005d9b0 = rmonIsDisabled();
 
-	if (var8005d9b0) {
-		argSetString("          -ml0 -me0 -mgfx100 -mvtx50 -mt700 -ma400");
-	}
+    g_Is4Mb = (osGetMemSize() <= 0x400000);
+    g_VmShowStats = 0;
 
-	mempSetHeap(g_MempHeap, g_MempHeapSize);
+    // no copyright screen
+    viSetMode(VIMODE_HI);
+    viConfigureForLegal();
+    viBlack(true);
+    viUpdateMode();
 
-	mempResetPool(MEMPOOL_8);
-	mempResetPool(MEMPOOL_PERMANENT);
-	crashReset();
-	challengesInit();
-	utilsInit();
-	texInit();
-	langInit();
-	lvInit();
-	cheatsInit();
-	textInit();
-	dhudInit();
-	playermgrInit();
-	frametimeInit();
-	profileInit();
-	smokesInit();
-	mpInit(true);
-	pheadInit();
-	paksInit();
-	pheadInit2();
-	animsInit();
-	racesInit();
-	bodiesInit();
-	titleInit();
+    filesInit();
 
-	modelSetDistanceChecksDisabled(true); // don't use LODs
+    if (var8005d9b0) {
+        argSetString("          -ml0 -me0 -mgfx100 -mvtx50 -mt700 -ma400");
+    }
 
-	g_MainIsBooting = 0;
+    mempSetHeap(g_MempHeap, g_MempHeapSize);
+
+    mempResetPool(MEMPOOL_8);
+    mempResetPool(MEMPOOL_PERMANENT);
+    crashReset();
+    challengesInit();
+    utilsInit();
+    texInit();
+    langInit();
+    lvInit();
+    cheatsInit();
+    textInit();
+    dhudInit();
+    playermgrInit();
+    frametimeInit();
+    profileInit();
+    smokesInit();
+    mpInit(true);
+    pheadInit();
+    paksInit();
+    pheadInit2();
+    animsInit();
+    racesInit();
+    bodiesInit();
+    titleInit();
+
+    modelSetDistanceChecksDisabled(true); // don't use LODs
+
+    g_MainIsBooting = 0;
+
+
+
 }
 
 void mainProc(void)
 {
-	mainInit();
-	rdpInit();
-	sndInit();
+    mainInit();
+    rdpInit();
+    sndInit();
 
-	while (true) {
-		mainLoop();
-	}
+    while (true) {
+        mainLoop();
+    }
 }
 
 /**
@@ -295,7 +337,7 @@ void mainProc(void)
  */
 void mainOverrideVariable(char *name, void *value)
 {
-	// empty
+    // empty
 }
 
 /**
@@ -310,313 +352,361 @@ void mainOverrideVariable(char *name, void *value)
  */
 void mainLoop(void)
 {
-	s32 ending = false;
-	s32 index;
-	s32 numplayers;
-	u32 stack;
 
-	func0f175f98();
+    s32 ending = false;
+    s32 index;
+    s32 numplayers;
+    u32 stack;
 
-	var8005d9c4 = 0;
-	argGetLevel(&g_StageNum);
+    func0f175f98();
 
-	if (g_DoBootPakMenu) {
-		g_Vars.pakstocheck = 0xfd;
-		g_StageNum = STAGE_BOOTPAKMENU;
-	}
+    var8005d9c4 = 0;
+    argGetLevel(&g_StageNum);
 
-	if (g_StageNum != STAGE_TITLE) {
-		titleSetNextStage(g_StageNum);
+    if (g_DoBootPakMenu) {
+        g_Vars.pakstocheck = 0xfd;
+        g_StageNum = STAGE_BOOTPAKMENU;
+    }
 
-		if (g_StageNum < STAGE_TITLE) {
-			func0f01b148(0);
+    if (g_StageNum != STAGE_TITLE) {
+        titleSetNextStage(g_StageNum);
 
-			if (argFindByPrefix(1, "-hard")) {
-				lvSetDifficulty(argFindByPrefix(1, "-hard")[0] - '0');
-			}
-		}
-	}
+        if (g_StageNum < STAGE_TITLE) {
+            func0f01b148(0);
 
-	if (g_StageNum == STAGE_CITRAINING && IS4MB()) {
-		g_StageNum = STAGE_4MBMENU;
-	}
+            if (argFindByPrefix(1, "-hard")) {
+                lvSetDifficulty(argFindByPrefix(1, "-hard")[0] - '0');
+            }
+        }
+    }
 
-	rngSetSeed(osGetCount());
+    if (g_StageNum == STAGE_CITRAINING && IS4MB()) {
+        g_StageNum = STAGE_4MBMENU;
+    }
 
-	// Outer loop - this is infinite because ending is never changed
-	while (!ending) {
-		g_MainNumGfxTasks = 0;
-		g_MainGameLogicEnabled = true;
-		g_MainIsEndscreen = false;
+    rngSetSeed(osGetCount());
 
-		if (var8005d9b0 && var8005d9c4 == 0) {
-			index = -1;
+    // Outer loop - this is infinite because ending is never changed
+    while (!ending) {
+        g_MainNumGfxTasks = 0;
+        g_MainGameLogicEnabled = true;
+        g_MainIsEndscreen = false;
 
-			if (IS4MB()) {
-				if (g_StageNum < STAGE_TITLE && getNumPlayers() >= 2) {
-					index = 0; \
+        if (var8005d9b0 && var8005d9c4 == 0) {
+            index = -1;
+
+            if (IS4MB()) {
+                if (g_StageNum < STAGE_TITLE && getNumPlayers() >= 2) {
+                    index = 0; \
 					while (g_StageAllocations4Mb[index].stagenum) { \
 						if (g_StageAllocations4Mb[index].stagenum == g_StageNum + 400) { \
 							break; \
 						} \
 						index++;
-					}
+                    }
 
-					if (g_StageAllocations4Mb[index].stagenum == 0) {
-						index = -1;
-					}
-				}
+                    if (g_StageAllocations4Mb[index].stagenum == 0) {
+                        index = -1;
+                    }
+                }
 
-				if (index);
+                if (index);
 
-				if (index < 0) {
-					index = 0;
-					while (g_StageAllocations4Mb[index].stagenum) {
-						if (g_StageNum == g_StageAllocations4Mb[index].stagenum) {
-							break;
-						}
+                if (index < 0) {
+                    index = 0;
+                    while (g_StageAllocations4Mb[index].stagenum) {
+                        if (g_StageNum == g_StageAllocations4Mb[index].stagenum) {
+                            break;
+                        }
 
-						index++;
-					}
-				}
+                        index++;
+                    }
+                }
 
-				argSetString(g_StageAllocations4Mb[index].string);
-			} else {
-				// 8MB
-				if (g_StageNum < STAGE_TITLE && getNumPlayers() >= 2) {
-					index = 0; \
+                argSetString(g_StageAllocations4Mb[index].string);
+            } else {
+                // 8MB
+                if (g_StageNum < STAGE_TITLE && getNumPlayers() >= 2) {
+                    index = 0; \
 					while (g_StageAllocations8Mb[index].stagenum) { \
 						if (g_StageNum + 400 == g_StageAllocations8Mb[index].stagenum) { \
 							break; \
 						} \
 						index++;
-					}
+                    }
 
-					if (g_StageAllocations8Mb[index].stagenum == 0) {
-						index = -1;
-					}
-				}
+                    if (g_StageAllocations8Mb[index].stagenum == 0) {
+                        index = -1;
+                    }
+                }
 
-				if (index < 0) {
-					index = 0;
+                if (index < 0) {
+                    index = 0;
 
-					while (g_StageAllocations8Mb[index].stagenum) {
-						if (g_StageNum == g_StageAllocations8Mb[index].stagenum) {
-							break;
-						}
+                    while (g_StageAllocations8Mb[index].stagenum) {
+                        if (g_StageNum == g_StageAllocations8Mb[index].stagenum) {
+                            break;
+                        }
 
-						index++;
-					}
-				}
+                        index++;
+                    }
+                }
 
-				argSetString(g_StageAllocations8Mb[index].string);
-			}
-		}
+                argSetString(g_StageAllocations8Mb[index].string);
+            }
+        }
 
-		var8005d9c4 = 0;
+        var8005d9c4 = 0;
 
-		mempResetPool(MEMPOOL_7);
-		mempResetPool(MEMPOOL_STAGE);
-		filesStop(4);
+        mempResetPool(MEMPOOL_7);
+        mempResetPool(MEMPOOL_STAGE);
+        filesStop(4);
 
-		if (argFindByPrefix(1, "-ma")) {
-			g_MainMemaHeapSize = strtol(argFindByPrefix(1, "-ma"), NULL, 0) * 1024;
-		}
+        if (argFindByPrefix(1, "-ma")) {
+            g_MainMemaHeapSize = strtol(argFindByPrefix(1, "-ma"), NULL, 0) * 1024;
+        }
 
-		memaReset(mempAlloc(g_MainMemaHeapSize, MEMPOOL_STAGE), g_MainMemaHeapSize);
-		langReset(g_StageNum);
-		playermgrReset();
+        memaReset(mempAlloc(g_MainMemaHeapSize, MEMPOOL_STAGE), g_MainMemaHeapSize);
+        langReset(g_StageNum);
+        playermgrReset();
 
-		if (g_StageNum >= STAGE_TITLE) {
-			numplayers = 0;
-		} else {
-			if (argFindByPrefix(1, "-play")) {
-				numplayers = strtol(argFindByPrefix(1, "-play"), NULL, 0);
-			} else {
-				numplayers = 1;
-			}
+        if (g_StageNum >= STAGE_TITLE) {
+            numplayers = 0;
+        } else {
+            if (argFindByPrefix(1, "-play")) {
+                numplayers = strtol(argFindByPrefix(1, "-play"), NULL, 0);
+            } else {
+                numplayers = 1;
+            }
 
-			if (getNumPlayers() >= 2) {
-				numplayers = getNumPlayers();
-			}
-		}
+            if (getNumPlayers() >= 2) {
+                numplayers = getNumPlayers();
+            }
+        }
 
-		if (numplayers < 2) {
-			g_Vars.bondplayernum = 0;
-			g_Vars.coopplayernum = -1;
-			g_Vars.antiplayernum = -1;
-		} else if (argFindByPrefix(1, "-coop")) {
-			g_Vars.bondplayernum = 0;
-			g_Vars.coopplayernum = 1;
-			g_Vars.antiplayernum = -1;
-		} else if (argFindByPrefix(1, "-anti")) {
-			g_Vars.bondplayernum = 0;
-			g_Vars.coopplayernum = -1;
-			g_Vars.antiplayernum = 1;
-		}
+        if (numplayers < 2) {
+            g_Vars.bondplayernum = 0;
+            g_Vars.coopplayernum = -1;
+            g_Vars.antiplayernum = -1;
+        } else if (argFindByPrefix(1, "-coop")) {
+            g_Vars.bondplayernum = 0;
+            g_Vars.coopplayernum = 1;
+            g_Vars.antiplayernum = -1;
+        } else if (argFindByPrefix(1, "-anti")) {
+            g_Vars.bondplayernum = 0;
+            g_Vars.coopplayernum = -1;
+            g_Vars.antiplayernum = 1;
+        }
 
-		playermgrAllocatePlayers(numplayers);
+        playermgrAllocatePlayers(numplayers);
 
-		if (argFindByPrefix(1, "-mpbots")) {
-			g_Vars.lvmpbotlevel = 1;
-		}
+        if (argFindByPrefix(1, "-mpbots")) {
+            g_Vars.lvmpbotlevel = 1;
+        }
 
-		if (g_Vars.coopplayernum >= 0 || g_Vars.antiplayernum >= 0) {
-			g_MpSetup.chrslots = 0x03;
-			mpReset();
-		} else if (g_Vars.perfectbuddynum) {
-			mpReset();
-		} else if (g_Vars.mplayerisrunning == false
-				&& (numplayers >= 2 || g_Vars.lvmpbotlevel || argFindByPrefix(1, "-play"))) {
-			g_MpSetup.chrslots = 1;
+        if (g_Vars.coopplayernum >= 0 || g_Vars.antiplayernum >= 0) {
+            g_MpSetup.chrslots = 0x03;
+            mpReset();
+        } else if (g_Vars.perfectbuddynum) {
+            mpReset();
+        } else if (g_Vars.mplayerisrunning == false
+                   && (numplayers >= 2 || g_Vars.lvmpbotlevel || argFindByPrefix(1, "-play"))) {
+            g_MpSetup.chrslots = 1;
 
-			if (numplayers >= 2) {
-				g_MpSetup.chrslots |= 1 << 1;
-			}
+            if (numplayers >= 2) {
+                g_MpSetup.chrslots |= 1 << 1;
+            }
 
-			if (numplayers >= 3) {
-				g_MpSetup.chrslots |= 1 << 2;
-			}
+            if (numplayers >= 3) {
+                g_MpSetup.chrslots |= 1 << 2;
+            }
 
-			if (numplayers >= 4) {
-				g_MpSetup.chrslots |= 1 << 3;
-			}
+            if (numplayers >= 4) {
+                g_MpSetup.chrslots |= 1 << 3;
+            }
 
-			g_MpSetup.stagenum = g_StageNum;
-			mpReset();
-		}
+            g_MpSetup.stagenum = g_StageNum;
+            mpReset();
+        }
 
-		gfxReset();
-		joyReset();
-		dhudReset();
-		zbufReset(g_StageNum);
-		lvReset(g_StageNum);
-		viReset(g_StageNum);
-		frametimeCalculate();
-		profileReset();
+        gfxReset();
+        joyReset();
+        dhudReset();
+        zbufReset(g_StageNum);
+        lvReset(g_StageNum);
+        viReset(g_StageNum);
+        frametimeCalculate();
+        profileReset();
 
-		while (g_MainChangeToStageNum < 0) {
-			const s32 cycles = osGetCount() - g_Vars.thisframestartt;
-			if (!g_Vars.mininc60 || (cycles >= g_Vars.mininc60 * CYCLES_PER_FRAME - CYCLES_PER_FRAME / 2)) {
-				schedStartFrame(&g_Sched);
-				mainTick();
-				schedEndFrame(&g_Sched);
-			}
-			if (g_TickExtraSleep) {
-				sysSleep(EXTRA_SLEEP_TIME);
-			}
-		}
 
-		lvStop();
-		mempDisablePool(MEMPOOL_STAGE);
-		mempDisablePool(MEMPOOL_7);
-		filesStop(4);
-		viBlack(true);
-		pak0f116994();
 
-		g_StageNum = g_MainChangeToStageNum;
-		g_MainChangeToStageNum = -1;
-	}
+        while (g_MainChangeToStageNum < 0) {
+
+            const s32 cycles = osGetCount() - g_Vars.thisframestartt;
+            if (!g_Vars.mininc60 || (cycles >= g_Vars.mininc60 * CYCLES_PER_FRAME - CYCLES_PER_FRAME / 2)) {
+                schedStartFrame(&g_Sched);
+                mainTick();
+                schedEndFrame(&g_Sched);
+            }
+            if (g_TickExtraSleep) {
+                sysSleep(EXTRA_SLEEP_TIME);
+            }
+        }
+
+        lvStop();
+        mempDisablePool(MEMPOOL_STAGE);
+        mempDisablePool(MEMPOOL_7);
+        filesStop(4);
+        viBlack(true);
+        pak0f116994();
+
+        g_StageNum = g_MainChangeToStageNum;
+        g_MainChangeToStageNum = -1;
+    }
 }
+
+
 
 void mainTick(void)
 {
-	Gfx *gdl = NULL;
-	Gfx *gdlstart = NULL;
-	OSScMsg msg = {OS_SC_DONE_MSG};
-	s32 i;
+    Gfx *gdl = NULL;
+    Gfx *gdlstart = NULL;
+    OSScMsg msg = {OS_SC_DONE_MSG};
+    s32 i;
 
-	if (g_MainChangeToStageNum < 0) {
-		frametimeCalculate();
-		profileReset();
-		profileSetMarker(PROFILE_MAINTICK_START);
-		joyDebugJoy();
-		schedSetCrashEnable2(false);
 
-		if (g_MainGameLogicEnabled) {
-			gdl = gdlstart = gfxGetMasterDisplayList();
+#ifdef ANDROID
+    // Retry VR initialization every frame until g_activity and g_window are available
+    if (!vr_init_done) {
+        EGLDisplay display = eglGetCurrentDisplay();
+        EGLContext ctx    = eglGetCurrentContext();
+        if (display != EGL_NO_DISPLAY && ctx != EGL_NO_CONTEXT) {
+            vr_initialize();
+            if (vr_is_initialized()) {
+                vr_poll_events();
+                vrSettingsLoad();
+                vr_init_done = true;
+            }
+        }
+    }
+#else
+    if (!vr_init_done) {
+        vr_initialize();
+        if (vr_is_initialized()) {
+            vr_poll_events();
+            vrSettingsLoad();
+            vr_init_done = true;
+        }
+    }
+#endif
 
-			gDPSetTile(gdl++, G_IM_FMT_RGBA, G_IM_SIZ_16b, 0, 0x0000, G_TX_LOADTILE, 0, G_TX_NOMIRROR | G_TX_WRAP, G_TX_NOMASK, G_TX_NOLOD, G_TX_NOMIRROR | G_TX_WRAP, G_TX_NOMASK, G_TX_NOLOD);
-			gDPSetTile(gdl++, G_IM_FMT_RGBA, G_IM_SIZ_4b, 0, 0x0100, 6, 0, G_TX_NOMIRROR | G_TX_WRAP, G_TX_NOMASK, G_TX_NOLOD, G_TX_NOMIRROR | G_TX_WRAP, G_TX_NOMASK, G_TX_NOLOD);
 
-			lvTick();
-			playermgrShuffle();
+    if (g_MainChangeToStageNum < 0) {
+        frametimeCalculate();
+        profileReset();
+        profileSetMarker(PROFILE_MAINTICK_START);
+        joyDebugJoy();
+        schedSetCrashEnable2(false);
 
-			if (g_StageNum < STAGE_TITLE) {
-				for (i = 0; i < PLAYERCOUNT(); i++) {
-					setCurrentPlayerNum(playermgrGetPlayerAtOrder(i));
 
-					if (g_StageNum != STAGE_TEST_OLD || !titleIsKeepingMode()) {
-						viSetViewPosition(g_Vars.currentplayer->viewleft, g_Vars.currentplayer->viewtop);
-						viSetFovAspectAndSize(
-								g_Vars.currentplayer->fovy, g_Vars.currentplayer->aspect,
-								g_Vars.currentplayer->viewwidth, g_Vars.currentplayer->viewheight);
-					}
+        // VR
+        if(vr_init_done) {
+            vr_poll_events();
+            vr_begin_frame_and_update_poses();
+            VrApplySettingsOnStart();
+        }
 
-					lvTickPlayer();
-				}
-			}
+        if (g_MainGameLogicEnabled) {
+            gdl = gdlstart = gfxGetMasterDisplayList();
 
-			gdl = lvRender(gdl);
+            gDPSetTile(gdl++, G_IM_FMT_RGBA, G_IM_SIZ_16b, 0, 0x0000, G_TX_LOADTILE, 0, G_TX_NOMIRROR | G_TX_WRAP, G_TX_NOMASK, G_TX_NOLOD, G_TX_NOMIRROR | G_TX_WRAP, G_TX_NOMASK, G_TX_NOLOD);
+            gDPSetTile(gdl++, G_IM_FMT_RGBA, G_IM_SIZ_4b, 0, 0x0100, 6, 0, G_TX_NOMIRROR | G_TX_WRAP, G_TX_NOMASK, G_TX_NOLOD, G_TX_NOMIRROR | G_TX_WRAP, G_TX_NOMASK, G_TX_NOLOD);
 
-			if (debugGetProfileMode() >= 2) {
-				gdl = profileRender(gdl);
-			}
+            lvTick();
+            playermgrShuffle();
 
-			gDPFullSync(gdl++);
-			gSPEndDisplayList(gdl++);
-		}
+            if (g_StageNum < STAGE_TITLE) {
+                for (i = 0; i < PLAYERCOUNT(); i++) {
+                    setCurrentPlayerNum(playermgrGetPlayerAtOrder(i));
 
-		if (g_MainGameLogicEnabled) {
-			gfxSwapBuffers();
-			viUpdateMode();
-		}
+                    if (g_StageNum != STAGE_TEST_OLD || !titleIsKeepingMode()) {
+                        viSetViewPosition(g_Vars.currentplayer->viewleft, g_Vars.currentplayer->viewtop);
+                        viSetFovAspectAndSize(
+                                g_Vars.currentplayer->fovy, g_Vars.currentplayer->aspect,
+                                g_Vars.currentplayer->viewwidth, g_Vars.currentplayer->viewheight);
 
-		rdpCreateTask(gdlstart, gdl, 0, (uintptr_t) &msg);
-		memaPrint();
-		profileSetMarker(PROFILE_MAINTICK_END);
-	}
+                    }
+
+                    lvTickPlayer();
+                }
+            }
+
+
+            gdl = lvRender(gdl);
+
+            if (debugGetProfileMode() >= 2) {
+                gdl = profileRender(gdl);
+            }
+
+            gDPFullSync(gdl++);
+            gSPEndDisplayList(gdl++);
+        }
+
+        if (g_MainGameLogicEnabled) {
+            gfxSwapBuffers();
+            viUpdateMode();
+        }
+
+        rdpCreateTask(gdlstart, gdl, 0, (uintptr_t) &msg);
+        memaPrint();
+        profileSetMarker(PROFILE_MAINTICK_END);
+    }
+
+    // VR
+    if(vr_init_done) {
+        vr_end_frame_and_submit();
+    }
 }
 
 void mainEndStage(void)
 {
-	sndStopNosedive();
+    sndStopNosedive();
 
-	if (!g_MainIsEndscreen) {
-		pak0f11c6d0();
-		joyDisableTemporarily();
+    if (!g_MainIsEndscreen) {
+        pak0f11c6d0();
+        joyDisableTemporarily();
 
-		if (g_Vars.coopplayernum >= 0) {
-			s32 prevplayernum = g_Vars.currentplayernum;
-			s32 i;
+        if (g_Vars.coopplayernum >= 0) {
+            s32 prevplayernum = g_Vars.currentplayernum;
+            s32 i;
 
-			for (i = 0; i < PLAYERCOUNT(); i++) {
-				setCurrentPlayerNum(i);
-				endscreenPushCoop();
-			}
+            for (i = 0; i < PLAYERCOUNT(); i++) {
+                setCurrentPlayerNum(i);
+                endscreenPushCoop();
+            }
 
-			setCurrentPlayerNum(prevplayernum);
-			musicStartMenu();
-		} else if (g_Vars.antiplayernum >= 0) {
-			s32 prevplayernum = g_Vars.currentplayernum;
-			s32 i;
+            setCurrentPlayerNum(prevplayernum);
+            musicStartMenu();
+        } else if (g_Vars.antiplayernum >= 0) {
+            s32 prevplayernum = g_Vars.currentplayernum;
+            s32 i;
 
-			for (i = 0; i < PLAYERCOUNT(); i++) {
-				setCurrentPlayerNum(i);
-				endscreenPushAnti();
-			}
+            for (i = 0; i < PLAYERCOUNT(); i++) {
+                setCurrentPlayerNum(i);
+                endscreenPushAnti();
+            }
 
-			setCurrentPlayerNum(prevplayernum);
-			musicStartMenu();
-		} else if (g_Vars.normmplayerisrunning) {
-			mpEndMatch();
-		} else {
-			endscreenPrepare();
-			musicStartMenu();
-		}
-	}
+            setCurrentPlayerNum(prevplayernum);
+            musicStartMenu();
+        } else if (g_Vars.normmplayerisrunning) {
+            mpEndMatch();
+        } else {
+            endscreenPrepare();
+            musicStartMenu();
+        }
+    }
 
-	g_MainIsEndscreen = true;
+    g_MainIsEndscreen = true;
 }
 
 /**
@@ -624,19 +714,20 @@ void mainEndStage(void)
  */
 void mainChangeToStage(s32 stagenum)
 {
-	pak0f11c6d0();
+    pak0f11c6d0();
 
-	g_MainChangeToStageNum = stagenum;
+    g_MainChangeToStageNum = stagenum;
 }
 
 s32 mainGetStageNum(void)
 {
-	return g_StageNum;
+    return g_StageNum;
 }
 
 void func0000e990(void)
 {
-	objectivesCheckAll();
-	objectivesDisableChecking();
-	mainEndStage();
+    objectivesCheckAll();
+    objectivesDisableChecking();
+    mainEndStage();
 }
+

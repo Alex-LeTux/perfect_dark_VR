@@ -16,6 +16,8 @@
 
 #define CONT_NUM_BUTTONS 32 // not including the stick axes
 
+
+
 enum virtkey {
 	/* same order as SDL scancodes */
 	VK_KEYBOARD_BEGIN = 0,
@@ -63,10 +65,32 @@ enum virtkey {
 	VK_JOY1_RTRIG = VK_JOY1_BEGIN + 31,
 	VK_JOY2_BEGIN = VK_JOY1_BEGIN + INPUT_MAX_CONTROLLER_BUTTONS,
 	VK_JOY3_BEGIN = VK_JOY2_BEGIN + INPUT_MAX_CONTROLLER_BUTTONS,
-	VK_JOY4_BEGIN = VK_JOY3_BEGIN + INPUT_MAX_CONTROLLER_BUTTONS,
+    VK_JOY4_BEGIN = VK_JOY3_BEGIN + INPUT_MAX_CONTROLLER_BUTTONS,
 
-	VK_TOTAL_COUNT = VK_JOY_BEGIN + INPUT_MAX_CONTROLLERS * INPUT_MAX_CONTROLLER_BUTTONS,
+/* VR controller buttons */
+    VK_VR_BEGIN = VK_JOY_BEGIN + INPUT_MAX_CONTROLLERS * INPUT_MAX_CONTROLLER_BUTTONS,
+
+// Left Hand (index 0)
+    VK_VR_LEFT_TRIGGER = VK_VR_BEGIN,
+    VK_VR_LEFT_GRIP,
+    VK_VR_LEFT_X,
+    VK_VR_LEFT_Y,
+    VK_VR_LEFT_MENU,
+    VK_VR_LEFT_THUMBSTICK_CLICK,
+
+// Right Hand (index 1)
+    VK_VR_RIGHT_TRIGGER,
+    VK_VR_RIGHT_GRIP,
+    VK_VR_RIGHT_A,
+    VK_VR_RIGHT_B,
+    VK_VR_RIGHT_THUMBSTICK_CLICK,
+
+    VK_VR_END,
+
+    VK_TOTAL_COUNT = VK_VR_END,
 };
+
+
 
 enum keymod {
 	/* same order as SDL keymods */
@@ -269,5 +293,9 @@ const char *inputGetClipboard(void);
 
 // returns keymod values
 u32 inputGetKeyModState(void);
+
+// setup default VR bindings for player cidx
+void inputSetupVRBindings(s32 cidx); // VR
+
 
 #endif

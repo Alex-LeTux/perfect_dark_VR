@@ -44,30 +44,33 @@ public class LauncherActivity extends AppCompatActivity {
     @Override
     protected void onCreate(@Nullable Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        setContentView(R.layout.activity_launcher);
-
-        missingRomView = findViewById(R.id.missingRomContainer);
-        infoText = findViewById(R.id.infoText);
-        pickRomButton = findViewById(R.id.pickRomButton);
-
-        pickRomButton.setOnClickListener(v -> openRomPicker());
 
         ensureDataDir();
 
+        // If the ROM already exists, launch the game directly in VR (skip this activity)
         if (romExists()) {
             File target = new File(new File(getExternalFilesDir(null), "data"), ROM_FILE_NAME);
             int hashStatus = checkRomHash(target);
-            if (hashStatus == 0) {
-                startGame();
-            } else if (hashStatus == 1) {
-                showV10WarningDialog(target);
-            } else {
-                showHashMismatchDialog(target);
+            if (hashStatus == 0 || hashStatus == 1) {
+                // ROM valide → lancer directement MainActivity
+                android.util.Log.i("PerfectDark", "ROM found, launching VR mode directly");
+                Intent intent = new Intent(this, MainActivity.class);
+                intent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_NEW_TASK);
+                startActivity(intent);
+                finish();
+                return;
             }
-        } else {
-            showMissingRomUi();
         }
+
+        // No ROM found -> display the selection UI
+        setContentView(R.layout.activity_launcher);
+        missingRomView = findViewById(R.id.missingRomContainer);
+        infoText = findViewById(R.id.infoText);
+        pickRomButton = findViewById(R.id.pickRomButton);
+        pickRomButton.setOnClickListener(v -> openRomPicker());
+        showMissingRomUi();
     }
+
 
     private void ensureDataDir() {
         File dataDir = new File(getExternalFilesDir(null), "data");
@@ -151,10 +154,10 @@ public class LauncherActivity extends AppCompatActivity {
     }
 
     private void startGame() {
-        // Hand off to SDL/MainActivity
+        android.util.Log.i("PerfectDark", "ROM ready, restarting MainActivity in VR mode");
+        // Relaunch MainActivity in VR mode
         Intent intent = new Intent(this, MainActivity.class);
-        // Ensure we don’t come back here when user quits the game
-        intent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_NEW_TASK);
+        intent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TASK | Intent.FLAG_ACTIVITY_NEW_TASK);
         startActivity(intent);
         finish();
     }

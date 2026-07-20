@@ -1,4 +1,7 @@
 #include <ultra64.h>
+
+#include <math.h> //VR
+
 #include "constants.h"
 #include "game/quaternion.h"
 #include "game/game_0b2150.h"
@@ -2616,6 +2619,18 @@ Gfx *skyRenderSuns(Gfx *gdl, bool xray)
 				g_SunScreenXPositions[i] = (g_SunPositions[i].f[0] / g_SunPositions[i].f[2] + 1.0f) * 0.5f * viewwidthf + viewleftf;
 				g_SunScreenYPositions[i] = (-g_SunPositions[i].f[1] / g_SunPositions[i].f[2] + 1.0f) * 0.5f * viewheightf + viewtopf;
 				radius = 60.0f / viGetFovY() * sun->texture_size;
+
+
+
+                // VR high FOV sun fix
+                // Normalize the sun disk screen size to make it FOV-independent
+				const float kFovRefDeg = 60.0f;
+				const float corr = tanf(0.5f * kFovRefDeg * (float)M_PI / 180.0f)
+						/ tanf(0.5f * viGetFovY() * (float)M_PI / 180.0f);
+				radius *= corr;
+				//---
+
+
 				onscreen = false;
 
 				if (g_SunScreenXPositions[i] >= viewleftf - radius
@@ -2812,7 +2827,18 @@ Gfx *skyRenderFlare(Gfx *gdl, f32 x, f32 y, f32 intensityfrac, f32 size, s32 fla
 	fovy = viGetFovY();
 
 	gDPSetEnvColor(gdl++, 0xff, 0xff, 0xff, (s32) (alphafrac * intensityfrac * 255.0f));
-	f2 = ((s32) ((60.0f / fovy) * (size * (0.5f + (0.5f * intensityfrac)))));
+
+
+    // VR high FOV sun fix
+    // Normalize the central sprite size to a constant pixel size regardless of FOV
+	const float kFovRefDeg = 60.0f;
+	const float corr = tanf(0.5f * kFovRefDeg * (float)M_PI / 180.0f)
+			/ tanf(0.5f * fovy * (float)M_PI / 180.0f);
+
+	f2 = (s32)((size * (0.5f + 0.5f * intensityfrac)) * corr);
+	//---
+
+
 
 	sp17c[0] = x;
 	sp17c[1] = y;
@@ -2831,7 +2857,7 @@ Gfx *skyRenderFlare(Gfx *gdl, f32 x, f32 y, f32 intensityfrac, f32 size, s32 fla
 	gDPSetCycleType(gdl++, G_CYC_1CYCLE);
 	gDPSetColorDither(gdl++, G_CD_BAYER);
 	gDPSetAlphaDither(gdl++, G_AD_PATTERN);
-	gDPSetRenderMode(gdl++, G_RM_AA_XLU_SURF, G_RM_AA_XLU_SURF2);
+  gDPSetRenderMode(gdl++, G_RM_AA_XLU_SURF, G_RM_AA_XLU_SURF2);
 	gDPSetTexturePersp(gdl++, G_TP_NONE);
 	gDPSetAlphaCompare(gdl++, G_AC_NONE);
 	gDPSetTextureLOD(gdl++, G_TL_TILE);

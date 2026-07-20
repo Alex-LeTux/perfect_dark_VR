@@ -1,4 +1,6 @@
 #include <ultra64.h>
+#include <game/quaternion.h>
+#include <game/camera.h>
 #include "constants.h"
 #include "game/bondgrab.h"
 #include "game/bondmove.h"
@@ -18,6 +20,7 @@
 #include "data.h"
 #include "types.h"
 
+
 struct prop *var8009de70;
 u32 var8009de74;
 struct coord var8009de78;
@@ -26,6 +29,7 @@ u32 var8009de88;
 u32 var8009de8c;
 
 bool var80070e80 = false;
+
 
 void bgrabInit(void)
 {
@@ -56,6 +60,7 @@ void bgrabInit(void)
 	g_Vars.currentplayer->guncloseroffset = 0;
 	g_Vars.currentplayer->gunextraaimx = 0;
 	g_Vars.currentplayer->gunextraaimy = 0;
+
 
 	mtx4LoadYRotation((g_Vars.currentplayer->vv_theta * M_BADTAU) / 360.0f, &matrix);
 	mtx4RotateVecInPlace(&matrix, &g_Vars.currentplayer->grabbedposoffset);
@@ -430,6 +435,7 @@ s32 bgrabCalculateNewPosition(struct coord *delta, f32 angle, bool arg2)
 			posextra.f[1] = g_Vars.currentplayer->grabbedposextra.f[1];
 			posextra.f[2] = g_Vars.currentplayer->grabbedposextra.f[2];
 		}
+
 
 		sp7c.x = delta->x;
 		sp7c.y = delta->y;
@@ -894,9 +900,10 @@ void bgrabHandleActivate(void)
 		g_Vars.currentplayer->bondactivateorreload = 0;
 	} else {
 		g_Vars.currentplayer->bondactivateorreload = 0;
-		bmoveSetMode(MOVEMODE_WALK);
+		//bmoveSetMode(MOVEMODE_WALK); Removed for VR - disable B button for grab/ungrab.
 	}
 }
+
 
 void bgrabUpdateSpeedSideways(f32 targetspeed, f32 accelspeed, s32 mult)
 {
@@ -1160,12 +1167,16 @@ void bgrab0f0ce924(void)
 
 void bgrabTick(void)
 {
+
+
+
 	bgrabUpdatePrevPos();
 	bgrab0f0cdef0();
 	bmoveUpdateVerta();
 	bgrab0f0ce924();
 	bgrab0f0ce178();
 	bgrabUpdateVertical();
+
 
 #if VERSION >= VERSION_NTSC_1_0
 	{

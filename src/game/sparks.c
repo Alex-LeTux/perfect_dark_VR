@@ -14,6 +14,10 @@
 #include "data.h"
 #include "types.h"
 
+//VR
+extern int VrSmallW;
+extern int VrSmallH;
+
 struct spark g_Sparks[100];
 s32 g_NextSparkIndex;
 u32 var800a3fc4;
@@ -426,7 +430,8 @@ Gfx *sparksRender(Gfx *gdl)
 					sp120 *= 0.2f;
 					sp120 *= viGetFovY() / 60.0f;
 #ifndef PLATFORM_N64 // adjust scale for port
-					sp120 *= (float)(SCREEN_WIDTH_LO * SCREEN_HEIGHT_LO) / (float)(SCREEN_WIDTH_HI * SCREEN_HEIGHT_HI);
+					sp120 *= (float)(VrSmallW * VrSmallH) / (float)(VrSmallW * 3 * VrSmallH); // VR
+
 #endif
 
 					mtx4LoadIdentity(&spd4);

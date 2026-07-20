@@ -17,6 +17,7 @@
 #include "data.h"
 #include "types.h"
 
+
 u32 var80070590 = 0x00000000;
 
 void mpstatsIncrementPlayerShotCount(struct gset *gset, s32 region)

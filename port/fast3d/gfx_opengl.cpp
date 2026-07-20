@@ -13,12 +13,226 @@
 #define _LANGUAGE_C
 #endif
 #include <PR/gbi.h>
-
 #include "glad/glad.h"
-
 #include "gfx_cc.h"
 #include "gfx_rendering_api.h"
 #include "gfx_pc.h"
+#include "../vr/vr_log.h"
+#ifdef ANDROID
+#include <android/log.h>
+#define LOGI(...) __android_log_print(ANDROID_LOG_INFO,  "PD-VR", __VA_ARGS__)
+#else
+#define LOGI(...) vr_log(__VA_ARGS__)
+#endif
+
+
+
+// ============================================================================
+// GLOBAL STATE - OVR_multiview / Render Targets / others
+// ============================================================================
+bool use_multiview = false;
+float s_eye_offsets[6] = { 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
+extern float g_eyeTanHalfFov[2];
+extern "C" bool vr_dl_is_pause_or_menu;
+extern float vr_world_scale;
+extern bool is_meta_runtime;
+bool copy_fbo_menu = false;
+bool VrIsTitleLegal = true;
+
+// ============================================================================
+// GLOBAL STATE - MSAA
+// ============================================================================
+typedef void (*PFNGLFRAMEBUFFERTEXTUREMULTIVIEWOVRPROC)(
+        GLenum, GLenum, GLuint, GLint, GLint, GLsizei);
+PFNGLFRAMEBUFFERTEXTUREMULTIVIEWOVRPROC
+        glFramebufferTextureMultiviewOVR = nullptr;
+
+typedef void (APIENTRY* PFNGLFRAMEBUFFERTEXTUREMULTISAMPLEMULTIVIEWOVRPROC)(GLenum target, GLenum attachment, GLuint texture, GLint level, GLsizei samples, GLint baseViewIndex, GLsizei numViews);
+PFNGLFRAMEBUFFERTEXTUREMULTISAMPLEMULTIVIEWOVRPROC pfnFramebufferTextureMultisampleMultiviewOVR = nullptr;
+
+// ============================================================================
+// GLOBAL STATE - GLuint
+// ============================================================================
+extern GLuint g_currentMultiviewSwapchainTex;
+extern "C" GLuint vr_get_current_multiview_swapchain_tex();
+
+static GLuint s_mirror_prog  = 0;
+static GLuint s_mirror_vao   = 0;
+static GLint  s_mirror_uloc_tex   = -1;
+static GLint  s_mirror_uloc_layer = -1;
+static GLint  s_mirror_uloc_rect  = -1;
+
+static GLuint mv_blit_prog = 0;
+static GLint mv_blit_uTexLoc = -1;
+static GLint mv_blit_uFlipYLoc = -1;
+static GLint mv_blit_uRectLoc = -1;
+
+// Fullscreen tri, VS without attributes (uses gl_VertexID)
+//#version 300 es if gles, otherwise 330 core
+static const char* mv_blit_vs_src =
+        "#version 300 es\n"
+        "precision highp float;\n"
+        "out vec2 vUV;\n"
+        "const vec2 pos[3] = vec2[3](\n"
+        "    vec2(-1.0,-1.0),\n"
+        "    vec2( 3.0,-1.0),\n"
+        "    vec2(-1.0, 3.0)\n"
+        ");\n"
+        "void main() {\n"
+        "    vec2 p = pos[gl_VertexID];\n"
+        "    gl_Position = vec4(p, 0.0, 1.0);\n"
+        "    vUV = p * 0.5 + 0.5;\n"
+        "}\n";
+
+
+#ifdef ANDROID
+static const char* mv_blit_fs_src =
+        "#version 300 es\n"
+        "precision highp float;\n"
+        "in vec2 vUV;\n"
+        "out vec4 outColor;\n"
+        "uniform sampler2DArray uTex;\n"
+        "uniform int uLayer;\n"
+        "uniform int uFlipY;\n"
+        "uniform vec4 uRect; // u0, v0, u1, v1\n"
+        "void main() {\n"
+        "    vec2 uv = vUV;\n"
+        "    if (uFlipY != 0) uv.y = 1.0 - uv.y;\n"
+        "    // Remap 0..1 to the source sub-rectangle\n"
+        "    vec2 srcUV;\n"
+        "    srcUV.x = mix(uRect.x, uRect.z, uv.x);\n"
+        "    srcUV.y = mix(uRect.y, uRect.w, uv.y);\n"
+        "    outColor = texture(uTex, vec3(srcUV, float(uLayer)));\n"
+        "}\n";
+
+
+#else
+extern "C" int gfx_sdl_get_mirror_eye();
+extern "C" bool gfx_sdl_is_mirror_enabled();
+static GLint s_mirror_uloc_sbs = -1;
+extern "C" bool gfx_sdl_is_mirror_sbs();
+
+static GLuint s_logo_tex = 0;
+int    logo_w   = 0;
+int    logo_h   = 0;
+
+extern "C" GLuint gfx_opengl_get_logo_tex()  { return s_logo_tex; }
+extern "C" bool mirror_enabled;
+extern "C" void mirror_apply_size(bool enabled);
+
+static GLuint load_bmp_texture(const char* path) {
+    FILE* f = fopen(path, "rb");
+    if (!f) {
+//        vr_log("load_bmp_texture: cannot open %s", path);
+        return 0;
+    }
+
+    uint8_t header[54];
+    if (fread(header, 1, 54, f) != 54 || header[0] != 'B' || header[1] != 'M') {
+//        vr_log("load_bmp_texture: not a valid BMP file");
+        fclose(f);
+        return 0;
+    }
+
+    int w      = *(int*)&header[18];
+    int h      = *(int*)&header[22];
+    int offset = *(int*)&header[10];
+    int bpp    = *(uint16_t*)&header[28]; // bits per pixel
+
+    fseek(f, offset, SEEK_SET);
+
+    int bytes_per_pixel = bpp / 8; // 3 or 4
+    int row_size = (w * bytes_per_pixel + 3) & ~3;
+
+    std::vector<uint8_t> raw(row_size * abs(h));
+    fread(raw.data(), 1, raw.size(), f);
+    fclose(f);
+
+    // Convert BGR(A) to RGB and flip vertically
+    std::vector<uint8_t> pixels(w * abs(h) * 3);
+    for (int y = 0; y < abs(h); y++) {
+        int src_y = (h > 0) ? (abs(h) - 1 - y) : y;
+        for (int x = 0; x < w; x++) {
+            uint8_t* src = &raw[src_y * row_size + x * bytes_per_pixel];
+            uint8_t* dst = &pixels[(y * w + x) * 3];
+            dst[0] = src[2]; // R ← B
+            dst[1] = src[1]; // G
+            dst[2] = src[0]; // B ← R
+        }
+    }
+
+    GLuint tex;
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, w, abs(h), 0,
+                 GL_RGB, GL_UNSIGNED_BYTE, pixels.data());
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glBindTexture(GL_TEXTURE_2D, 0);
+
+//    vr_log("load_bmp_texture: loaded %s (%dx%d, %dbpp)", path, w, abs(h), bpp);
+    return tex;
+}
+
+extern "C" void gfx_opengl_load_mirror_logo(const char* path) {
+    // Re-open to read dimensions from the BMP header
+    FILE* f = fopen(path, "rb");
+    if (!f) return;
+    uint8_t header[54];
+    if (fread(header, 1, 54, f) == 54 && header[0] == 'B' && header[1] == 'M') {
+        logo_w = *(int*)&header[18];
+        logo_h = abs(*(int*)&header[22]);
+    }
+    fclose(f);
+    s_logo_tex = load_bmp_texture(path);
+}
+
+
+static const char* mv_blit_fs_src =
+        "#version 300 es\n"
+        "precision highp float;\n"
+        "in vec2 vUV;\n"
+        "out vec4 outColor;\n"
+        "uniform sampler2DArray uTex;\n"
+        "uniform int uLayer;\n"
+        "uniform int uFlipY;\n"
+        "uniform vec4 uRect;\n"
+        "uniform int uSbs;\n"
+        // sRGB encoding function
+        "vec3 linear_to_srgb(vec3 c) {\n"
+        "    return mix(c * 12.92,\n"
+        "               1.055 * pow(clamp(c, 0.0, 1.0), vec3(1.0/2.2)) - 0.055,\n"
+        "               step(0.0031308, c));\n"
+        "}\n"
+        "void main() {\n"
+        "    vec2 uv = vUV;\n"
+        "    if (uFlipY != 0) uv.y = 1.0 - uv.y;\n"
+        "    vec4 col;\n"
+        "    if (uSbs != 0) {\n"
+        //      Left side (uv.x < 0.5) = eye 0, right side = eye 1
+        "        int eye = (uv.x < 0.5) ? 0 : 1;\n"
+        "        vec2 half_uv = vec2(\n"
+        "            (eye == 0) ? uv.x * 2.0 : (uv.x - 0.5) * 2.0,\n"
+        "            uv.y\n"
+        "        );\n"
+        //      Apply uRect in each half
+        "        vec2 srcUV;\n"
+        "        srcUV.x = mix(uRect.x, uRect.z, half_uv.x);\n"
+        "        srcUV.y = mix(uRect.y, uRect.w, half_uv.y);\n"
+        "        col = texture(uTex, vec3(srcUV, float(eye)));\n"
+        "    } else {\n"
+        //      Normal mode — single eye
+        "        vec2 srcUV;\n"
+        "        srcUV.x = mix(uRect.x, uRect.z, uv.x);\n"
+        "        srcUV.y = mix(uRect.y, uRect.w, uv.y);\n"
+        "        col = texture(uTex, vec3(srcUV, float(uLayer)));\n"
+        "    }\n"
+        "    outColor = vec4(linear_to_srgb(col.rgb), 1.0);\n"
+        "}\n";
+
+#endif
+
+//---------------------------------------------------------
 
 using namespace std;
 
@@ -33,13 +247,33 @@ struct ShaderProgram {
     GLint frame_count_location;
     GLint noise_scale_location;
     GLint three_point_filter_locations[2];
+
+
+    GLint eyeOffsetLeftLocation;
+    GLint eyeOffsetRightLocation;
+
+    GLint isMenuLocation;
+    GLint worldScaleLocation;
+
+    GLint crosshairParallaxLoc;
+    GLint crosshairParallaxLeftLoc;
+
+    GLint IsTitleLegal;
+
+    GLint TanHalfFovLeft;
+    GLint TanHalfFovRight;
+
 };
+
+
 
 struct Framebuffer {
     uint32_t width, height;
     bool has_depth_buffer;
     uint32_t msaa_level;
     bool invert_y;
+
+    bool is_multiview; // VR
 
     GLuint fbo, clrbuf, clrbuf_msaa, rbo;
 };
@@ -55,13 +289,141 @@ static std::vector<Framebuffer> framebuffers;
 static size_t current_framebuffer;
 static float current_noise_scale;
 static FilteringMode current_filter_mode = FILTER_LINEAR;
-static bool current_textures_linear_filter[2] = {false, false};
+static bool current_textures_linear_filter[2] = { false, false };
 
+#ifdef ANDROID // VR
 static int gl_glsl_version = 130;
 static char gl_glsl_version_str[16] = "130";
+#else
+static int gl_glsl_version = 330;
+static char gl_glsl_version_str[16] = "330";
+#endif
+
 static GLenum gl_mirror_clamp = GL_MIRROR_CLAMP_TO_EDGE;
 static bool gl_es = false;
 static bool gl_core_profile = false;
+
+
+
+
+//----------------------------------------------VR
+
+static bool gfx_opengl_is_multiview(void) {
+    return use_multiview;
+}
+
+
+static void gfx_opengl_set_eye_offsets(float left_ipd, float left_asym, float left_hud,
+                                       float right_ipd, float right_asym, float right_hud) {
+    // Left eye (gl_ViewID_OVR == 0)
+    s_eye_offsets[0] = left_ipd;   // vec3.x: 3D IPD
+    s_eye_offsets[1] = left_asym;  // vec3.y: Lens asymmetry
+    s_eye_offsets[2] = left_hud;   // vec3.z: 2D offset (HUD)
+
+    // Right eye (gl_ViewID_OVR == 1)
+    s_eye_offsets[3] = right_ipd;  // vec3.x: 3D IPD
+    s_eye_offsets[4] = right_asym; // vec3.y: Lens asymmetry
+    s_eye_offsets[5] = right_hud;  // vec3.z: 2D offset (HUD)
+
+}
+
+static float g_crosshairParallaxRight = 0.0f;
+static float g_crosshairParallaxLeft  = 0.0f;
+
+
+
+extern "C" void gfxSetCrosshairParallaxRight(float correction) {
+    g_crosshairParallaxRight = correction;
+}
+
+extern "C" void gfxSetCrosshairParallaxLeft(float correction) {
+    g_crosshairParallaxLeft = correction;
+}
+
+
+
+
+extern "C" void gfx_opengl_connect_multiview_fbo(GLuint fbo_id, uint32_t width, uint32_t height) {
+    if (framebuffers.empty()) framebuffers.resize(1);
+    Framebuffer& fb = framebuffers[0];
+    fb.fbo = fbo_id;   // points to gmultiviewFBO
+    fb.width = width;
+    fb.height = height;
+    fb.has_depth_buffer = true;
+    fb.is_multiview = true;
+    fb.invert_y = false;
+    fb.msaa_level = 1;
+    fb.clrbuf = fb.clrbuf_msaa = fb.rbo = 0;
+    use_multiview = true;
+}
+
+void gfx_opengl_init_multiview() { // VR
+    bool found = false;
+    if (gl_es) {
+        GLint numExts = 0;
+        glGetIntegerv(GL_NUM_EXTENSIONS, &numExts);
+        for (GLint i = 0; i < numExts; i++) {
+            const char* e = (const char*)glGetStringi(GL_EXTENSIONS, i);
+            if (e && (strcmp(e, "GL_OVR_multiview2") == 0 ||
+                      strcmp(e, "GL_OVR_multiview") == 0)) {
+                found = true;
+                break;
+            }
+        }
+    }
+    else {
+        const char* e = (const char*)glGetString(GL_EXTENSIONS);
+        found = e && strstr(e, "GL_OVR_multiview");
+    }
+
+    if (!found) {
+        return;
+    }
+
+    glFramebufferTextureMultiviewOVR =
+            (PFNGLFRAMEBUFFERTEXTUREMULTIVIEWOVRPROC)
+                    SDL_GL_GetProcAddress("glFramebufferTextureMultiviewOVR");
+    if (!glFramebufferTextureMultiviewOVR)
+        sysFatalError("Could not resolve glFramebufferTextureMultiviewOVR");
+
+    // MSAA multiview
+    pfnFramebufferTextureMultisampleMultiviewOVR =
+            (PFNGLFRAMEBUFFERTEXTUREMULTISAMPLEMULTIVIEWOVRPROC)SDL_GL_GetProcAddress("glFramebufferTextureMultisampleMultiviewOVR");
+
+    if (!pfnFramebufferTextureMultisampleMultiviewOVR) {
+        sysLogPrintf(LOG_WARNING, "GL: glFramebufferTextureMultisampleMultiviewOVR not available, multiview MSAA disabled");
+    }
+
+    use_multiview = true;
+}
+
+static void mv_blit_init() {
+    if (mv_blit_prog != 0) return;
+
+    GLuint vs = glCreateShader(GL_VERTEX_SHADER);
+    glShaderSource(vs, 1, &mv_blit_vs_src, NULL);
+    glCompileShader(vs);
+
+    GLuint fs = glCreateShader(GL_FRAGMENT_SHADER);
+    glShaderSource(fs, 1, &mv_blit_fs_src, NULL);
+    glCompileShader(fs);
+
+    mv_blit_prog = glCreateProgram();
+    glAttachShader(mv_blit_prog, vs);
+    glAttachShader(mv_blit_prog, fs);
+    glLinkProgram(mv_blit_prog);
+    glDeleteShader(vs);
+    glDeleteShader(fs);
+
+    mv_blit_uTexLoc = glGetUniformLocation(mv_blit_prog, "uTex");
+    mv_blit_uFlipYLoc = glGetUniformLocation(mv_blit_prog, "uFlipY");
+    mv_blit_uRectLoc = glGetUniformLocation(mv_blit_prog, "uRect");
+
+}
+
+
+//---------------------------------------------------------------
+
 
 static int gfx_opengl_get_max_texture_size() {
     GLint max_texture_size;
@@ -85,7 +447,7 @@ static void gfx_opengl_vertex_array_set_attribs(struct ShaderProgram* prg) {
         if (prg->attrib_locations[i] >= 0) {
             glEnableVertexAttribArray(prg->attrib_locations[i]);
             glVertexAttribPointer(prg->attrib_locations[i], prg->attrib_sizes[i], GL_FLOAT, GL_FALSE,
-                                num_floats * sizeof(float), (void*)(pos * sizeof(float)));
+                                  num_floats * sizeof(float), (void*)(pos * sizeof(float)));
         }
         pos += prg->attrib_sizes[i];
     }
@@ -104,6 +466,38 @@ static void gfx_opengl_set_uniforms(struct ShaderProgram* prg) {
     if (prg->three_point_filter_locations[1] >= 0) {
         glUniform1i(prg->three_point_filter_locations[1], current_textures_linear_filter[1]);
     }
+
+
+    if (use_multiview) { // VR
+
+        if (prg->eyeOffsetLeftLocation >= 0)
+            glUniform3f(prg->eyeOffsetLeftLocation, s_eye_offsets[0], s_eye_offsets[1], s_eye_offsets[2]);
+
+        if (prg->eyeOffsetRightLocation >= 0)
+            glUniform3f(prg->eyeOffsetRightLocation, s_eye_offsets[3], s_eye_offsets[4], s_eye_offsets[5]);
+
+        if (prg->isMenuLocation >= 0)
+            glUniform1i(prg->isMenuLocation, vr_dl_is_pause_or_menu ? 1 : 0);
+
+        if (prg->worldScaleLocation >= 0)
+            glUniform1f(prg->worldScaleLocation, vr_world_scale);
+
+        if (prg->crosshairParallaxLoc >= 0)
+            glUniform1f(prg->crosshairParallaxLoc, g_crosshairParallaxRight);
+
+        if (prg->crosshairParallaxLeftLoc >= 0)
+            glUniform1f(prg->crosshairParallaxLeftLoc, g_crosshairParallaxLeft);
+
+        if (prg->IsTitleLegal >= 0)
+            glUniform1i(prg->IsTitleLegal, VrIsTitleLegal ? 1 : 0);
+
+        if (prg->TanHalfFovLeft >= 0)
+            glUniform1f(prg->TanHalfFovLeft, g_eyeTanHalfFov[0]);
+
+        if (prg->TanHalfFovRight >= 0)
+            glUniform1f(prg->TanHalfFovRight, g_eyeTanHalfFov[1]);
+    }
+
 }
 
 static void gfx_opengl_unload_shader(struct ShaderProgram* old_prg) {
@@ -172,7 +566,8 @@ static const char* shader_item_to_str(uint32_t item, bool with_alpha, bool only_
                 return with_alpha ? "vec4(" RAND_NOISE ", " RAND_NOISE ", " RAND_NOISE ", " RAND_NOISE ")"
                                   : "vec3(" RAND_NOISE ", " RAND_NOISE ", " RAND_NOISE ")";
         }
-    } else {
+    }
+    else {
         switch (item) {
             case SHADER_0:
                 return "0.0";
@@ -209,11 +604,13 @@ static void append_formula(char* buf, size_t* len, uint8_t c[2][4], bool do_sing
                            bool with_alpha, bool only_alpha, bool opt_alpha) {
     if (do_single) {
         append_str(buf, len, shader_item_to_str(c[only_alpha][3], with_alpha, only_alpha, opt_alpha, false));
-    } else if (do_multiply) {
+    }
+    else if (do_multiply) {
         append_str(buf, len, shader_item_to_str(c[only_alpha][0], with_alpha, only_alpha, opt_alpha, false));
         append_str(buf, len, " * ");
         append_str(buf, len, shader_item_to_str(c[only_alpha][2], with_alpha, only_alpha, opt_alpha, true));
-    } else if (do_mix) {
+    }
+    else if (do_mix) {
         append_str(buf, len, "mix(");
         append_str(buf, len, shader_item_to_str(c[only_alpha][1], with_alpha, only_alpha, opt_alpha, false));
         append_str(buf, len, ", ");
@@ -221,7 +618,8 @@ static void append_formula(char* buf, size_t* len, uint8_t c[2][4], bool do_sing
         append_str(buf, len, ", ");
         append_str(buf, len, shader_item_to_str(c[only_alpha][2], with_alpha, only_alpha, opt_alpha, true));
         append_str(buf, len, ")");
-    } else {
+    }
+    else {
         append_str(buf, len, "(");
         append_str(buf, len, shader_item_to_str(c[only_alpha][0], with_alpha, only_alpha, opt_alpha, false));
         append_str(buf, len, " - ");
@@ -233,28 +631,134 @@ static void append_formula(char* buf, size_t* len, uint8_t c[2][4], bool do_sing
     }
 }
 
+
+const char* vr_shader = R"(
+vec4 mvPos = aVtxPos;
+
+//const float EPS = 0.001;
+//float vr_flag = abs(mvPos.w - 1.0);
+//bool vr_is_Menu_or_HUD          = (vr_flag < EPS);
+//bool vr_is_Menu_or_crosshair_right = (abs(vr_flag - 9.0) < EPS);
+//bool vr_is_crosshair_left       = (abs(vr_flag - 7.0) < EPS);
+//bool vr_is_Menu_blur            = (abs(vr_flag - 8.0) < EPS);
+
+bool vr_is_Menu_or_HUD = (abs(mvPos.w - 1.0) == 0.0);
+bool vr_is_Menu_or_crosshair_right = (abs(mvPos.w - 1.0) == 9.0);
+bool vr_is_crosshair_left = (abs(mvPos.w - 1.0) == 7.0);
+bool vr_is_Menu_blur = (abs(mvPos.w - 1.0) == 8.0);
+
+
+vec3 eyeOffset = (gl_ViewID_OVR == 0u) ? uEyeOffsetLeft : uEyeOffsetRight;
+
+// --------------------
+// MENU / HUD IN PAUSE MODE (uIsMenu == 1)
+// --------------------
+if (uIsMenu == 1 && vr_is_Menu_or_HUD) {
+    mvPos.x -= eyeOffset.z * mvPos.w;
+}
+else if (uIsMenu == 1 && vr_is_Menu_or_crosshair_right) {
+    mvPos.x -= eyeOffset.z * mvPos.w;
+}
+else if (uIsMenu == 1 && vr_is_Menu_blur) {
+    // Menu background (fullscreen blur)
+    mvPos.x -= eyeOffset.z * mvPos.w;
+}
+else if (uIsMenu == 1 && !vr_is_Menu_blur) {
+    // Menu 3D (fake 3D): same parallax as HUD
+    mvPos.x -= eyeOffset.z * mvPos.w;
+}
+
+// --------------------
+// GAME (uIsMenu == 0): HUD + crosshair
+// --------------------
+if (uIsMenu == 0 && vr_is_Menu_or_HUD) {
+    // In-game HUD (health, ammo, etc.)
+    mvPos.x -= eyeOffset.z * mvPos.w;
+}
+else if (uIsMenu == 0 && vr_is_Menu_or_crosshair_right) {
+    // Right crosshair / reticle (parallax parameterized on C side via uCrosshairParallax*)
+    float crosshairParallaxLocFinal =
+        (gl_ViewID_OVR == 0u) ? -uCrosshairParallaxLoc : uCrosshairParallaxLoc;
+    mvPos.x -= (eyeOffset.z + crosshairParallaxLocFinal) * mvPos.w;
+    mvPos.x += uCrosshairParallaxLoc * 2.0f;
+    mvPos.y -= uCrosshairParallaxLoc * 2.0f;
+}
+
+else if (uIsMenu == 0 && vr_is_crosshair_left) {
+    float crosshairParallaxLeftLocFinal =
+        (gl_ViewID_OVR == 0u) ? -uCrosshairParallaxLeftLoc - 0.020f
+                              :  uCrosshairParallaxLeftLoc + 0.020f;
+
+    mvPos.x -= (eyeOffset.z + crosshairParallaxLeftLocFinal) * mvPos.w;
+    mvPos.x += uCrosshairParallaxLoc * 2.0f;
+    mvPos.y -= uCrosshairParallaxLoc * 2.0f;
+    mvPos.w += 2.0f; // distance correction for the left crosshair
+}
+else if (uIsMenu == 0 && !vr_is_Menu_blur) {
+    // "Normal" 3D world: IPD & asymmetry
+    mvPos.x -= eyeOffset.x + (eyeOffset.y * mvPos.w);
+}
+
+// --------------------
+// "Legal" title splash
+// --------------------
+if (uIsTitleLegal == 1 && vr_is_Menu_or_HUD) {
+    // Fixed distance (equivalent to ~85 units * scale) but HUD parallax
+    mvPos.w = 0.025f * 85.0f;
+    mvPos.x -= eyeOffset.z * mvPos.w;
+}
+
+gl_Position = mvPos;
+)";
+
+
+
 static struct ShaderProgram* gfx_opengl_create_and_load_new_shader(uint64_t shader_id0, uint32_t shader_id1) {
     struct CCFeatures cc_features = { 0 };
     gfx_cc_get_features(shader_id0, shader_id1, &cc_features);
 
-    char vs_buf[2048];
+    //    char vs_buf[2048];
+    char vs_buf[4096]; // VR
     char fs_buf[8192];
     size_t vs_len = 0;
     size_t fs_len = 0;
     size_t num_floats = 4;
 
+
     // Vertex shader
 
     vs_len += sprintf(vs_buf + vs_len, "#version %s\n", gl_glsl_version_str);
 
+
+    if (use_multiview) { // VR
+        append_line(vs_buf, &vs_len,
+                    "#extension GL_OVR_multiview2 : require");
+        append_line(vs_buf, &vs_len,
+                    "layout(num_views = 2) in;");
+
+        // --- New Menu uniforms ---
+        append_line(vs_buf, &vs_len, "uniform int uIsMenu;");
+        append_line(vs_buf, &vs_len, "uniform vec3 uEyeOffsetLeft;");
+        append_line(vs_buf, &vs_len, "uniform vec3 uEyeOffsetRight;");
+        append_line(vs_buf, &vs_len, "uniform float uWorldScale;");
+        append_line(vs_buf, &vs_len, "uniform float uCrosshairParallaxLoc;");
+        append_line(vs_buf, &vs_len, "uniform float uCrosshairParallaxLeftLoc;");
+
+        append_line(vs_buf, &vs_len, "uniform int uIsTitleLegal;");
+        append_line(vs_buf, &vs_len, "uniform float uTanHalfFovLeft;");
+        append_line(vs_buf, &vs_len, "uniform float uTanHalfFovRight;");
+    }
+
+
     if (gl_es) {
-        append_line(vs_buf, &vs_len, "precision mediump float;");
+        append_line(vs_buf, &vs_len, "precision highp float;");
     }
 
     if (gl_glsl_version >= 130) {
         append_line(vs_buf, &vs_len, "#define INPUT in");
         append_line(vs_buf, &vs_len, "#define OUTPUT out");
-    } else {
+    }
+    else {
         append_line(vs_buf, &vs_len, "#define INPUT attribute");
         append_line(vs_buf, &vs_len, "#define OUTPUT varying");
     }
@@ -268,8 +772,10 @@ static struct ShaderProgram* gfx_opengl_create_and_load_new_shader(uint64_t shad
             num_floats += 2;
             for (int j = 0; j < 2; j++) {
                 if (cc_features.clamp[i][j]) {
-                    vs_len += sprintf(vs_buf + vs_len, "INPUT float aTexClamp%s%d;\n", j == 0 ? "S" : "T", i);
-                    vs_len += sprintf(vs_buf + vs_len, "OUTPUT float vTexClamp%s%d;\n", j == 0 ? "S" : "T", i);
+                    vs_len += sprintf(vs_buf + vs_len, "INPUT float aTexClamp%s%d;\n",
+                                      j == 0 ? "S" : "T", i);
+                    vs_len += sprintf(vs_buf + vs_len, "OUTPUT float vTexClamp%s%d;\n",
+                                      j == 0 ? "S" : "T", i);
                     num_floats += 1;
                 }
             }
@@ -288,8 +794,10 @@ static struct ShaderProgram* gfx_opengl_create_and_load_new_shader(uint64_t shad
     }
 
     for (int i = 0; i < cc_features.num_inputs; i++) {
-        vs_len += sprintf(vs_buf + vs_len, "INPUT vec%d aInput%d;\n", cc_features.opt_alpha ? 4 : 3, i + 1);
-        vs_len += sprintf(vs_buf + vs_len, "OUTPUT vec%d vInput%d;\n", cc_features.opt_alpha ? 4 : 3, i + 1);
+        vs_len += sprintf(vs_buf + vs_len, "INPUT vec%d aInput%d;\n", cc_features.opt_alpha ? 4 : 3,
+                          i + 1);
+        vs_len += sprintf(vs_buf + vs_len, "OUTPUT vec%d vInput%d;\n",
+                          cc_features.opt_alpha ? 4 : 3, i + 1);
         num_floats += cc_features.opt_alpha ? 4 : 3;
     }
 
@@ -299,7 +807,8 @@ static struct ShaderProgram* gfx_opengl_create_and_load_new_shader(uint64_t shad
             vs_len += sprintf(vs_buf + vs_len, "    vTexCoord%d = aTexCoord%d;\n", i, i);
             for (int j = 0; j < 2; j++) {
                 if (cc_features.clamp[i][j]) {
-                    vs_len += sprintf(vs_buf + vs_len, "    vTexClamp%s%d = aTexClamp%s%d;\n", j == 0 ? "S" : "T", i,
+                    vs_len += sprintf(vs_buf + vs_len, "    vTexClamp%s%d = aTexClamp%s%d;\n",
+                                      j == 0 ? "S" : "T", i,
                                       j == 0 ? "S" : "T", i);
                 }
             }
@@ -315,9 +824,15 @@ static struct ShaderProgram* gfx_opengl_create_and_load_new_shader(uint64_t shad
         vs_len += sprintf(vs_buf + vs_len, "    vInput%d = aInput%d;\n", i + 1, i + 1);
     }
 
-    append_line(vs_buf, &vs_len, "    gl_Position = aVtxPos;");
+
+    // VR
+    if (use_multiview) {
+        append_line(vs_buf, &vs_len, vr_shader);
+    }
+
+
     if (!GLAD_GL_ARB_depth_clamp) {
-        // HACK: workaround for no GL_DEPTH_CLAMP
+        // HACK: workaround when GL_DEPTH_CLAMP is unavailable
         append_line(vs_buf, &vs_len, "    gl_Position.z *= 0.3f;");
     }
     append_line(vs_buf, &vs_len, "}");
@@ -327,24 +842,26 @@ static struct ShaderProgram* gfx_opengl_create_and_load_new_shader(uint64_t shad
     fs_len += sprintf(fs_buf + fs_len, "#version %s\n", gl_glsl_version_str);
 
     if (gl_es) {
-        append_line(fs_buf, &fs_len, "precision mediump float;");
+        append_line(fs_buf, &fs_len, "precision highp float;");
     }
 
     if (gl_glsl_version >= 130) {
         append_line(fs_buf, &fs_len, "#define INPUT in");
         append_line(fs_buf, &fs_len, "#define OUTPUT_COLOR outColor");
         append_line(fs_buf, &fs_len, "#define SAMPLE_TEX(tex, uv) texture(tex, uv)");
-    } else {
+    }
+    else {
         append_line(fs_buf, &fs_len, "#define INPUT varying");
         append_line(fs_buf, &fs_len, "#define OUTPUT_COLOR gl_FragColor");
         append_line(fs_buf, &fs_len, "#define SAMPLE_TEX(tex, uv) texture2D(tex, uv)");
     }
 
-    // Reference approach to color wrapping as per GLideN64
-    // Return wrapped value of x in interval [low, high)
+    // Reference approach to color wrapping as in GLideN64
+    // Return the wrapped value of x in the interval [low, high)
     append_line(fs_buf, &fs_len, "#define WRAP(x, low, high) mod((x)-(low), (high)-(low)) + (low)");
 
-    append_line(fs_buf, &fs_len, "#define TEX_OFFSET(tex, uv, texSize, off) SAMPLE_TEX(tex, uv - (off)/texSize)");
+    append_line(fs_buf, &fs_len,
+                "#define TEX_OFFSET(tex, uv, texSize, off) SAMPLE_TEX(tex, uv - (off)/texSize)");
 
     // append_line(fs_buf, &fs_len, "precision mediump float;");
     for (int i = 0; i < 2; i++) {
@@ -352,7 +869,8 @@ static struct ShaderProgram* gfx_opengl_create_and_load_new_shader(uint64_t shad
             fs_len += sprintf(fs_buf + fs_len, "INPUT vec2 vTexCoord%d;\n", i);
             for (int j = 0; j < 2; j++) {
                 if (cc_features.clamp[i][j]) {
-                    fs_len += sprintf(fs_buf + fs_len, "INPUT float vTexClamp%s%d;\n", j == 0 ? "S" : "T", i);
+                    fs_len += sprintf(fs_buf + fs_len, "INPUT float vTexClamp%s%d;\n",
+                                      j == 0 ? "S" : "T", i);
                 }
             }
         }
@@ -364,7 +882,8 @@ static struct ShaderProgram* gfx_opengl_create_and_load_new_shader(uint64_t shad
         append_line(fs_buf, &fs_len, "INPUT vec4 vGrayscaleColor;");
     }
     for (int i = 0; i < cc_features.num_inputs; i++) {
-        fs_len += sprintf(fs_buf + fs_len, "INPUT vec%d vInput%d;\n", cc_features.opt_alpha ? 4 : 3, i + 1);
+        fs_len += sprintf(fs_buf + fs_len, "INPUT vec%d vInput%d;\n", cc_features.opt_alpha ? 4 : 3,
+                          i + 1);
     }
 
     if (cc_features.used_textures[0]) {
@@ -382,30 +901,36 @@ static struct ShaderProgram* gfx_opengl_create_and_load_new_shader(uint64_t shad
     append_line(fs_buf, &fs_len, "uniform float noise_scale;");
 
     append_line(fs_buf, &fs_len, "float random(in vec3 value) {");
-    append_line(fs_buf, &fs_len, "    float random = dot(sin(value), vec3(12.9898, 78.233, 37.719));");
+    append_line(fs_buf, &fs_len,
+                "    float random = dot(sin(value), vec3(12.9898, 78.233, 37.719));");
     append_line(fs_buf, &fs_len, "    return fract(sin(random) * 143758.5453);");
     append_line(fs_buf, &fs_len, "}");
 
     if (current_filter_mode == FILTER_THREE_POINT) {
-        append_line(fs_buf, &fs_len, "vec4 filter3point(in sampler2D tex, in vec2 texCoord, in vec2 texSize) {");
+        append_line(fs_buf, &fs_len,
+                    "vec4 filter3point(in sampler2D tex, in vec2 texCoord, in vec2 texSize) {");
         append_line(fs_buf, &fs_len, "    vec2 offset = fract(texCoord*texSize - vec2(0.5));");
         append_line(fs_buf, &fs_len, "    offset -= step(1.0, offset.x + offset.y);");
         append_line(fs_buf, &fs_len, "    vec4 c0 = TEX_OFFSET(tex, texCoord, texSize, offset);");
-        append_line(fs_buf, &fs_len, "    vec4 c1 = TEX_OFFSET(tex, texCoord, texSize, vec2(offset.x - sign(offset.x), offset.y));");
-        append_line(fs_buf, &fs_len, "    vec4 c2 = TEX_OFFSET(tex, texCoord, texSize, vec2(offset.x, offset.y - sign(offset.y)));");
-        append_line(fs_buf, &fs_len, "    return c0 + abs(offset.x)*(c1-c0) + abs(offset.y)*(c2-c0);");
+        append_line(fs_buf, &fs_len,
+                    "    vec4 c1 = TEX_OFFSET(tex, texCoord, texSize, vec2(offset.x - sign(offset.x), offset.y));");
+        append_line(fs_buf, &fs_len,
+                    "    vec4 c2 = TEX_OFFSET(tex, texCoord, texSize, vec2(offset.x, offset.y - sign(offset.y)));");
+        append_line(fs_buf, &fs_len,
+                    "    return c0 + abs(offset.x)*(c1-c0) + abs(offset.y)*(c2-c0);");
         append_line(fs_buf, &fs_len, "}");
     }
 
     if (cc_features.opt_blur) {
         // blur filter, used for menu backgrounds
-        // used to be two for loops from 0 to 4, but apparently intel drivers crashed trying to unroll it
-        // used to have a const weight array, but apparently drivers for the GT620 don't like const array initializers
-
+        // used to be two for loops from 0 to 4, but apparently Intel drivers crashed when trying to unroll it
+        // used to have a const weight array, but apparently drivers for the GT620 do not like const array initializers
         if (current_filter_mode == FILTER_THREE_POINT)
-            append_line(fs_buf, &fs_len, "lowp vec4 hookTexture2D(in sampler2D t, in vec2 uv, in vec2 texSize, in int three_point_filter) {");
+            append_line(fs_buf, &fs_len,
+                        "lowp vec4 hookTexture2D(in sampler2D t, in vec2 uv, in vec2 texSize, in int three_point_filter) {");
         else
-            append_line(fs_buf, &fs_len, "lowp vec4 hookTexture2D(in sampler2D t, in vec2 uv, in vec2 texSize) {");
+            append_line(fs_buf, &fs_len,
+                        "lowp vec4 hookTexture2D(in sampler2D t, in vec2 uv, in vec2 texSize) {");
 
         append_line(fs_buf, &fs_len, "    lowp vec4 cw = vec4(0.0);");
         append_line(fs_buf, &fs_len, "    for (int i = 0; i < 16; ++i) {");
@@ -414,7 +939,8 @@ static struct ShaderProgram* gfx_opengl_create_and_load_new_shader(uint64_t shad
         append_line(fs_buf, &fs_len, "        vec2 scaled_uv = uv + (vec2(-1.5) + xy) / texSize;");
 
         if (current_filter_mode == FILTER_THREE_POINT)
-            append_line(fs_buf, &fs_len, "        lowp vec4 tex = mix(SAMPLE_TEX(t, scaled_uv), filter3point(t, scaled_uv, texSize), three_point_filter);");
+            append_line(fs_buf, &fs_len,
+                        "        lowp vec4 tex = mix(SAMPLE_TEX(t, scaled_uv), filter3point(t, scaled_uv, texSize), three_point_filter);");
         else
             append_line(fs_buf, &fs_len, "        lowp vec4 tex = SAMPLE_TEX(t, scaled_uv);");
 
@@ -422,13 +948,18 @@ static struct ShaderProgram* gfx_opengl_create_and_load_new_shader(uint64_t shad
         append_line(fs_buf, &fs_len, "    }");
         append_line(fs_buf, &fs_len, "    return vec4(cw.rgb / cw.a, 1.0);");
         append_line(fs_buf, &fs_len, "}");
-    } else {
+    }
+    else {
         if (current_filter_mode == FILTER_THREE_POINT) {
-            append_line(fs_buf, &fs_len, "vec4 hookTexture2D(in sampler2D tex, in vec2 uv, in vec2 texSize, in int three_point_filter) {");
-            append_line(fs_buf, &fs_len, "    return mix(SAMPLE_TEX(tex, uv), filter3point(tex, uv, texSize), three_point_filter);");
+            append_line(fs_buf, &fs_len,
+                        "vec4 hookTexture2D(in sampler2D tex, in vec2 uv, in vec2 texSize, in int three_point_filter) {");
+            append_line(fs_buf, &fs_len,
+                        "    return mix(SAMPLE_TEX(tex, uv), filter3point(tex, uv, texSize), three_point_filter);");
             append_line(fs_buf, &fs_len, "}");
-        } else {
-            append_line(fs_buf, &fs_len, "vec4 hookTexture2D(in sampler2D tex, in vec2 uv, in vec2 texSize) {");
+        }
+        else {
+            append_line(fs_buf, &fs_len,
+                        "vec4 hookTexture2D(in sampler2D tex, in vec2 uv, in vec2 texSize) {");
             append_line(fs_buf, &fs_len, "    return SAMPLE_TEX(tex, uv);");
             append_line(fs_buf, &fs_len, "}");
         }
@@ -444,22 +975,27 @@ static struct ShaderProgram* gfx_opengl_create_and_load_new_shader(uint64_t shad
         if (cc_features.used_textures[i]) {
             bool s = cc_features.clamp[i][0], t = cc_features.clamp[i][1];
 
-            fs_len += sprintf(fs_buf + fs_len, "    vec2 texSize%d = vec2(textureSize(uTex%d, 0));\n", i, i);
+            fs_len += sprintf(fs_buf + fs_len,
+                              "    vec2 texSize%d = vec2(textureSize(uTex%d, 0));\n", i, i);
 
             if (!s && !t) {
-                fs_len += sprintf(fs_buf + fs_len, "    vec2 vTexCoordAdj%d = vTexCoord%d;\n", i, i);
-            } else {
+                fs_len += sprintf(fs_buf + fs_len, "    vec2 vTexCoordAdj%d = vTexCoord%d;\n", i,
+                                  i);
+            }
+            else {
                 if (s && t) {
                     fs_len += sprintf(fs_buf + fs_len,
                                       "    vec2 vTexCoordAdj%d = clamp(vTexCoord%d, 0.5 / texSize%d, "
                                       "vec2(vTexClampS%d, vTexClampT%d));\n",
                                       i, i, i, i, i);
-                } else if (s) {
+                }
+                else if (s) {
                     fs_len += sprintf(fs_buf + fs_len,
                                       "    vec2 vTexCoordAdj%d = vec2(clamp(vTexCoord%d.s, 0.5 / "
                                       "texSize%d.s, vTexClampS%d), vTexCoord%d.t);\n",
                                       i, i, i, i, i);
-                } else {
+                }
+                else {
                     fs_len += sprintf(fs_buf + fs_len,
                                       "    vec2 vTexCoordAdj%d = vec2(vTexCoord%d.s, clamp(vTexCoord%d.t, "
                                       "0.5 / texSize%d.t, vTexClampT%d));\n",
@@ -468,9 +1004,13 @@ static struct ShaderProgram* gfx_opengl_create_and_load_new_shader(uint64_t shad
             }
 
             if (current_filter_mode == FILTER_THREE_POINT)
-                fs_len += sprintf(fs_buf + fs_len, "    vec4 texVal%d = hookTexture2D(uTex%d, vTexCoordAdj%d, texSize%d, three_point_filter%d);\n", i, i, i, i, i);
+                fs_len += sprintf(fs_buf + fs_len,
+                                  "    vec4 texVal%d = hookTexture2D(uTex%d, vTexCoordAdj%d, texSize%d, three_point_filter%d);\n",
+                                  i, i, i, i, i);
             else
-                fs_len += sprintf(fs_buf + fs_len, "    vec4 texVal%d = hookTexture2D(uTex%d, vTexCoordAdj%d, texSize%d);\n", i, i, i, i);
+                fs_len += sprintf(fs_buf + fs_len,
+                                  "    vec4 texVal%d = hookTexture2D(uTex%d, vTexCoordAdj%d, texSize%d);\n",
+                                  i, i, i, i);
         }
     }
 
@@ -480,14 +1020,18 @@ static struct ShaderProgram* gfx_opengl_create_and_load_new_shader(uint64_t shad
         if (!cc_features.color_alpha_same[c] && cc_features.opt_alpha) {
             append_str(fs_buf, &fs_len, "vec4(");
             append_formula(fs_buf, &fs_len, cc_features.c[c], cc_features.do_single[c][0],
-                           cc_features.do_multiply[c][0], cc_features.do_mix[c][0], false, false, true);
+                           cc_features.do_multiply[c][0], cc_features.do_mix[c][0], false, false,
+                           true);
             append_str(fs_buf, &fs_len, ", ");
             append_formula(fs_buf, &fs_len, cc_features.c[c], cc_features.do_single[c][1],
-                           cc_features.do_multiply[c][1], cc_features.do_mix[c][1], true, true, true);
+                           cc_features.do_multiply[c][1], cc_features.do_mix[c][1], true, true,
+                           true);
             append_str(fs_buf, &fs_len, ")");
-        } else {
+        }
+        else {
             append_formula(fs_buf, &fs_len, cc_features.c[c], cc_features.do_single[c][0],
-                           cc_features.do_multiply[c][0], cc_features.do_mix[c][0], cc_features.opt_alpha, false,
+                           cc_features.do_multiply[c][0], cc_features.do_mix[c][0],
+                           cc_features.opt_alpha, false,
                            cc_features.opt_alpha);
         }
         append_line(fs_buf, &fs_len, ";");
@@ -502,8 +1046,10 @@ static struct ShaderProgram* gfx_opengl_create_and_load_new_shader(uint64_t shad
     // TODO discard if alpha is 0?
     if (cc_features.opt_fog) {
         if (cc_features.opt_alpha) {
-            append_line(fs_buf, &fs_len, "    texel = vec4(mix(texel.rgb, vFog.rgb, vFog.a), texel.a);");
-        } else {
+            append_line(fs_buf, &fs_len,
+                        "    texel = vec4(mix(texel.rgb, vFog.rgb, vFog.a), texel.a);");
+        }
+        else {
             append_line(fs_buf, &fs_len, "    texel = mix(texel, vFog.rgb, vFog.a);");
         }
     }
@@ -521,8 +1067,10 @@ static struct ShaderProgram* gfx_opengl_create_and_load_new_shader(uint64_t shad
     if (cc_features.opt_grayscale) {
         append_line(fs_buf, &fs_len, "    float intensity = (texel.r + texel.g + texel.b) / 3.0;");
         append_line(fs_buf, &fs_len, "    vec3 new_texel = vGrayscaleColor.rgb * intensity;");
-        append_line(fs_buf, &fs_len, "    texel.rgb = mix(texel.rgb, new_texel, vGrayscaleColor.a);");
+        append_line(fs_buf, &fs_len,
+                    "    texel.rgb = mix(texel.rgb, new_texel, vGrayscaleColor.a);");
     }
+
 
     if (cc_features.opt_alpha) {
         if (cc_features.opt_alpha_threshold) {
@@ -533,7 +1081,8 @@ static struct ShaderProgram* gfx_opengl_create_and_load_new_shader(uint64_t shad
         }
 
         append_line(fs_buf, &fs_len, "    OUTPUT_COLOR = texel;");
-    } else {
+    }
+    else {
         append_line(fs_buf, &fs_len, "    OUTPUT_COLOR = vec4(texel, 1.0);");
     }
 
@@ -555,7 +1104,8 @@ static struct ShaderProgram* gfx_opengl_create_and_load_new_shader(uint64_t shad
         glGetShaderiv(vertex_shader, GL_INFO_LOG_LENGTH, &max_length);
         char error_log[1024];
         glGetShaderInfoLog(vertex_shader, max_length, &max_length, &error_log[0]);
-        sysLogPrintf(LOG_ERROR, "Failed to compile this vertex shader (ID %llx, %x):\n%s", shader_id0, shader_id1, vs_buf);
+        sysLogPrintf(LOG_ERROR, "Failed to compile this vertex shader (ID %llx, %x):\n%s",
+                     shader_id0, shader_id1, vs_buf);
         sysFatalError("Vertex shader compilation failed:\n%s", error_log);
     }
 
@@ -568,7 +1118,8 @@ static struct ShaderProgram* gfx_opengl_create_and_load_new_shader(uint64_t shad
         glGetShaderiv(fragment_shader, GL_INFO_LOG_LENGTH, &max_length);
         char error_log[1024];
         glGetShaderInfoLog(fragment_shader, max_length, &max_length, &error_log[0]);
-        sysLogPrintf(LOG_ERROR, "Failed to compile this fragment shader (ID %llx, %x):\n%s", shader_id0, shader_id1, fs_buf);
+        sysLogPrintf(LOG_ERROR, "Failed to compile this fragment shader (ID %llx, %x):\n%s",
+                     shader_id0, shader_id1, fs_buf);
         sysFatalError("Fragment shader compilation failed:\n%s", error_log);
     }
 
@@ -648,8 +1199,23 @@ static struct ShaderProgram* gfx_opengl_create_and_load_new_shader(uint64_t shad
 
     prg->frame_count_location = glGetUniformLocation(shader_program, "frame_count");
     prg->noise_scale_location = glGetUniformLocation(shader_program, "noise_scale");
-    prg->three_point_filter_locations[0] = glGetUniformLocation(shader_program, "three_point_filter0");
-    prg->three_point_filter_locations[1] = glGetUniformLocation(shader_program, "three_point_filter1");
+    prg->three_point_filter_locations[0] = glGetUniformLocation(shader_program,
+                                                                "three_point_filter0");
+    prg->three_point_filter_locations[1] = glGetUniformLocation(shader_program,
+                                                                "three_point_filter1");
+
+    // VR...
+    if (use_multiview) {
+        prg->eyeOffsetLeftLocation = glGetUniformLocation(shader_program, "uEyeOffsetLeft");
+        prg->eyeOffsetRightLocation = glGetUniformLocation(shader_program, "uEyeOffsetRight");
+        prg->isMenuLocation = glGetUniformLocation(shader_program, "uIsMenu");
+        prg->worldScaleLocation = glGetUniformLocation(shader_program, "uWorldScale");
+        prg->crosshairParallaxLoc = glGetUniformLocation(shader_program, "uCrosshairParallaxLoc");
+        prg->crosshairParallaxLeftLoc = glGetUniformLocation(shader_program, "uCrosshairParallaxLeftLoc");
+        prg->IsTitleLegal = glGetUniformLocation(shader_program, "uIsTitleLegal");
+        prg->TanHalfFovRight = glGetUniformLocation(shader_program, "uTanHalfFovRight");
+        prg->TanHalfFovLeft = glGetUniformLocation(shader_program, "uTanHalfFovLeft");
+    }
 
     gfx_opengl_load_shader(prg);
 
@@ -686,6 +1252,7 @@ static void gfx_opengl_delete_texture(uint32_t texID) {
 }
 
 static void gfx_opengl_select_texture(int tile, GLuint texture_id, bool linear_filter) {
+
     glActiveTexture(GL_TEXTURE0 + tile);
     glBindTexture(GL_TEXTURE_2D, texture_id);
 
@@ -737,7 +1304,8 @@ static void gfx_opengl_set_depth_mode(bool depth_test, bool depth_update, bool d
                 case ZMODE_XLU:
                     if (depth_source_prim) {
                         glDepthFunc(GL_LEQUAL);
-                    } else {
+                    }
+                    else {
                         glDepthFunc(GL_LESS);
                     }
                     glDisable(GL_POLYGON_OFFSET_FILL);
@@ -750,12 +1318,14 @@ static void gfx_opengl_set_depth_mode(bool depth_test, bool depth_update, bool d
                     glPolygonOffset(-2, -2);
                     break;
             }
-        } else {
+        }
+        else {
             glDepthFunc(GL_ALWAYS);
             glDisable(GL_POLYGON_OFFSET_FILL);
             glPolygonOffset(0, 0);
         }
-    } else {
+    }
+    else {
         glDisable(GL_DEPTH_TEST);
     }
 }
@@ -763,7 +1333,8 @@ static void gfx_opengl_set_depth_mode(bool depth_test, bool depth_update, bool d
 static void gfx_opengl_set_depth_range(float znear, float zfar) {
     if (glDepthRangef) {
         glDepthRangef(znear, zfar);
-    } else {
+    }
+    else {
         glDepthRange(znear, zfar);
     }
 }
@@ -779,31 +1350,38 @@ static void gfx_opengl_set_scissor(int x, int y, int width, int height) {
 static void gfx_opengl_set_use_alpha(bool use_alpha, bool modulate) {
     if (use_alpha) {
         glEnable(GL_BLEND);
-    } else {
+    }
+    else {
         glDisable(GL_BLEND);
     }
     if (modulate) {
         glBlendFunc(GL_DST_COLOR, GL_ZERO);
-    } else {
+    }
+    else {
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     }
 }
 
+
 static void gfx_opengl_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t buf_vbo_num_tris) {
+
+
     // printf("flushing %d tris\n", buf_vbo_num_tris);
     glBufferData(GL_ARRAY_BUFFER, sizeof(float) * buf_vbo_len, buf_vbo, GL_STREAM_DRAW);
     glDrawArrays(GL_TRIANGLES, 0, 3 * buf_vbo_num_tris);
+
+
 }
 
-typedef void (APIENTRY *DEBUGPROC)(GLenum source,
-    GLenum type,
-    GLuint id,
-    GLenum severity,
-    GLsizei length,
-    const GLchar *message,
-    const void *userParam);
+typedef void (APIENTRY* DEBUGPROC)(GLenum source,
+                                   GLenum type,
+                                   GLuint id,
+                                   GLenum severity,
+                                   GLsizei length,
+                                   const GLchar* message,
+                                   const void* userParam);
 
-static void APIENTRY gl_debug(GLenum source, GLenum type, GLuint id, GLenum severity, GLsizei length, const GLchar *msg, const void *p) {
+static void APIENTRY gl_debug(GLenum source, GLenum type, GLuint id, GLenum severity, GLsizei length, const GLchar* msg, const void* p) {
     sysLogPrintf(LOG_WARNING, "GL: (%05x) %s", id, msg);
 }
 
@@ -814,8 +1392,8 @@ static void gfx_opengl_enable_debug(void) {
     if (glDebugMessageControl != NULL) {
         // enable everything except some specific spam messages
         const GLuint disable[] = {
-            0x20061, /* "Framebuffer detailed info" */
-            0x20071  /* "Buffer detailed info" */
+                0x20061, /* "Framebuffer detailed info" */
+                0x20071  /* "Buffer detailed info" */
         };
         glDebugMessageControl(GL_DONT_CARE, GL_DONT_CARE, GL_DONT_CARE, 0, NULL, GL_TRUE);
         glDebugMessageControl(GL_DEBUG_SOURCE_API, GL_DEBUG_TYPE_OTHER, GL_DONT_CARE, 2, disable, GL_FALSE);
@@ -831,43 +1409,43 @@ static bool gfx_opengl_supports_framebuffers(void) {
         return (glad_glFramebufferRenderbuffer && glad_glBlitFramebuffer && glad_glRenderbufferStorageMultisample);
     }
     if (GLAD_GL_ARB_framebuffer_object) {
-        // some implementations might be missing these
+        // some implementations might be missing these functions
         return (glad_glBlitFramebuffer && glad_glRenderbufferStorageMultisample);
     }
     if (GLAD_GL_EXT_framebuffer_object && GLAD_GL_EXT_framebuffer_blit && GLAD_GL_EXT_framebuffer_multisample) {
         // sanity check
         return (glad_glFramebufferRenderbuffer && glad_glBlitFramebuffer && glad_glRenderbufferStorageMultisample);
     }
-    // nothing
+    // nothing supported
     return false;
 }
 
 static bool gfx_opengl_supports_shaders(void) {
     if (GLVersion.major > 2) {
-        // should support GLSL130+
+        // should support GLSL 1.30 or higher
         return true;
     }
 
     // check supported GLSL version
-    const char *ver = (const char *)glGetString(GL_SHADING_LANGUAGE_VERSION);
+    const char* ver = (const char*)glGetString(GL_SHADING_LANGUAGE_VERSION);
     if (ver) {
         int maj = 0, min = 0;
         sscanf(ver, "%d.%d", &maj, &min);
         if (maj > 1 || (maj == 1 && min > 20)) {
-            // above 120, should be fine
+            // above 1.20, it should be fine
             return true;
         }
     }
 
-    // check for extension that adds textureSize
+    // check for an extension that adds textureSize
     return GLAD_GL_EXT_gpu_shader4;
 }
 
 static void gfx_opengl_log_info(void) {
-    const char *version = (const char *)glGetString(GL_VERSION);
-    const char *vendor = (const char *)glGetString(GL_VENDOR);
-    const char *renderer = (const char *)glGetString(GL_RENDERER);
-    const char *glsl_version = (const char *)glGetString(GL_SHADING_LANGUAGE_VERSION);
+    const char* version = (const char*)glGetString(GL_VERSION);
+    const char* vendor = (const char*)glGetString(GL_VENDOR);
+    const char* renderer = (const char*)glGetString(GL_RENDERER);
+    const char* glsl_version = (const char*)glGetString(GL_SHADING_LANGUAGE_VERSION);
     sysLogPrintf(LOG_NOTE, "GL: version: %s", version ? version : "unknown");
     sysLogPrintf(LOG_NOTE, "GL: vendor: %s", vendor ? vendor : "unknown");
     sysLogPrintf(LOG_NOTE, "GL: renderer: %s", renderer ? renderer : "unknown");
@@ -877,14 +1455,14 @@ static void gfx_opengl_log_info(void) {
     sysLogPrintf(LOG_NOTE, "GL: ARB_texture_mirror_clamp_to_edge: %s", GLAD_GL_ARB_texture_mirror_clamp_to_edge ? "yes" : "no");
 }
 
-static void *gl_load_proc(const char *name) {
-    void *ret = SDL_GL_GetProcAddress(name);
+static void* gl_load_proc(const char* name) {
+    void* ret = SDL_GL_GetProcAddress(name);
     if (ret) {
         return ret;
     }
 
     // try with postfixes
-    static const char *post[] = { "ARB", "EXT" };
+    static const char* post[] = { "ARB", "EXT" };
     char tmp[256] = { 0 };
     for (size_t i = 0; i < sizeof(post) / sizeof(*post); ++i) {
         snprintf(tmp, sizeof(tmp), "%s%s", name, post[i]);
@@ -900,11 +1478,12 @@ static void *gl_load_proc(const char *name) {
 }
 
 static void gfx_opengl_init_extensions(void) {
-    // patch up some extension values and pointers
+    // patch some extension values and pointers
     if (!GLAD_GL_ARB_depth_clamp) {
         if (GLAD_GL_EXT_depth_clamp || GLAD_GL_NV_depth_clamp) {
             GLAD_GL_ARB_depth_clamp = 1;
-        } else if (!gl_es && GLVersion.major >= 3) {
+        }
+        else if (!gl_es && GLVersion.major >= 3) {
             // GL3.2+ should have depth_clamp as part of the spec, but some devices don't report it for some reason
             GLAD_GL_ARB_depth_clamp = (GLVersion.major > 3 || (GLVersion.major == 3 && GLVersion.minor >= 2));
         }
@@ -932,6 +1511,7 @@ static void gfx_opengl_init_extensions(void) {
     }
 }
 
+
 static void gfx_opengl_init(void) {
     if (!gladLoadGLLoader(gl_load_proc) || glGetString == NULL || glEnable == NULL) {
         sysFatalError("Could not load OpenGL.\nReported SDL error: %s", SDL_GetError());
@@ -947,24 +1527,25 @@ static void gfx_opengl_init(void) {
 
     if (sysArgCheck("--debug-gl")) {
         gfx_opengl_enable_debug();
-        // dump version info as early as possible
+        // dump version information as early as possible
         gfx_opengl_log_info();
     }
 
     if (GLVersion.major < 2 || (GLVersion.major == 2 && GLVersion.minor < 1)) {
-        const char *ver = (const char *)glGetString(GL_VERSION);
+        const char* ver = (const char*)glGetString(GL_VERSION);
         sysFatalError("Could not load OpenGL 2.1.\nReported version: %d.%d (%s)",
-            GLVersion.major, GLVersion.minor, ver ? ver : "unknown");
+                      GLVersion.major, GLVersion.minor, ver ? ver : "unknown");
     }
 
     if (!gfx_opengl_supports_shaders()) {
         sysLogPrintf(LOG_WARNING, "GL: GLSL 1.30 may be unsupported");
-        // maybe replace this with sysFatalError, though the GLSL compiler will cause that later anyway
+        // maybe replace this with sysFatalError, although the GLSL compiler will cause that later anyway
     }
 
     if (!gfx_framebuffers_enabled) {
         sysLogPrintf(LOG_WARNING, "GL: framebuffer effects disabled by user");
-    } else if (!gfx_opengl_supports_framebuffers()) {
+    }
+    else if (!gfx_opengl_supports_framebuffers()) {
         sysLogPrintf(LOG_WARNING, "GL: GL_ARB_framebuffer_object unsupported, framebuffer effects disabled");
         gfx_framebuffers_enabled = false;
     }
@@ -979,30 +1560,39 @@ static void gfx_opengl_init(void) {
         // ES has its own numbering scheme, but it should support 300 even on 3.1 and 3.2
         gl_glsl_version = 300;
         snprintf(gl_glsl_version_str, sizeof(gl_glsl_version_str), "%d es", gl_glsl_version);
-    } else if (!gl_core_profile) {
-        // in compat profile we can just request the lowest possible
+    }
+    else if (!gl_core_profile) {
+        // in compatibility profile we can just request the lowest possible version
+#ifdef ANDROID // VR
         gl_glsl_version = 130;
+#else
+        gl_glsl_version = 330;
+#endif
         snprintf(gl_glsl_version_str, sizeof(gl_glsl_version_str), "%d", gl_glsl_version);
-    } else {
+    }
+    else {
         // otherwise we have to pick a specific version
         if (GLVersion.major == 3 && GLVersion.minor == 2) {
-            // 3.2core is the earliest core version and it follows the old numbering scheme
+            // 3.2 core is the earliest core version and it follows the old numbering scheme
             gl_glsl_version = 150;
-        } else {
-            // 3.3+ follow the new numbering scheme
+        }
+        else {
+            // 3.3 and above follow the new numbering scheme
             gl_glsl_version = GLVersion.major * 100 + GLVersion.minor * 10;
         }
         snprintf(gl_glsl_version_str, sizeof(gl_glsl_version_str), "%d core", gl_glsl_version);
     }
-    sysLogPrintf(LOG_NOTE, "GL: using GLSL version %s", gl_glsl_version_str);
+
+    // VR
+    gfx_opengl_init_multiview();
 
     glGenBuffers(1, &opengl_vbo);
     glBindBuffer(GL_ARRAY_BUFFER, opengl_vbo);
 
     if (gl_core_profile || gl_es) {
-        // warn user that funny things can happen
+        // warn the user that odd behavior can occur
         sysLogPrintf(LOG_WARNING, "GL: using core profile or ES, watch out for errors");
-        // core/es will explode if we don't use a VAO for our VBO
+        // core/ES will fail badly if we don't use a VAO for our VBO
         glGenVertexArrays(1, &opengl_vao);
         glBindVertexArray(opengl_vao);
     }
@@ -1013,18 +1603,25 @@ static void gfx_opengl_init(void) {
     glDepthFunc(GL_LEQUAL);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
+#ifndef ANDROID // if PC
+    mirror_apply_size(mirror_enabled); // VR
+#endif
     framebuffers.resize(1); // for the default screen buffer
+
 }
+
 
 static void gfx_opengl_on_resize(void) {
 }
 
 static void gfx_opengl_start_frame(void) {
     frame_count++;
+
 }
 
 static void gfx_opengl_end_frame(void) {
     glFlush();
+
 }
 
 static void gfx_opengl_finish_render(void) {
@@ -1037,7 +1634,10 @@ static int gfx_opengl_create_framebuffer() {
     GLuint clrbuf;
     glGenTextures(1, &clrbuf);
     glBindTexture(GL_TEXTURE_2D, clrbuf);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB8, 1, 1, 0, GL_RGB, GL_UNSIGNED_BYTE, NULL);
+
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+
+
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glBindTexture(GL_TEXTURE_2D, 0);
@@ -1068,7 +1668,19 @@ static int gfx_opengl_create_framebuffer() {
 static void gfx_opengl_update_framebuffer_parameters(int fb_id, uint32_t width, uint32_t height, uint32_t msaa_level,
                                                      bool opengl_invert_y, bool render_target, bool has_depth_buffer,
                                                      bool can_extract_depth) {
+
+    if (fb_id < 0 || fb_id >= (int)framebuffers.size()) {
+        return;
+    }
+
+
     Framebuffer& fb = framebuffers[fb_id];
+    // Multiview FBO 0 is managed by vr_openxr.cpp, just update the size
+    if (fb_id == 0 && !framebuffers.empty() && framebuffers[0].is_multiview) {
+        framebuffers[0].width = width;
+        framebuffers[0].height = height;
+        return;
+    }
 
     width = max(width, 1U);
     height = max(height, 1U);
@@ -1080,12 +1692,14 @@ static void gfx_opengl_update_framebuffer_parameters(int fb_id, uint32_t width, 
             if (fb.width != width || fb.height != height || fb.msaa_level != msaa_level) {
                 if (msaa_level <= 1) {
                     glBindTexture(GL_TEXTURE_2D, fb.clrbuf);
-                    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB8, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, NULL);
+                    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+
                     glBindTexture(GL_TEXTURE_2D, 0);
                     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, fb.clrbuf, 0);
-                } else {
+                }
+                else {
                     glBindRenderbuffer(GL_RENDERBUFFER, fb.clrbuf_msaa);
-                    glRenderbufferStorageMultisample(GL_RENDERBUFFER, msaa_level, GL_RGB8, width, height);
+                    glRenderbufferStorageMultisample(GL_RENDERBUFFER, msaa_level, GL_RGBA8, width, height);
                     glBindRenderbuffer(GL_RENDERBUFFER, 0);
                     glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, fb.clrbuf_msaa);
                 }
@@ -1096,7 +1710,8 @@ static void gfx_opengl_update_framebuffer_parameters(int fb_id, uint32_t width, 
                 glBindRenderbuffer(GL_RENDERBUFFER, fb.rbo);
                 if (msaa_level <= 1) {
                     glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, width, height);
-                } else {
+                }
+                else {
                     glRenderbufferStorageMultisample(GL_RENDERBUFFER, msaa_level, GL_DEPTH24_STENCIL8, width, height);
                 }
                 glBindRenderbuffer(GL_RENDERBUFFER, 0);
@@ -1104,11 +1719,13 @@ static void gfx_opengl_update_framebuffer_parameters(int fb_id, uint32_t width, 
 
             if (!fb.has_depth_buffer && has_depth_buffer) {
                 glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, fb.rbo);
-            } else if (fb.has_depth_buffer && !has_depth_buffer) {
+            }
+            else if (fb.has_depth_buffer && !has_depth_buffer) {
                 glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, 0);
             }
         }
-    } else {
+    }
+    else {
         has_depth_buffer = false;
     }
 
@@ -1119,23 +1736,29 @@ static void gfx_opengl_update_framebuffer_parameters(int fb_id, uint32_t width, 
     fb.invert_y = opengl_invert_y;
 }
 
-bool gfx_opengl_start_draw_to_framebuffer(int fb_id, float noise_scale) {
-    if (gfx_framebuffers_enabled && fb_id < (int)framebuffers.size()) {
-        Framebuffer& fb = framebuffers[fb_id];
-        if (noise_scale != 0.0f) {
-            current_noise_scale = 1.0f / noise_scale;
+bool gfx_opengl_start_draw_to_framebuffer(int fbid, float noisescale) {
+    if (gfx_framebuffers_enabled && fbid < (int)framebuffers.size()) {
+        Framebuffer& fb = framebuffers[fbid];
+
+        if (noisescale != 0.0f) {
+            current_noise_scale = 1.0f / noisescale;
         }
+
         glBindFramebuffer(GL_FRAMEBUFFER, fb.fbo);
-        current_framebuffer = fb_id;
+        current_framebuffer = fbid;
+
+        //        LOGI("GL start_draw_to_fb: fbid=%d w=%u h=%u is_mv=%d",
+        //                     fbid, fb.width, fb.height, fb.is_multiview);
+
         return true;
-    } else {
-        return false;
     }
+    return false;
 }
+
 
 void gfx_opengl_clear_framebuffer(bool clear_color, bool clear_depth) {
     glDisable(GL_SCISSOR_TEST);
-    
+
     GLbitfield mask = 0;
     if (clear_color) {
         glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
@@ -1169,11 +1792,26 @@ void gfx_opengl_resolve_msaa_color_buffer(int fb_id_target, int fb_id_source) {
     glEnable(GL_SCISSOR_TEST);
 }
 
-void* gfx_opengl_get_framebuffer_texture_id(int fb_id) {
-    return (void*)(uintptr_t)framebuffers[fb_id].clrbuf;
+
+void* gfx_opengl_get_framebuffer_texture_id(int fbid) {
+    const Framebuffer& fb = framebuffers[fbid];
+
+    void* tex = nullptr;
+    if (fb.is_multiview) {
+        tex = (void*)(uintptr_t)vr_get_current_multiview_swapchain_tex();
+    }
+    else {
+        tex = (void*)(uintptr_t)fb.clrbuf;
+    }
+
+    return tex;
 }
 
+
+
 void gfx_opengl_select_texture_fb(int fb_id) {
+    //    LOGI( "GL select_texture_fb: fbid=%d clrbuf=%u is_mv=%d",
+    //                 fb_id, framebuffers[fb_id].clrbuf, framebuffers[fb_id].is_multiview);
     // glDisable(GL_DEPTH_TEST);
     glActiveTexture(GL_TEXTURE0 + 0);
     glBindTexture(GL_TEXTURE_2D, framebuffers[fb_id].clrbuf);
@@ -1181,13 +1819,18 @@ void gfx_opengl_select_texture_fb(int fb_id) {
     current_textures_linear_filter[0] = true;
 }
 
+
+
 void gfx_opengl_copy_framebuffer(int fb_dst, int fb_src, int left, int top, bool flip_y, bool use_back) {
     if (!gfx_framebuffers_enabled || fb_dst >= (int)framebuffers.size() || fb_src >= (int)framebuffers.size()) {
         return;
     }
 
-    const Framebuffer& src = framebuffers[fb_src];
-    const Framebuffer& dst = framebuffers[fb_dst];
+    Framebuffer& src = framebuffers[fb_src];
+    Framebuffer& dst = framebuffers[fb_dst];
+
+//    LOGI("Framebuffer src %d", fb_src);
+//    LOGI("Framebuffer dst %d", fb_dst);
 
     int srcX0, srcY0, srcX1, srcY1;
     int dstX0, dstY0, dstX1, dstY1;
@@ -1197,12 +1840,13 @@ void gfx_opengl_copy_framebuffer(int fb_dst, int fb_src, int left, int top, bool
     dstY1 = dst.height;
 
     if (left >= 0 && top >= 0) {
-        // unscaled rect copy
+        // unscaled rectangle copy
         srcX0 = left;
         srcY0 = top;
         srcX1 = left + dst.width;
         srcY1 = top + dst.height;
-    } else {
+    }
+    else {
         // scaled full copy
         srcX0 = 0;
         srcY0 = 0;
@@ -1210,31 +1854,153 @@ void gfx_opengl_copy_framebuffer(int fb_dst, int fb_src, int left, int top, bool
         srcY1 = src.height;
     }
 
+
+
+    // For PC Oculus Meta runtime
+    // Special menu case (fb_dst == 25): direct blit from layer 0 of the swapchain
+    if ( is_meta_runtime && fb_dst == 25) {
+        copy_fbo_menu = true;
+        GLuint texArray = vr_get_current_multiview_swapchain_tex();
+
+        // Temporary FBO pointing to layer 0 of the swapchain
+        GLuint tmpFbo = 0;
+        glGenFramebuffers(1, &tmpFbo);
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, tmpFbo);
+        glFramebufferTextureLayer(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, texArray, 0, 0);
+
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, dst.fbo);
+        glDisable(GL_SCISSOR_TEST);
+
+        // Blit with scaling (swapchain 1832x1920 → FBO 25 698x524)
+        glBlitFramebuffer(
+                0, framebuffers[0].height, framebuffers[0].width, 0,  // inverted src Y
+                0, 0, dst.width, dst.height,
+                GL_COLOR_BUFFER_BIT, GL_LINEAR
+        );
+
+        glEnable(GL_SCISSOR_TEST);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glDeleteFramebuffers(1, &tmpFbo);
+        return;
+    }
+
+
+    // Fix for background menu, camspy, cloaking effect on enemies or bots (G5 building / challenges)
+    if (fb_dst != 4 && framebuffers[0].is_multiview) { // fb_dst 4 = cutescene
+
+        mv_blit_init();
+
+        // Minimal GL state backup
+        GLint prevFbo = 0, prevProg = 0;
+        GLint viewport[4];
+        GLboolean prevDepthTest = GL_FALSE;
+        GLboolean prevDepthMask = GL_FALSE;
+        GLboolean prevBlend = GL_FALSE;
+
+        glGetIntegerv(GL_FRAMEBUFFER_BINDING, &prevFbo);
+        glGetIntegerv(GL_CURRENT_PROGRAM, &prevProg);
+        glGetIntegerv(GL_VIEWPORT, viewport);
+        glGetBooleanv(GL_DEPTH_TEST, &prevDepthTest);
+        glGetBooleanv(GL_DEPTH_WRITEMASK, &prevDepthMask);
+        glGetBooleanv(GL_BLEND, &prevBlend);
+
+
+        // Calculation of normalized UVs corresponding to the source rectangle
+        float u0, v0, u1, v1;
+
+        if (left >= 0 && top >= 0) {
+            // Sub-rectangle (invisible cloak, FB 5-19 effects)
+            u0 = (float)srcX0 / (float)src.width;
+            v0 = (float)srcY0 / (float)src.height;
+            u1 = (float)srcX1 / (float)src.width;
+            v1 = (float)srcY1 / (float)src.height;
+        }
+        else {
+            // Full-screen copy (camera, menus, etc.) → full UV
+            u0 = 0.0f;
+            v0 = 0.0f;
+            u1 = 1.0f;
+            v1 = 1.0f;
+        }
+
+
+        // We leave the flip_y handling to the shader (as before), so no swapping of v0/v1 here
+        // The shader will use uRect and uFlipY together.
+
+        glBindFramebuffer(GL_FRAMEBUFFER, dst.fbo);
+        glViewport(0, 0, dst.width, dst.height);
+
+        glDisable(GL_SCISSOR_TEST);
+
+        // IMPORTANT: copy the color without taking the destination FBO depth into account
+        glDisable(GL_DEPTH_TEST);
+        glDepthMask(GL_FALSE);
+        glDisable(GL_BLEND);
+
+        glUseProgram(mv_blit_prog);
+
+        GLuint texArray = vr_get_current_multiview_swapchain_tex();
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D_ARRAY, texArray);
+        glUniform1i(mv_blit_uTexLoc, 0);
+        glUniform1i(mv_blit_uFlipYLoc, flip_y ? 1 : 0);
+
+        // NEW: source rectangle in UV
+        glUniform4f(mv_blit_uRectLoc, u0, v0, u1, v1);
+
+        glBindVertexArray(opengl_vao);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+
+        // Restore GL state
+        glBindVertexArray(0);
+        glUseProgram(prevProg);
+        glBindFramebuffer(GL_FRAMEBUFFER, prevFbo);
+        glViewport(viewport[0], viewport[1], viewport[2], viewport[3]);
+
+        if (prevDepthTest) glEnable(GL_DEPTH_TEST); else glDisable(GL_DEPTH_TEST);
+        glDepthMask(prevDepthMask);
+        if (prevBlend) glEnable(GL_BLEND); else glDisable(GL_BLEND);
+        glEnable(GL_SCISSOR_TEST);
+
+
+        return;
+    }
+
+    // Unchanged non-multiview path (classic glBlitFramebuffer)
     glDisable(GL_SCISSOR_TEST);
 
     glBindFramebuffer(GL_READ_FRAMEBUFFER, src.fbo);
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, dst.fbo);
 
     if (flip_y) {
-        // flip the dst rect to mirror the image vertically
         std::swap(dstY0, dstY1);
     }
 
     if (fb_src == 0) {
-        // GLES does not support GL_FRONT here
-        glReadBuffer((use_back || gl_es) ? GL_BACK : GL_FRONT);
-    } else {
+        if (framebuffers[0].is_multiview) {
+            glReadBuffer(GL_COLOR_ATTACHMENT0);
+        }
+        else {
+            glReadBuffer(use_back && !gl_es ? GL_BACK : GL_FRONT);
+        }
+    }
+    else {
         glReadBuffer(GL_COLOR_ATTACHMENT0);
     }
 
-    glBlitFramebuffer(srcX0, srcY0, srcX1, srcY1, dstX0, dstY0, dstX1, dstY1, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+    glBlitFramebuffer(
+            srcX0, srcY0, srcX1, srcY1,
+            dstX0, dstY0, dstX1, dstY1,
+            GL_COLOR_BUFFER_BIT, GL_NEAREST
+    );
 
     glBindFramebuffer(GL_FRAMEBUFFER, framebuffers[current_framebuffer].fbo);
-
     glReadBuffer(GL_BACK);
-
     glEnable(GL_SCISSOR_TEST);
 }
+
+
+
 
 void gfx_opengl_set_texture_filter(FilteringMode mode) {
     current_filter_mode = mode;
@@ -1244,40 +2010,141 @@ FilteringMode gfx_opengl_get_texture_filter(void) {
     return current_filter_mode;
 }
 
-struct GfxRenderingAPI gfx_opengl_api = { 
-    gfx_opengl_get_name,
-    gfx_opengl_get_max_texture_size,
-    gfx_opengl_get_clip_parameters,
-    gfx_opengl_unload_shader,
-    gfx_opengl_load_shader,
-    gfx_opengl_create_and_load_new_shader,
-    gfx_opengl_lookup_shader,
-    gfx_opengl_shader_get_info,
-    gfx_opengl_clear_shaders,
-    gfx_opengl_new_texture,
-    gfx_opengl_select_texture,
-    gfx_opengl_upload_texture,
-    gfx_opengl_set_sampler_parameters,
-    gfx_opengl_set_depth_mode,
-    gfx_opengl_set_depth_range,
-    gfx_opengl_set_viewport,
-    gfx_opengl_set_scissor,
-    gfx_opengl_set_use_alpha,
-    gfx_opengl_draw_triangles,
-    gfx_opengl_init,
-    gfx_opengl_on_resize,
-    gfx_opengl_start_frame,
-    gfx_opengl_end_frame,
-    gfx_opengl_finish_render,
-    gfx_opengl_create_framebuffer,
-    gfx_opengl_update_framebuffer_parameters,
-    gfx_opengl_start_draw_to_framebuffer,
-    gfx_opengl_copy_framebuffer,
-    gfx_opengl_clear_framebuffer,
-    gfx_opengl_resolve_msaa_color_buffer,
-    gfx_opengl_get_framebuffer_texture_id,
-    gfx_opengl_select_texture_fb,
-    gfx_opengl_delete_texture,
-    gfx_opengl_set_texture_filter,
-    gfx_opengl_get_texture_filter
+
+
+
+static void gfx_opengl_init_mirror_shader() {
+#ifndef ANDROID // if PC
+    if (s_mirror_prog) return;
+
+    auto compile = [](GLenum type, const char* src) -> GLuint {
+        GLuint s = glCreateShader(type);
+        glShaderSource(s, 1, &src, nullptr);
+        glCompileShader(s);
+        return s;
+    };
+
+    GLuint vs = compile(GL_VERTEX_SHADER,   mv_blit_vs_src);
+    GLuint fs = compile(GL_FRAGMENT_SHADER, mv_blit_fs_src);
+    s_mirror_prog = glCreateProgram();
+    glAttachShader(s_mirror_prog, vs);
+    glAttachShader(s_mirror_prog, fs);
+    glLinkProgram(s_mirror_prog);
+    glDeleteShader(vs);
+    glDeleteShader(fs);
+
+    s_mirror_uloc_tex   = glGetUniformLocation(s_mirror_prog, "uTex");
+    s_mirror_uloc_layer = glGetUniformLocation(s_mirror_prog, "uLayer");
+    s_mirror_uloc_rect  = glGetUniformLocation(s_mirror_prog, "uRect");
+    s_mirror_uloc_sbs = glGetUniformLocation(s_mirror_prog, "uSbs");
+
+    // Empty VAO required for the fullscreen triangle trick
+    glGenVertexArrays(1, &s_mirror_vao);
+#endif
+}
+
+
+static void gfx_opengl_mirror_to_desktop(
+        uint32_t src_w, uint32_t src_h,   // VR resolution
+        uint32_t dst_w, uint32_t dst_h)   // real size of mirror_wnd
+{
+#ifndef ANDROID // if PC
+
+    if (!gfx_sdl_is_mirror_enabled()) return;
+
+    GLuint eye_array_tex = vr_get_current_multiview_swapchain_tex();
+    if (!eye_array_tex) return;
+
+    extern SDL_Window*   mirror_wnd;
+    extern SDL_GLContext mirror_ctx;
+    extern SDL_Window*   wnd;
+    extern SDL_GLContext ctx;
+    if (!mirror_wnd || !mirror_ctx) return;
+
+    gfx_opengl_init_mirror_shader();
+
+    // Letterbox calculation: rendering area in UV coordinates [0..1]
+    float src_ratio = (float)src_w / (float)src_h;
+    float dst_ratio = (float)dst_w / (float)dst_h;
+    float rect_x = 0.0f, rect_y = 0.0f, rect_w = 1.0f, rect_h = 1.0f;
+
+
+    // ── Switch to mirror_wnd ──
+    SDL_GL_MakeCurrent(mirror_wnd, mirror_ctx);
+
+    // Disable auto sRGB conversion on the desktop backbuffer
+    glDisable(GL_FRAMEBUFFER_SRGB);
+
+    glViewport(0, 0, (GLsizei)dst_w, (GLsizei)dst_h);
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_BLEND);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+    glUseProgram(s_mirror_prog);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D_ARRAY, eye_array_tex);
+    glUniform1i(s_mirror_uloc_tex,   0);
+
+    bool sbs = gfx_sdl_is_mirror_sbs();
+    glUniform1i(s_mirror_uloc_sbs, gfx_sdl_is_mirror_sbs() ? 1 : 0);
+
+    if (sbs) {
+        glUniform4f(s_mirror_uloc_rect, 0.0f, 0.0f, 1.0f, 1.0f);
+    } else {
+        glUniform4f(s_mirror_uloc_rect, rect_x, rect_y, rect_x + rect_w, rect_y + rect_h);
+    }
+    glUniform1i(s_mirror_uloc_layer, gfx_sdl_get_mirror_eye());
+
+    glBindVertexArray(s_mirror_vao);
+    glDrawArrays(GL_TRIANGLES, 0, 3);              // fullscreen triangle
+    glBindVertexArray(0);
+
+    glBindTexture(GL_TEXTURE_2D_ARRAY, 0);
+    glUseProgram(0);
+
+    // ── Switch back to the main context ──
+    SDL_GL_MakeCurrent(wnd, ctx);
+#endif
+}
+
+
+struct GfxRenderingAPI gfx_opengl_api = {
+        gfx_opengl_get_name,
+        gfx_opengl_get_max_texture_size,
+        gfx_opengl_get_clip_parameters,
+        gfx_opengl_unload_shader,
+        gfx_opengl_load_shader,
+        gfx_opengl_create_and_load_new_shader,
+        gfx_opengl_lookup_shader,
+        gfx_opengl_shader_get_info,
+        gfx_opengl_clear_shaders,
+        gfx_opengl_new_texture,
+        gfx_opengl_select_texture,
+        gfx_opengl_upload_texture,
+        gfx_opengl_set_sampler_parameters,
+        gfx_opengl_set_depth_mode,
+        gfx_opengl_set_depth_range,
+        gfx_opengl_set_viewport,
+        gfx_opengl_set_scissor,
+        gfx_opengl_set_use_alpha,
+        gfx_opengl_draw_triangles,
+        gfx_opengl_init,
+        gfx_opengl_on_resize,
+        gfx_opengl_start_frame,
+        gfx_opengl_end_frame,
+        gfx_opengl_finish_render,
+        gfx_opengl_create_framebuffer,
+        gfx_opengl_update_framebuffer_parameters,
+        gfx_opengl_start_draw_to_framebuffer,
+        gfx_opengl_copy_framebuffer,
+        gfx_opengl_clear_framebuffer,
+        gfx_opengl_resolve_msaa_color_buffer,
+        gfx_opengl_get_framebuffer_texture_id,
+        gfx_opengl_select_texture_fb,
+        gfx_opengl_delete_texture,
+        gfx_opengl_set_texture_filter,
+        gfx_opengl_get_texture_filter,
+        gfx_opengl_set_eye_offsets,
+        gfx_opengl_is_multiview,
+        gfx_opengl_mirror_to_desktop
 };

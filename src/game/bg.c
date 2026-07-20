@@ -86,6 +86,7 @@
 #define VTXBATCHTYPE_OPA 0x01
 #define VTXBATCHTYPE_XLU 0x02
 
+
 struct drawslot g_BgDrawSlots[61];
 u8 *g_BgPrimaryData;
 u32 var800a4920;
@@ -1128,7 +1129,8 @@ Gfx *bgRenderScene(Gfx *gdl)
 
 		thing = &g_BgDrawSlots[roomnum];
 
-		// Render prop opaque components - pre BG pass
+
+        // Render prop opaque components - pre BG pass
 		gSPMatrix(gdl++, osVirtualToPhysical(camGetPerspectiveMtxL()), G_MTX_NOPUSH | G_MTX_LOAD | G_MTX_PROJECTION);
 		gdl = envStopFog(gdl);
 
@@ -1144,6 +1146,7 @@ Gfx *bgRenderScene(Gfx *gdl)
 		gSPMatrix(gdl++, osVirtualToPhysical(camGetOrthogonalMtxL()), G_MTX_NOPUSH | G_MTX_LOAD | G_MTX_PROJECTION);
 
 		gdl = bgScissorWithinViewportF(gdl, thing->box.xmin, thing->box.ymin, thing->box.xmax, thing->box.ymax);
+
 		gdl = envStartFog(gdl, false);
 
 		if (debugIsBgRenderingEnabled() && getVar80084040()) {
@@ -1190,6 +1193,7 @@ Gfx *bgRenderScene(Gfx *gdl)
 
 		// Render BG translucent components
 		gdl = bgScissorWithinViewportF(gdl, thing->box.xmin, thing->box.ymin, thing->box.xmax, thing->box.ymax);
+
 		gdl = envStartFog(gdl, true);
 
 		if (debugIsBgRenderingEnabled() && getVar80084040()) {
@@ -2215,24 +2219,25 @@ f32 bgGetStanThing(s32 roomnum)
 
 Gfx *bgScissorToViewport(Gfx *gdl)
 {
-	return bgScissorWithinViewport(gdl,
-			g_Vars.currentplayer->viewleft,
-			g_Vars.currentplayer->viewtop,
-			g_Vars.currentplayer->viewleft + g_Vars.currentplayer->viewwidth,
-			g_Vars.currentplayer->viewtop + g_Vars.currentplayer->viewheight);
+    return bgScissorWithinViewport(gdl,
+                                   g_Vars.currentplayer->viewleft,
+                                   g_Vars.currentplayer->viewtop,
+                                   g_Vars.currentplayer->viewleft + g_Vars.currentplayer->viewwidth,
+                                   g_Vars.currentplayer->viewtop + g_Vars.currentplayer->viewheight);
 }
 
 Gfx *bgScissorWithinViewportF(Gfx *gdl, f32 viewleft, f32 viewtop, f32 viewright, f32 viewbottom)
 {
-	gdl = bgScissorWithinViewport(gdl, viewleft, viewtop, ceiltoint(viewright), ceiltoint(viewbottom));
+    gdl = bgScissorWithinViewport(gdl, viewleft, viewtop,ceiltoint(viewright),ceiltoint(viewbottom));
 
-	return gdl;
+    return gdl;
 }
 
 Gfx *bgScissorWithinViewport(Gfx *gdl, s32 viewleft, s32 viewtop, s32 viewright, s32 viewbottom)
 {
+/*
 #ifndef PLATFORM_N64
-	const s32 xmargin = videoGetWidth() / SCREEN_320 - 1;
+	const s32 xmargin = videoGetWidth() / SCREEN_320 - 1; // Removed for VR
 	const s32 ymargin = videoGetHeight() / SCREEN_240 - 1;
 	if (xmargin > 0) {
 		viewleft -= xmargin;
@@ -2261,8 +2266,9 @@ Gfx *bgScissorWithinViewport(Gfx *gdl, s32 viewleft, s32 viewtop, s32 viewright,
 	}
 
 	gDPSetScissor(gdl++, G_SC_NON_INTERLACE, viewleft, viewtop, viewright, viewbottom);
+*/
 
-	return gdl;
+    return gdl;
 }
 
 void bgClearPortalCameraCache(void)
@@ -2449,6 +2455,8 @@ bool bgGetPortalScreenBbox(s32 portalnum, struct screenbox *box)
 		box->xmax = player->screenxmaxf;
 		box->ymax = player->screenymaxf;
 	} else {
+
+
 		sp2d4[0][0] -= 0.5f;
 		sp2d4[0][1] -= 0.5f;
 		sp2d4[1][0] += 0.5f;
@@ -2500,6 +2508,7 @@ Gfx *bgDrawBox(Gfx *gdl, s32 x1, s32 y1, s32 x2, s32 y2)
 	return gdl;
 }
 
+
 bool bgGetBoxIntersection(struct screenbox *a, struct screenbox *b)
 {
 	a->xmin = a->xmin > b->xmin ? a->xmin : b->xmin;
@@ -2519,6 +2528,10 @@ bool bgGetBoxIntersection(struct screenbox *a, struct screenbox *b)
 
 	return true;
 }
+
+
+
+
 
 void bgExpandBox(struct screenbox *a, struct screenbox *b)
 {
@@ -5339,6 +5352,9 @@ void bgTickPortalsXray(void)
 
 	bgCalculateScreenProperties();
 
+
+
+
 	if (g_BgDrawSlots);
 
 	if (g_BgNumAttemptedDrawSlots > g_BgMostAttemptedDrawSlots) {
@@ -5805,7 +5821,9 @@ void bgTickPortals(void)
 
 	bgCalculateScreenProperties();
 
-	box.xmin = player->screenxminf;
+
+
+    box.xmin = player->screenxminf;
 	box.ymin = player->screenyminf;
 	box.xmax = player->screenxmaxf;
 	box.ymax = player->screenymaxf;

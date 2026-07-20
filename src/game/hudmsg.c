@@ -24,6 +24,8 @@
 #include "types.h"
 #include "string.h"
 
+#include "../port/vr/vr_log.h"
+
 u32 g_NextHudMessageId;
 
 u8 g_HudmsgsActive = 0;
@@ -53,7 +55,7 @@ struct sndstate *var800736b0nb = NULL;
 
 struct hudmsgtype g_HudmsgTypes[] = {
 	/* 0*/ { 1, 1, 0, &g_CharsHandelGothicSm, &g_FontHandelGothicSm, 0x00ff0000, 0x000000a0, HUDMSGALIGN_LEFT,    HUDMSGALIGN_BOTTOM,        0, 0, 80  },
-	/* 1*/ { 0, 1, 0, &g_CharsHandelGothicMd, &g_FontHandelGothicMd, 0x00ff0000, 0x000000a0, HUDMSGALIGN_XMIDDLE, HUDMSGALIGN_YMIDDLE,       0, 0, 120 },
+    /* 1*/ { 0, 1, 0, &g_CharsHandelGothicMd, &g_FontHandelGothicMd, 0x00ff0000, 0x000000a0, HUDMSGALIGN_XMIDDLE, HUDMSGALIGN_YMIDDLE,       0, 0, 120 },
 #if VERSION == VERSION_JPN_FINAL
 	/* 2*/ { 0, 0, 1, &g_CharsHandelGothicMd, &g_FontHandelGothicMd, 0xff999900, 0xffffffa0, HUDMSGALIGN_XMIDDLE, HUDMSGALIGN_YMIDDLE,       0, 0, 120 },
 #else
@@ -149,9 +151,10 @@ Gfx *hudmsgRenderMissionTimer(Gfx *gdl, u32 alpha)
 		timery -= 8;
 	}
 
-	if ((IS4MB() || optionsGetScreenSplit() == SCREENSPLIT_VERTICAL || playercount >= 3) && hudmsgIsZoomRangeVisible()) {
-		timery -= 8;
-	}
+    // Removed for VR
+//	if ((IS4MB() || optionsGetScreenSplit() == SCREENSPLIT_VERTICAL || playercount >= 3) && hudmsgIsZoomRangeVisible()) {
+//		timery -= 8;
+//	}
 
 	if (playercount == 2) {
 		if (IS4MB() || (optionsGetScreenSplit() != SCREENSPLIT_VERTICAL && playernum == 0)) {
@@ -194,6 +197,10 @@ Gfx *hudmsgRenderMissionTimer(Gfx *gdl, u32 alpha)
 		gSPExtraGeometryModeEXT(gdl++, G_ASPECT_MODE_EXT, g_HudAlignModeL);
 	}
 #endif
+
+    // VR
+    x = viewleft + g_HudPaddingX + 3 + 105;
+    y = timery - 84;
 
 	gdl = textRender(gdl, &x, &y, buffer, g_CharsNumeric, g_FontNumeric, textcolour, 0x000000a0, viGetWidth(), viGetHeight_hack(), 0, 0);
 
@@ -257,6 +264,14 @@ Gfx *hudmsgRenderZoomRange(Gfx *gdl, u32 alpha)
 	} else if (optionsGetEffectiveScreenSize() != SCREENSIZE_FULL) {
 		texty += 8;
 	}
+
+
+
+    texty -= 84; // VR
+    // VR
+    if ((IS4MB() || optionsGetScreenSplit() == SCREENSPLIT_VERTICAL || playercount >= 3) && !g_CountdownTimerOff) {
+        texty += 10;
+    }
 
 	// Left side - current zoom level
 	zoomfov = currentPlayerGetGunZoomFov();
@@ -388,6 +403,10 @@ s32 hudmsg0f0ddb1c(s32 *arg0, s32 arg1)
 
 	result = result + viewwidth - *arg0 - arg1 - 11;
 
+    if (result > 230) { // VR
+    result = 230;
+}
+
 	if (PLAYERCOUNT() == 1 || (PLAYERCOUNT() == 2 && g_InCutscene && !g_MainIsEndscreen)) {
 		result -= 16;
 
@@ -414,6 +433,10 @@ s32 hudmsg0f0ddb1c(s32 *arg0, s32 arg1)
 	}
 
 	result = result + viewwidth - *arg0 - arg1 - 11;
+
+    if (result > 230) { // VR
+        result = 230;
+    }
 
 	if (PLAYERCOUNT() == 1) {
 		result -= 16;
@@ -928,7 +951,7 @@ void hudmsgCalculatePosition(struct hudmessage *msg)
 		y = msg->ymargin;
 		break;
 	case HUDMSGALIGN_TOP:
-		y = viewtop + msg->ymargin + 13;
+        y = viewtop + msg->ymargin + 150; // VR Top Subtitle // y = viewtop + msg->ymargin + 13;
 		break;
 	case HUDMSGALIGN_BOTTOM:
 		y = viewtop + viewheight - msg->height - msg->ymargin - 14;
@@ -955,7 +978,7 @@ void hudmsgCalculatePosition(struct hudmessage *msg)
 		y = (viewheight - msg->height) / 2 + viewtop + msg->ymargin;
 		break;
 	case HUDMSGALIGN_BELOWVIEWPORT:
-		y = viewtop + viewheight - (msg->height / 2) + 18;
+		y = viewtop + viewheight - (msg->height / 2) - 150; // VR Down Subtitle // y = viewtop + viewheight - (msg->height / 2) + 18;
 		break;
 	default:
 		y = msg->ymargin;
@@ -1445,6 +1468,14 @@ Gfx *hudmsgsRender(Gfx *gdl)
 		x = msg->x;
 		y = msg->y;
 
+
+        // VR
+        if(msg->type == 0) {
+            s32 xMiddle = viGetViewLeft() + (viGetViewWidth() >> 1) / 2;
+            x = xMiddle;
+            y -= 70;
+        }
+
 		if (msg->type == HUDMSGTYPE_INGAMESUBTITLE && playerIsHealthVisible()) {
 			y += (s32)(16.0f * playerGetHealthBarHeightFrac());
 		}
@@ -1462,17 +1493,17 @@ Gfx *hudmsgsRender(Gfx *gdl)
 		}
 #endif
 
-		if (msg->type == HUDMSGTYPE_CUTSCENESUBTITLE) {
-#if VERSION >= VERSION_NTSC_1_0
-			gDPSetScissor(gdl++, 0,
-					(x - 4) * g_ScaleX, 0,
-					(x + msg->width + 3) * g_ScaleX, viGetBufHeight());
-#else
-			gDPSetScissor(gdl++, 0,
-					(x - 4) * g_ScaleX, y - 4,
-					(x + msg->width + 3) * g_ScaleX, y + msg->height + 3);
-#endif
-		}
+//		if (msg->type == HUDMSGTYPE_CUTSCENESUBTITLE) { // Removed for VR
+//#if VERSION >= VERSION_NTSC_1_0
+//			gDPSetScissor(gdl++, 0,
+//					(x - 4) * g_ScaleX, 0,
+//					(x + msg->width + 3) * g_ScaleX, viGetBufHeight());
+//#else
+//			gDPSetScissor(gdl++, 0,
+//					(x - 4) * g_ScaleX, y - 4,
+//					(x + msg->width + 3) * g_ScaleX, y + msg->height);
+//#endif
+//		}
 
 		switch (msg->state) {
 		case HUDMSGSTATE_FREE:

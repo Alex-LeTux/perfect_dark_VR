@@ -32,6 +32,8 @@
 #include "system.h"
 #include "mpsetups.h"
 
+extern bool vr_dl_is_pause_or_menu; // VR
+extern int vr_MpPause; // VR
 // bss
 struct chrdata *g_MpAllChrPtrs[MAX_MPCHRS];
 struct mpchrconfig *g_MpAllChrConfigPtrs[MAX_MPCHRS];
@@ -127,14 +129,14 @@ struct mpweapon g_MpWeapons[NUM_MPWEAPONS] = {
 #ifndef PLATFORM_N64
 
 #define PLAYER_EXT_CFG_DEFAULT { \
-	.fovy = 60.f, \
+	.fovy = 110.f, \
 	.fovzoommult = 1.f, \
 	.fovzoom = true, \
 	.mouseaimmode = MOUSEAIM_CLASSIC, \
 	.mouseaimspeedx = 0.7f, \
 	.mouseaimspeedy = 0.7f, \
 	.radialmenuspeed = 4.f, \
-	.crosshairsway = 1.f, \
+	.crosshairsway = 1.0f, \
 	.crouchmode = CROUCHMODE_TOGGLE_ANALOG, \
 	.extcontrols = true, \
 	.crosshaircolour = 0x00ff0028, \
@@ -434,11 +436,11 @@ void mpPlayerSetDefaults(s32 playernum, bool autonames)
 
 	func0f187fbc(playernum);
 
-	g_PlayerConfigsArray[playernum].controlmode = CONTROLMODE_11;
+	g_PlayerConfigsArray[playernum].controlmode = CONTROLMODE_12;
 
 #ifndef PLATFORM_N64
 	if (g_PlayerExtCfg[playernum % MAX_PLAYERS].extcontrols) {
-		g_PlayerConfigsArray[playernum].controlmode = CONTROLMODE_PC;
+		g_PlayerConfigsArray[playernum].controlmode = CONTROLMODE_12;
 	}
 #endif
 
@@ -1301,6 +1303,8 @@ s32 mpGetWeaponSet(void)
 
 bool mpIsPaused(void)
 {
+    vr_MpPause = 1;
+    vr_dl_is_pause_or_menu = true; // VR
 	if (PLAYERCOUNT() == 1
 			&& g_Vars.mplayerisrunning
 			&& g_Menus[g_Vars.currentplayerstats->mpindex].curdialog) {
@@ -1308,6 +1312,8 @@ bool mpIsPaused(void)
 	}
 
 	if (g_MpSetup.paused == PAUSEMODE_UNPAUSED) {
+        vr_dl_is_pause_or_menu = false; // VR
+        vr_MpPause = 0;
 		return false;
 	}
 
@@ -1328,8 +1334,10 @@ void mpSetPaused(u8 mode)
  * the crop box for the text, but the text doesn't extend past the box anyway
  * so it has no effect.
  */
+
 Gfx *mpRenderModalText(Gfx *gdl)
 {
+
 	s32 textwidth;
 	s32 textheight;
 	s32 x;
@@ -1337,11 +1345,13 @@ Gfx *mpRenderModalText(Gfx *gdl)
 	char text[50];
 	s32 stack1;
 
+
 #if VERSION >= VERSION_JPN_FINAL
 	g_ScaleX = g_ViRes == VIRES_HI ? 2 : 1;
 #endif
 
 	if (g_MpSetup.paused == MPPAUSEMODE_PAUSED) {
+
 		s32 red = (s32) ((1.0f - g_20SecIntervalFrac) * 20.0f * 255.0f) % 255;
 		s32 stack2;
 
@@ -1385,6 +1395,8 @@ Gfx *mpRenderModalText(Gfx *gdl)
 #endif
 
 		gdl = text0f153780(gdl);
+
+
 	} else if (!g_MainIsEndscreen
 			&& g_MpSetup.paused == MPPAUSEMODE_UNPAUSED
 			&& g_Vars.currentplayer->isdead
@@ -1393,6 +1405,7 @@ Gfx *mpRenderModalText(Gfx *gdl)
 			&& !(g_Vars.coopplayernum >= 0 && ((g_Vars.bond->isdead && g_Vars.coop->isdead) || !g_Vars.currentplayer->coopcanrestart || g_InCutscene))
 			&& !(g_Vars.antiplayernum >= 0 && ((g_Vars.currentplayer != g_Vars.anti || g_InCutscene)))
 			&& g_NumReasonsToEndMpMatch == 0) {
+
 		// Render "Press START" text
 		gdl = text0f153628(gdl);
 
@@ -1441,9 +1454,13 @@ Gfx *mpRenderModalText(Gfx *gdl)
 		g_Menus[g_Vars.currentplayerstats->mpindex].openinhibit = 10;
 	}
 
+
+
 #if VERSION >= VERSION_JPN_FINAL
 	g_ScaleX = 1;
 #endif
+
+
 
 	return gdl;
 }
@@ -3520,7 +3537,7 @@ void mpplayerfileLoadWad(s32 playernum, struct savebuffer *buffer, s32 arg2)
 #ifndef PLATFORM_N64
 	// override with PC controls if enabled in the config
 	if (g_PlayerExtCfg[playernum % MAX_PLAYERS].extcontrols) {
-		g_PlayerConfigsArray[playernum].controlmode = CONTROLMODE_PC;
+		g_PlayerConfigsArray[playernum].controlmode = CONTROLMODE_12;
 	}
 #endif
 
@@ -3659,7 +3676,7 @@ void mpplayerfileSaveWad(s32 playernum, struct savebuffer *buffer)
 #else
 	// PC control mode is enabled in the .ini to avoid changing the save structure
 	const u32 controlmode = g_PlayerConfigsArray[playernum].controlmode;
-	savebufferOr(buffer, ((controlmode == CONTROLMODE_PC) ? CONTROLMODE_11 : controlmode), 2);
+	savebufferOr(buffer, ((controlmode == CONTROLMODE_12) ? CONTROLMODE_12 : controlmode), 2);
 #endif
 
 	savebufferOr(buffer, g_PlayerConfigsArray[playernum].options, 12);

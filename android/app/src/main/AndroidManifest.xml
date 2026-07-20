@@ -1,47 +1,98 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:tools="http://schemas.android.com/tools">
+    xmlns:tools="http://schemas.android.com/tools"
+    android:installLocation="auto"
+    android:versionCode="1"
+    android:versionName="1.0">
 
-    <!-- No legacy external storage permissions needed; app uses SAF and app-scoped storage -->
-    
-    <uses-feature android:glEsVersion="0x00030000" android:required="true" />
-    <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
-    <uses-feature android:name="android.hardware.gamepad" android:required="false" />
+    <!-- OpenGL ES 3.2 recommended (hello_xr) -->
+    <uses-feature
+        android:glEsVersion="0x00030002"
+        android:required="true" />
+
+    <!-- VR headtracking (like hello_xr, not necessarily required) -->
+    <uses-feature
+        android:name="android.hardware.vr.headtracking"
+        android:required="false"
+        android:version="1" />
+
+    <uses-feature
+        android:name="android.hardware.vr.highperformance"
+        android:required="true" />
+
+    <!-- Optional but recommended for haptics -->
+    <uses-permission android:name="android.permission.VIBRATE" />
+
+    <!-- OpenXR permissions (hello_xr) -->
+    <uses-permission android:name="org.khronos.openxr.permission.OPENXR" />
+    <uses-permission android:name="org.khronos.openxr.permission.OPENXR_SYSTEM" />
+
+    <!-- Queries block like hello_xr (broker/runtime) -->
+    <queries>
+        <provider android:authorities="org.khronos.openxr.runtime_broker;org.khronos.openxr.system_runtime_broker" />
+        <intent>
+            <action android:name="org.khronos.openxr.OpenXRRuntimeService" />
+        </intent>
+        <intent>
+            <action android:name="org.khronos.openxr.OpenXRApiLayerService" />
+        </intent>
+    </queries>
 
     <application
         android:allowBackup="true"
-        android:dataExtractionRules="@xml/data_extraction_rules"
-        android:fullBackupContent="@xml/backup_rules"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
-        android:theme="@style/Theme.PerfectDark"
-        tools:targetApi="31">
+        android:hardwareAccelerated="true">
 
-        <!-- SDL orientation hint like Starship uses -->
-        <meta-data android:name="SDL_ENV.SDL_IOS_ORIENTATIONS" android:value="LandscapeLeft LandscapeRight"/>
-        
-        <!-- LauncherActivity handles ROM selection/copy before starting SDL -->
+        <!-- Supported Meta devices (Quest specific) -->
+        <meta-data
+            android:name="com.oculus.supportedDevices"
+            android:value="quest|quest2|questpro|quest3|quest3s" />
+
+        <!-- MainActivity = main immersive VR activity, like NativeActivity in hello_xr -->
         <activity
-            android:name=".LauncherActivity"
-            android:exported="true"
+            android:name=".MainActivity"
+            android:configChanges="screenSize|screenLayout|orientation|keyboardHidden|keyboard|navigation|uiMode|density|layoutDirection|locale|smallestScreenSize"
+            android:excludeFromRecents="false"
+            android:launchMode="singleTask"
+            android:resizeableActivity="false"
             android:screenOrientation="landscape"
-            android:configChanges="layoutDirection|locale|orientation|uiMode|screenLayout|screenSize|smallestScreenSize|keyboard|keyboardHidden|navigation"
-            android:theme="@style/Theme.PerfectDark.Fullscreen">
+            android:theme="@android:style/Theme.Black.NoTitleBar.Fullscreen"
+            android:exported="true">
+
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
+                <category android:name="org.khronos.openxr.intent.category.IMMERSIVE_HMD" />
+                <category android:name="com.oculus.intent.category.VR" />
             </intent-filter>
+
+            <!-- Focus-aware VR (Meta specific, additionally) -->
+            <meta-data
+                android:name="com.oculus.vr.focusaware"
+                android:value="true" />
         </activity>
 
-        <!-- MainActivity (SDLActivity) runs the game after ROM is present -->
+        <!-- LauncherActivity: 2D only for ROM selection, not VR -->
         <activity
-            android:name=".MainActivity"
+            android:name=".LauncherActivity"
             android:exported="false"
             android:screenOrientation="landscape"
-            android:configChanges="layoutDirection|locale|orientation|uiMode|screenLayout|screenSize|smallestScreenSize|keyboard|keyboardHidden|navigation"
-            android:theme="@style/Theme.PerfectDark.Fullscreen"/>
+            android:theme="@style/Theme.PerfectDark.Fullscreen">
+            <!-- NO intent-filter here: it is not a launcher nor VR -->
+        </activity>
     </application>
+
+    <queries>
+        <provider android:authorities="org.khronos.openxr.runtime_broker;org.khronos.openxr.system_runtime_broker" />
+        <intent>
+            <action android:name="org.khronos.openxr.OpenXRRuntimeService" />
+        </intent>
+        <intent>
+            <action android:name="org.khronos.openxr.OpenXRApiLayerService" />
+        </intent>
+    </queries>
 
 </manifest>

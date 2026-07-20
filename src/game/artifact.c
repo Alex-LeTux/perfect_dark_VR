@@ -1,4 +1,7 @@
 #include <ultra64.h>
+
+#include <math.h> //VR
+
 #include "lib/sched.h"
 #include "constants.h"
 #include "game/camera.h"
@@ -21,6 +24,9 @@
 #include "lib/lib_17ce0.h"
 #include "game/player.h"
 #include "game/prop.h"
+
+
+
 #endif
 
 /**
@@ -686,6 +692,21 @@ Gfx *artifactsRenderGlaresForRoom(Gfx *gdl, s32 roomnum)
 
 					f24 *= viGetViewWidth() * (1.0f / 240.0f) / camGetPerspAspect();
 					f26 *= viGetViewHeight() * (1.0f / 240.0f);
+
+
+
+                    // VR Fix - Normalize the size in pixels to make it independent of the FOV.
+                    // Use 60° as the reference FOV (adjustable).
+					const float kFovRefDeg = 60.0f;
+					const float fovYDeg = viGetFovY();
+					const float corr = tanf(0.5f * kFovRefDeg * (float)M_PI / 180.0f)
+							/ tanf(0.5f * fovYDeg * (float)M_PI / 180.0f);
+
+					f24 *= corr;
+					f26 *= corr;
+                    //---
+
+
 
 					if (brightness > 3.0f) {
 						f32 alpha = (light->colour & 0xf) * 17;

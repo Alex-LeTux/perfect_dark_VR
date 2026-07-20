@@ -1,8 +1,10 @@
 #ifndef _IN_VIDEO_H
 #define _IN_VIDEO_H
 
+
 #include <PR/ultratypes.h>
 #include <PR/gbi.h>
+
 
 // maximum framerate; if the game runs faster than this, things will break
 #if PAL
@@ -73,5 +75,6 @@ void videoResetTextureCache(void);
 void videoFreeCachedTexture(const void *texptr);
 
 void videoShutdown(void);
+
 
 #endif

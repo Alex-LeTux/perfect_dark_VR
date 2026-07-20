@@ -15,6 +15,14 @@
 #include <direct.h>
 #endif
 
+#ifdef ANDROID
+#include <EGL/egl.h>
+#include <android/log.h>
+#define LOGI(...) __android_log_print(ANDROID_LOG_INFO,  "PD-VR", __VA_ARGS__)
+#else
+#define LOGI(...) printf(__VA_ARGS__)
+#endif
+
 #define DEFAULT_BASEDIR_NAME "data"
 
 static char baseDir[FS_MAXPATH + 1]; // replaces $B
@@ -228,6 +236,7 @@ s32 fsFileLoadTo(const char *name, void *dst, u32 dstSize)
 
 void *fsFileLoad(const char *name, u32 *outSize)
 {
+
 	const char *fullName = fsFullPath(name);
 
 	FILE *f = fopen(fullName, "rb");

@@ -16,6 +16,26 @@
 #include "mod.h"
 #endif
 
+#ifdef ANDROID
+#include <android/log.h>
+#define LOGI(...) __android_log_print(ANDROID_LOG_INFO,  "PD-VR", __VA_ARGS__)
+#else
+#define LOGI(...) printf(__VA_ARGS__)
+#endif
+
+
+#include <stdio.h>
+#include <game/bondgun.h>
+
+
+
+// VR------------------------------
+extern bool vr_R_trigger;
+extern bool vr_L_trigger;
+extern bool vr_throw_cancelled;
+extern bool VrMotionThrowing;
+//-----------------------------------
+
 #define ANIM_HEADER_CACHE_SIZE 40
 #define ANIM_FRAME_CACHE_SIZE  32
 
@@ -51,107 +71,109 @@ extern u8 EXT_SEG _animationsTableRomEnd;
 
 void animsInit(void)
 {
-	s32 i;
-	u32 *ptr;
-	u32 tablelen = ALIGN64(REF_SEG _animationsTableRomEnd - REF_SEG _animationsTableRomStart);
+    s32 i;
+    u32 *ptr;
+    u32 tablelen = ALIGN64(REF_SEG _animationsTableRomEnd - REF_SEG _animationsTableRomStart);
 
-	ptr = mempAlloc(tablelen, MEMPOOL_PERMANENT);
-	dmaExec(ptr, (romptr_t) REF_SEG _animationsTableRomStart, tablelen);
+    ptr = mempAlloc(tablelen, MEMPOOL_PERMANENT);
+    dmaExec(ptr, (romptr_t) REF_SEG _animationsTableRomStart, tablelen);
 
-	g_NumAnimations = g_NumRomAnimations = ptr[0];
-	g_Anims = g_RomAnims = (struct animtableentry *)&ptr[1];
+    g_NumAnimations = g_NumRomAnimations = ptr[0];
+    g_Anims = g_RomAnims = (struct animtableentry *)&ptr[1];
 
-	g_AnimMaxHeaderLength = 1;
-	g_AnimMaxBytesPerFrame = 1;
+    g_AnimMaxHeaderLength = 1;
+    g_AnimMaxBytesPerFrame = 1;
 
-	for (i = 0; i < g_NumAnimations; i++) {
-		if (g_Anims[i].headerlen > g_AnimMaxHeaderLength) {
-			g_AnimMaxHeaderLength = g_Anims[i].headerlen;
-		}
+    for (i = 0; i < g_NumAnimations; i++) {
+        if (g_Anims[i].headerlen > g_AnimMaxHeaderLength) {
+            g_AnimMaxHeaderLength = g_Anims[i].headerlen;
+        }
 
-		if (g_Anims[i].bytesperframe > g_AnimMaxBytesPerFrame) {
-			g_AnimMaxBytesPerFrame = g_Anims[i].bytesperframe;
-		}
-	}
+        if (g_Anims[i].bytesperframe > g_AnimMaxBytesPerFrame) {
+            g_AnimMaxBytesPerFrame = g_Anims[i].bytesperframe;
+        }
+    }
 
-	g_AnimMaxHeaderLength = ALIGN16(g_AnimMaxHeaderLength + 34);
-	g_AnimMaxBytesPerFrame = ALIGN16(g_AnimMaxBytesPerFrame + 34);
+    g_AnimMaxHeaderLength = ALIGN16(g_AnimMaxHeaderLength + 34);
+    g_AnimMaxBytesPerFrame = ALIGN16(g_AnimMaxBytesPerFrame + 34);
 
-	g_AnimToHeaderSlot    = mempAlloc(ALIGN64(g_NumAnimations), MEMPOOL_PERMANENT);
-	var8005f014           = mempAlloc(ALIGN64(g_NumAnimations * sizeof(*var8005f014)), MEMPOOL_PERMANENT);
-	g_AnimFrameByteSlots  = mempAlloc(ALIGN64(ANIM_FRAME_CACHE_SIZE * g_AnimMaxBytesPerFrame), MEMPOOL_PERMANENT);
-	g_AnimFrameBytes      = mempAlloc(ALIGN64(ANIM_FRAME_CACHE_SIZE * sizeof(*g_AnimFrameBytes)), MEMPOOL_PERMANENT);
-	g_AnimFrameAnimNums   = mempAlloc(ALIGN64(ANIM_FRAME_CACHE_SIZE * sizeof(*g_AnimFrameAnimNums)), MEMPOOL_PERMANENT);
-	g_AnimFrameFrameNums  = mempAlloc(ALIGN64(ANIM_FRAME_CACHE_SIZE * sizeof(*g_AnimFrameFrameNums)), MEMPOOL_PERMANENT);
-	g_AnimFrameBirths     = mempAlloc(ALIGN64(ANIM_FRAME_CACHE_SIZE * sizeof(*g_AnimFrameBirths)), MEMPOOL_PERMANENT);
-	g_AnimHeaderByteSlots = mempAlloc(ALIGN64(ANIM_HEADER_CACHE_SIZE * g_AnimMaxHeaderLength), MEMPOOL_PERMANENT);
-	g_AnimHeaderBytes     = mempAlloc(ALIGN64(ANIM_HEADER_CACHE_SIZE * sizeof(*g_AnimHeaderBytes)), MEMPOOL_PERMANENT);
-	g_AnimHeaderAnimNums  = mempAlloc(ALIGN64(ANIM_HEADER_CACHE_SIZE * sizeof(*g_AnimHeaderAnimNums)), MEMPOOL_PERMANENT);
-	g_AnimHeaderBirths    = mempAlloc(ALIGN64(ANIM_HEADER_CACHE_SIZE * sizeof(*g_AnimHeaderBirths)), MEMPOOL_PERMANENT);
+    g_AnimToHeaderSlot    = mempAlloc(ALIGN64(g_NumAnimations), MEMPOOL_PERMANENT);
+    var8005f014           = mempAlloc(ALIGN64(g_NumAnimations * sizeof(*var8005f014)), MEMPOOL_PERMANENT);
+    g_AnimFrameByteSlots  = mempAlloc(ALIGN64(ANIM_FRAME_CACHE_SIZE * g_AnimMaxBytesPerFrame), MEMPOOL_PERMANENT);
+    g_AnimFrameBytes      = mempAlloc(ALIGN64(ANIM_FRAME_CACHE_SIZE * sizeof(*g_AnimFrameBytes)), MEMPOOL_PERMANENT);
+    g_AnimFrameAnimNums   = mempAlloc(ALIGN64(ANIM_FRAME_CACHE_SIZE * sizeof(*g_AnimFrameAnimNums)), MEMPOOL_PERMANENT);
+    g_AnimFrameFrameNums  = mempAlloc(ALIGN64(ANIM_FRAME_CACHE_SIZE * sizeof(*g_AnimFrameFrameNums)), MEMPOOL_PERMANENT);
+    g_AnimFrameBirths     = mempAlloc(ALIGN64(ANIM_FRAME_CACHE_SIZE * sizeof(*g_AnimFrameBirths)), MEMPOOL_PERMANENT);
+    g_AnimHeaderByteSlots = mempAlloc(ALIGN64(ANIM_HEADER_CACHE_SIZE * g_AnimMaxHeaderLength), MEMPOOL_PERMANENT);
+    g_AnimHeaderBytes     = mempAlloc(ALIGN64(ANIM_HEADER_CACHE_SIZE * sizeof(*g_AnimHeaderBytes)), MEMPOOL_PERMANENT);
+    g_AnimHeaderAnimNums  = mempAlloc(ALIGN64(ANIM_HEADER_CACHE_SIZE * sizeof(*g_AnimHeaderAnimNums)), MEMPOOL_PERMANENT);
+    g_AnimHeaderBirths    = mempAlloc(ALIGN64(ANIM_HEADER_CACHE_SIZE * sizeof(*g_AnimHeaderBirths)), MEMPOOL_PERMANENT);
 #ifndef PLATFORM_N64
-	g_AnimReplacements    = mempAlloc(ALIGN64(g_NumAnimations * sizeof(u8 *)), MEMPOOL_PERMANENT);
-	bzero(g_AnimReplacements, g_NumAnimations * sizeof(u8 *));
+    g_AnimReplacements    = mempAlloc(ALIGN64(g_NumAnimations * sizeof(u8 *)), MEMPOOL_PERMANENT);
+    bzero(g_AnimReplacements, g_NumAnimations * sizeof(u8 *));
 #endif
 
-	animsInitTables();
+    animsInitTables();
 
-	g_AnimHostSegment = NULL;
-	g_AnimHostEnabled = false;
+    g_AnimHostSegment = NULL;
+    g_AnimHostEnabled = false;
+
+
 }
 
 void animsInitTables(void)
 {
-	s32 i;
+    s32 i;
 
-	for (i = 0; i < g_NumAnimations; i++) {
-		g_AnimToHeaderSlot[i] = 0xff;
-		var8005f014[i] = 0;
-	}
+    for (i = 0; i < g_NumAnimations; i++) {
+        g_AnimToHeaderSlot[i] = 0xff;
+        var8005f014[i] = 0;
+    }
 
-	for (i = 0; i < ANIM_FRAME_CACHE_SIZE; i++) {
-		g_AnimFrameAnimNums[i] = 0;
-		g_AnimFrameFrameNums[i] = 0;
-		g_AnimFrameBirths[i] = 0;
-	}
+    for (i = 0; i < ANIM_FRAME_CACHE_SIZE; i++) {
+        g_AnimFrameAnimNums[i] = 0;
+        g_AnimFrameFrameNums[i] = 0;
+        g_AnimFrameBirths[i] = 0;
+    }
 
-	for (i = 0; i < ANIM_HEADER_CACHE_SIZE; i++) {
-		g_AnimHeaderAnimNums[i] = 0;
-		g_AnimHeaderBirths[i] = -2;
-	}
+    for (i = 0; i < ANIM_HEADER_CACHE_SIZE; i++) {
+        g_AnimHeaderAnimNums[i] = 0;
+        g_AnimHeaderBirths[i] = -2;
+    }
 }
 
 void animsReset(void)
 {
-	g_NumAnimations = g_NumRomAnimations;
-	g_Anims = g_RomAnims;
-	g_AnimHostEnabled = false;
+    g_NumAnimations = g_NumRomAnimations;
+    g_Anims = g_RomAnims;
+    g_AnimHostEnabled = false;
 }
 
 s32 animGetNumFrames(s16 animnum)
 {
-	return g_Anims[animnum].numframes;
+    return g_Anims[animnum].numframes;
 }
 
 bool animHasFrames(s16 animnum)
 {
-	return animnum < g_NumAnimations && g_Anims[animnum].numframes > 0;
+    return animnum < g_NumAnimations && g_Anims[animnum].numframes > 0;
 }
 
 s32 animGetNumAnimations(void)
 {
-	return g_NumAnimations;
+    return g_NumAnimations;
 }
 
 extern u8 EXT_SEG _animationsSegmentRomStart;
 
 u8 *animDma(u8 *dst, u32 segoffset, u32 len)
 {
-	if (g_AnimHostEnabled) {
-		bcopy(&g_AnimHostSegment[segoffset], dst, len);
-		return dst;
-	}
+    if (g_AnimHostEnabled) {
+        bcopy(&g_AnimHostSegment[segoffset], dst, len);
+        return dst;
+    }
 
-	return dmaExecWithAutoAlign(dst, (romptr_t) REF_SEG _animationsSegmentRomStart + segoffset, len);
+    return dmaExecWithAutoAlign(dst, (romptr_t) REF_SEG _animationsSegmentRomStart + segoffset, len);
 }
 
 /**
@@ -175,31 +197,31 @@ u8 *animDma(u8 *dst, u32 segoffset, u32 len)
  */
 s32 animGetRemappedFrame(s16 animnum, s32 apparentframe)
 {
-	u8 *ptr = (u8 *)(g_AnimHeaderBytes[g_AnimToHeaderSlot[animnum]] + g_Anims[animnum].headerlen - 2);
-	s32 realframe = apparentframe;
+    u8 *ptr = (u8 *)(g_AnimHeaderBytes[g_AnimToHeaderSlot[animnum]] + g_Anims[animnum].headerlen - 2);
+    s32 realframe = apparentframe;
 
-	while (true) {
-		s16 repeatfromframe = ptr[0] << 8 | ptr[1];
-		s16 repeattoframe;
+    while (true) {
+        s16 repeatfromframe = ptr[0] << 8 | ptr[1];
+        s16 repeattoframe;
 
-		if (repeatfromframe < 0) {
-			break;
-		}
+        if (repeatfromframe < 0) {
+            break;
+        }
 
-		repeattoframe = ptr[-2] << 8 | ptr[-1];
-		ptr -= 4;
+        repeattoframe = ptr[-2] << 8 | ptr[-1];
+        ptr -= 4;
 
-		if (repeatfromframe <= apparentframe) {
-			if (repeattoframe < apparentframe) {
-				realframe = realframe - repeattoframe + repeatfromframe - 1;
-			} else {
-				realframe = -1;
-				break;
-			}
-		}
-	}
+        if (repeatfromframe <= apparentframe) {
+            if (repeattoframe < apparentframe) {
+                realframe = realframe - repeattoframe + repeatfromframe - 1;
+            } else {
+                realframe = -1;
+                break;
+            }
+        }
+    }
 
-	return realframe;
+    return realframe;
 }
 
 /**
@@ -210,35 +232,35 @@ s32 animGetRemappedFrame(s16 animnum, s32 apparentframe)
  */
 bool animRemapFrameForLoad(s16 animnum, s32 apparentframe, s32 *frameptr)
 {
-	u8 *ptr = (u8 *)(g_AnimHeaderBytes[g_AnimToHeaderSlot[animnum]] + g_Anims[animnum].headerlen - 2);
-	s32 result = apparentframe;
-	bool ret = true;
+    u8 *ptr = (u8 *)(g_AnimHeaderBytes[g_AnimToHeaderSlot[animnum]] + g_Anims[animnum].headerlen - 2);
+    s32 result = apparentframe;
+    bool ret = true;
 
-	while (true) {
-		s16 repeatfromframe = ptr[0] << 8 | ptr[1];
-		s16 repeattoframe;
+    while (true) {
+        s16 repeatfromframe = ptr[0] << 8 | ptr[1];
+        s16 repeattoframe;
 
-		if (repeatfromframe < 0) {
-			break;
-		}
+        if (repeatfromframe < 0) {
+            break;
+        }
 
-		repeattoframe = ptr[-2] << 8 | ptr[-1];
-		ptr -= 4;
+        repeattoframe = ptr[-2] << 8 | ptr[-1];
+        ptr -= 4;
 
-		if (repeatfromframe <= apparentframe) {
-			if (repeattoframe < apparentframe) {
-				result = result - repeattoframe + repeatfromframe - 1;
-			} else {
-				result = result - apparentframe + repeatfromframe;
-				ret = false;
-				break;
-			}
-		}
-	}
+        if (repeatfromframe <= apparentframe) {
+            if (repeattoframe < apparentframe) {
+                result = result - repeattoframe + repeatfromframe - 1;
+            } else {
+                result = result - apparentframe + repeatfromframe;
+                ret = false;
+                break;
+            }
+        }
+    }
 
-	*frameptr = result;
+    *frameptr = result;
 
-	return ret;
+    return ret;
 }
 
 /**
@@ -252,146 +274,224 @@ bool animRemapFrameForLoad(s16 animnum, s32 apparentframe, s32 *frameptr)
  */
 bool animIsFrameCutSkipped(s16 animnum, s32 frame)
 {
-	u8 *ptr = (u8 *)(g_AnimHeaderBytes[g_AnimToHeaderSlot[animnum]] + g_Anims[animnum].headerlen - 2);
+    u8 *ptr = (u8 *)(g_AnimHeaderBytes[g_AnimToHeaderSlot[animnum]] + g_Anims[animnum].headerlen - 2);
 
-	// Iterate past the repeat list
-	if (g_Anims[animnum].flags & ANIMFLAG_HASREPEATFRAMES) {
-		while (true) {
-			s16 repeatfromframe = ptr[0] << 8 | ptr[1];
+    // Iterate past the repeat list
+    if (g_Anims[animnum].flags & ANIMFLAG_HASREPEATFRAMES) {
+        while (true) {
+            s16 repeatfromframe = ptr[0] << 8 | ptr[1];
 
-			if (repeatfromframe < 0) {
-				break;
-			}
+            if (repeatfromframe < 0) {
+                break;
+            }
 
-			ptr -= 4;
-		}
+            ptr -= 4;
+        }
 
-		ptr -= 2;
-	}
+        ptr -= 2;
+    }
 
-	while (true) {
-		s16 skipframe = ptr[0] << 8 | ptr[1];
+    while (true) {
+        s16 skipframe = ptr[0] << 8 | ptr[1];
 
-		if (skipframe < 0) {
-			break;
-		}
+        if (skipframe < 0) {
+            break;
+        }
 
-		if (skipframe == frame) {
-			return true;
-		}
+        if (skipframe == frame) {
+            return true;
+        }
 
-		ptr -= 2;
-	}
+        ptr -= 2;
+    }
 
-	return false;
+    return false;
 }
 
 u8 animLoadFrame(s16 animnum, s32 framenum)
 {
-	s32 slot = -1;
-	s32 i;
-	s32 offset;
-	s32 stack;
-	s32 loadframenum = framenum;
+    s32 slot = -1;
+    s32 i;
+    s32 offset;
+    s32 stack;
+    s32 loadframenum = framenum;
 
-	for (i = 0; i < ANIM_FRAME_CACHE_SIZE; i++) {
-		if (g_AnimFrameAnimNums[i] == animnum && g_AnimFrameFrameNums[i] == loadframenum) {
-			slot = i;
-			break;
-		}
-	}
 
-	if (slot >= 0) {
-		g_AnimFrameBirths[slot] = 1;
-	} else {
-		slot = g_NextAnimFrameIndex;
+    if(VrMotionThrowing) {
 
-		while (g_AnimFrameBirths[slot]) {
-			slot = (slot + 1) % ANIM_FRAME_CACHE_SIZE;
-		}
+        if (animnum == 107 || animnum == 43 || animnum == 354 || animnum == 353 || animnum == 27 ||
+            animnum == 516 || animnum == 106 || animnum == 234 || animnum == 235 ||
+            animnum == 156) {
+            // nothing
+        } else {
+//        LOGI("animLoadFrame : animnum = %d, framenum = %d", animnum, framenum);
+        }
 
-		if (g_Anims[animnum].flags & ANIMFLAG_HASREPEATFRAMES) {
-			animRemapFrameForLoad(animnum, framenum, &loadframenum);
-		}
+        // --- VR HOOK: JUMP CUT (START THEN END) --- VR
+        if (animnum == 1010 || animnum == 1031) { // WEAPON_FALCON... / WEAPON_DY357... swing VR
 
-		if (g_Anims[animnum].bytesperframe) {
-			offset = g_Anims[animnum].bytesperframe * loadframenum + (g_Anims[animnum].data + g_Anims[animnum].headerlen);
+            loadframenum = 1;
+        }
+
+        if (animnum == 1055) { // WEAPON_UNARMED palm
+            loadframenum = 1;
+        }
+
+        if (animnum == 1002) { // WEAPON_UNARMED fist
+            loadframenum = 29;
+        }
+
+        if (animnum == 1027 ||
+            animnum == 1028) { // 1027 & 1028 = WEAPON_COMBATKNIFE FIRE FUNC_PRIMARY
+            loadframenum = 0;
+        }
+
+        if (animnum == 1051 && !vr_throw_cancelled) {
+            // The length of the first part we want to keep
+            s32 firstPartLength = 0;
+
+            // The frame from which we resume the animation
+            s32 jumpToFrame = 14;
+
+            // Phase 1: Play the beginning normally (from 0 to 4)
+            if (framenum < firstPartLength) {
+                loadframenum = framenum;
+            }
+                // Phase 2: The jump! We skip directly to the end
+            else {
+                // Calculate how many frames have elapsed since the jump
+                s32 framesSinceJump = framenum - firstPartLength;
+
+                // Resume playback from our landing point
+                loadframenum = jumpToFrame + framesSinceJump;
+
+                // If the very last frame of the animation is reached, freeze it
+                if (loadframenum > 41) {
+                    loadframenum = 41;
+                }
+            }
+        } else if (animnum == 1051) {
+            loadframenum = 0;
+        }
+
+
+        if (animnum == 1062) { // WEAPON_GRENADE or WEAPON_NBOMB Hold trigger
+            if (loadframenum > 10) {
+                loadframenum = 10;
+            }
+        }
+
+        if (animnum == 1077 || animnum == 1078 || animnum == 1080) { //WEAPON_TIMEDMINE or WEAPON_PROXIMITYMINE or WEAPON_REMOTEMINE or WEAPON_ECMMINE Hold trigger
+            loadframenum = 0;
+        }
+
+    }
+    // -------------------------------------------
+
+
+    for (i = 0; i < ANIM_FRAME_CACHE_SIZE; i++) {
+        if (g_AnimFrameAnimNums[i] == animnum && g_AnimFrameFrameNums[i] == loadframenum) {
+            slot = i;
+            break;
+        }
+    }
+
+    if (slot >= 0) {
+        g_AnimFrameBirths[slot] = 1;
+    } else {
+        slot = g_NextAnimFrameIndex;
+
+        while (g_AnimFrameBirths[slot]) {
+            slot = (slot + 1) % ANIM_FRAME_CACHE_SIZE;
+        }
+
+        if (g_Anims[animnum].flags & ANIMFLAG_HASREPEATFRAMES) {
+            animRemapFrameForLoad(animnum, framenum, &loadframenum);
+        }
+
+        if (g_Anims[animnum].bytesperframe) {
+            offset = g_Anims[animnum].bytesperframe * loadframenum + (g_Anims[animnum].data + g_Anims[animnum].headerlen);
 #ifndef PLATFORM_N64
-			if (g_Anims[animnum].data == 0xffffffff) {
-				// load external replacement (this will fatal error if there's no data)
-				if (!g_AnimReplacements[animnum]) {
-					g_AnimReplacements[animnum] = modAnimationLoadData(animnum);
-				}
-				offset = g_Anims[animnum].bytesperframe * loadframenum + g_Anims[animnum].headerlen;
-				g_AnimFrameBytes[slot] = g_AnimReplacements[animnum] + offset;
-			} else
+            if (g_Anims[animnum].data == 0xffffffff) {
+                // load external replacement (this will fatal error if there's no data)
+                if (!g_AnimReplacements[animnum]) {
+                    g_AnimReplacements[animnum] = modAnimationLoadData(animnum);
+                }
+                offset = g_Anims[animnum].bytesperframe * loadframenum + g_Anims[animnum].headerlen;
+                g_AnimFrameBytes[slot] = g_AnimReplacements[animnum] + offset;
+            } else
 #endif
-			g_AnimFrameBytes[slot] = animDma(&g_AnimFrameByteSlots[slot * g_AnimMaxBytesPerFrame], offset, g_Anims[animnum].bytesperframe);
-		} else {
-			g_AnimFrameBytes[slot] = &g_AnimFrameByteSlots[slot * g_AnimMaxBytesPerFrame];
-		}
+                g_AnimFrameBytes[slot] = animDma(&g_AnimFrameByteSlots[slot * g_AnimMaxBytesPerFrame], offset, g_Anims[animnum].bytesperframe);
+        } else {
+            g_AnimFrameBytes[slot] = &g_AnimFrameByteSlots[slot * g_AnimMaxBytesPerFrame];
+        }
 
-		g_AnimFrameAnimNums[slot] = animnum;
-		g_AnimFrameFrameNums[slot] = framenum;
-		g_AnimFrameBirths[slot] = 1;
-		g_NextAnimFrameIndex = (slot + 1) % ANIM_FRAME_CACHE_SIZE;
-	}
 
-	return slot;
+        g_AnimFrameAnimNums[slot] = animnum;
+        g_AnimFrameFrameNums[slot] = framenum;
+        g_AnimFrameBirths[slot] = 1;
+        g_NextAnimFrameIndex = (slot + 1) % ANIM_FRAME_CACHE_SIZE;
+    }
+
+    return slot;
 }
 
 void animForgetFrameBirths(void)
 {
-	s32 i;
+    s32 i;
 
-	for (i = 0; i < ANIM_FRAME_CACHE_SIZE; i++) {
-		g_AnimFrameBirths[i] = 0;
-	}
+    for (i = 0; i < ANIM_FRAME_CACHE_SIZE; i++) {
+        g_AnimFrameBirths[i] = 0;
+    }
 }
 
 void animLoadHeader(s16 animnum)
 {
-	s32 i;
 
-	if (g_AnimToHeaderSlot[animnum] != 0xff) {
-		g_AnimHeaderBirths[g_AnimToHeaderSlot[animnum]] = g_Vars.thisframestart240;
-		g_NextAnimHeaderIndex = (g_AnimToHeaderSlot[animnum] + 1) % ANIM_HEADER_CACHE_SIZE;
-	} else {
-		s32 tmp;
-		s32 slot = g_NextAnimHeaderIndex;
-		s32 stack;
+    s32 i;
 
-		for (i = 0; i < ANIM_HEADER_CACHE_SIZE; i++) {
-			if (g_AnimHeaderBirths[i] < g_AnimHeaderBirths[slot]) {
-				slot = i;
-			}
-		}
 
-		if (g_AnimHeaderBirths[slot]);
-		if (&g_Vars && &g_Vars);
+    if (g_AnimToHeaderSlot[animnum] != 0xff) {
+        g_AnimHeaderBirths[g_AnimToHeaderSlot[animnum]] = g_Vars.thisframestart240;
+        g_NextAnimHeaderIndex = (g_AnimToHeaderSlot[animnum] + 1) % ANIM_HEADER_CACHE_SIZE;
+    } else {
+        s32 tmp;
+        s32 slot = g_NextAnimHeaderIndex;
+        s32 stack;
 
-		if (g_AnimHeaderAnimNums[slot]) {
-			g_AnimToHeaderSlot[g_AnimHeaderAnimNums[slot]] = 0xff;
-		}
+        for (i = 0; i < ANIM_HEADER_CACHE_SIZE; i++) {
+            if (g_AnimHeaderBirths[i] < g_AnimHeaderBirths[slot]) {
+                slot = i;
+            }
+        }
 
-		tmp = g_Anims[animnum].headerlen;
+        if (g_AnimHeaderBirths[slot]);
+        if (&g_Vars && &g_Vars);
+
+        if (g_AnimHeaderAnimNums[slot]) {
+            g_AnimToHeaderSlot[g_AnimHeaderAnimNums[slot]] = 0xff;
+        }
+
+        tmp = g_Anims[animnum].headerlen;
 
 #ifndef PLATFORM_N64
-		if (g_Anims[animnum].data == 0xffffffff) {
-			// load external replacement (this will fatal error if there's no data)
-			if (!g_AnimReplacements[animnum]) {
-				g_AnimReplacements[animnum] = modAnimationLoadData(animnum);
-			}
-			g_AnimHeaderBytes[slot] = g_AnimReplacements[animnum];
-		} else
+        if (g_Anims[animnum].data == 0xffffffff) {
+            // load external replacement (this will fatal error if there's no data)
+            if (!g_AnimReplacements[animnum]) {
+                g_AnimReplacements[animnum] = modAnimationLoadData(animnum);
+            }
+            g_AnimHeaderBytes[slot] = g_AnimReplacements[animnum];
+        } else
 #endif
-		g_AnimHeaderBytes[slot] = animDma(&g_AnimHeaderByteSlots[slot * g_AnimMaxHeaderLength], g_Anims[animnum].data, tmp);
-		g_AnimToHeaderSlot[animnum] = slot;
-		g_AnimHeaderAnimNums[slot] = animnum;
-		g_AnimHeaderBirths[slot] = g_Vars.thisframestart240;
-		g_NextAnimHeaderIndex = (slot + 1) % ANIM_HEADER_CACHE_SIZE;
-	}
+            g_AnimHeaderBytes[slot] = animDma(&g_AnimHeaderByteSlots[slot * g_AnimMaxHeaderLength], g_Anims[animnum].data, tmp);
+        g_AnimToHeaderSlot[animnum] = slot;
+        g_AnimHeaderAnimNums[slot] = animnum;
+        g_AnimHeaderBirths[slot] = g_Vars.thisframestart240;
+        g_NextAnimHeaderIndex = (slot + 1) % ANIM_HEADER_CACHE_SIZE;
+    }
+
 }
+
 
 /**
  * Read a number of bits from the given ptr and return it as an integer.
@@ -401,46 +501,46 @@ void animLoadHeader(s16 animnum)
  */
 s32 animReadBits(u8 *ptr, u8 remainingbits, u32 bitoffset)
 {
-	u32 result = 0;
-	u32 mask;
-	u8 numbitsthisbyte;
+    u32 result = 0;
+    u32 mask;
+    u8 numbitsthisbyte;
 
-	result *= bitoffset / 8;
+    result *= bitoffset / 8;
 
-	// Move ptr forward past all the bytes that should be fully skipped
-	ptr += bitoffset / 8;
+    // Move ptr forward past all the bytes that should be fully skipped
+    ptr += bitoffset / 8;
 
-	// Calculate the number of bits to read in the first byte
-	bitoffset %= 8;
-	numbitsthisbyte = 8 - bitoffset;
+    // Calculate the number of bits to read in the first byte
+    bitoffset %= 8;
+    numbitsthisbyte = 8 - bitoffset;
 
-	// Iterate bytes, except for the last if it's a partial read
-	while (remainingbits >= numbitsthisbyte) {
-		remainingbits -= numbitsthisbyte;
-		mask = (1 << numbitsthisbyte) - 1;
-		result |= (*ptr & mask) << remainingbits;
-		ptr++;
-		numbitsthisbyte = 8;
-	}
+    // Iterate bytes, except for the last if it's a partial read
+    while (remainingbits >= numbitsthisbyte) {
+        remainingbits -= numbitsthisbyte;
+        mask = (1 << numbitsthisbyte) - 1;
+        result |= (*ptr & mask) << remainingbits;
+        ptr++;
+        numbitsthisbyte = 8;
+    }
 
-	// Read bits from the final byte if it's partial read
-	if (remainingbits > 0) {
-		mask = (1 << remainingbits) - 1;
-		result |= (*ptr >> (numbitsthisbyte - remainingbits)) & mask;
-	}
+    // Read bits from the final byte if it's partial read
+    if (remainingbits > 0) {
+        mask = (1 << remainingbits) - 1;
+        result |= (*ptr >> (numbitsthisbyte - remainingbits)) & mask;
+    }
 
-	return result;
+    return result;
 }
 
 s32 animReadSignedShort(u8 *ptr, u8 readbitlen, s32 bitoffset)
 {
-	u16 result = animReadBits(ptr, readbitlen, bitoffset);
+    u16 result = animReadBits(ptr, readbitlen, bitoffset);
 
-	if (readbitlen < 16 && (result & (1 << (readbitlen - 1)))) {
-		result |= ((1 << (16 - readbitlen)) - 1) << readbitlen;
-	}
+    if (readbitlen < 16 && (result & (1 << (readbitlen - 1)))) {
+        result |= ((1 << (16 - readbitlen)) - 1) << readbitlen;
+    }
 
-	return result;
+    return result;
 }
 
 /**
@@ -451,186 +551,189 @@ s32 animReadSignedShort(u8 *ptr, u8 readbitlen, s32 bitoffset)
  */
 void animGetRotTranslateScale(s32 part, bool flip, struct skeleton *skel, s16 animnum, u8 frameslot, struct coord *rot, struct coord *translate, struct coord *scale)
 {
-	s32 i;
-	u16 introt[3];
-	u8 readbitlen;
-	u8 *framebytes = g_AnimFrameBytes[frameslot];
-	u8 framelen;
-	u8 *ptr;
-	u8 *end;
-	s32 bitoffset;
-	u32 stack;
+    s32 i;
+    u16 introt[3];
+    u8 readbitlen;
+    u8 *framebytes = g_AnimFrameBytes[frameslot];
+    u8 framelen;
+    u8 *ptr;
+    u8 *end;
+    s32 bitoffset;
+    u32 stack;
 
-	if (flip) {
-		part = skel->things[part][1];
-	}
 
-	framelen = g_Anims[animnum].framelen;
-	ptr = g_AnimHeaderBytes[g_AnimToHeaderSlot[animnum]];
-	bitoffset = 0;
-	end = ptr + g_Anims[animnum].headerlen;
+    if (flip) {
+        part = skel->things[part][1];
+    }
 
-	for (i = 0; i < part && ptr < end; i++) {
-		u8 flags = *ptr;
-		ptr++;
+    framelen = g_Anims[animnum].framelen;
+    ptr = g_AnimHeaderBytes[g_AnimToHeaderSlot[animnum]];
+    bitoffset = 0;
+    end = ptr + g_Anims[animnum].headerlen;
 
-		if (flags & ANIMFIELD_08) {
-			bitoffset += ptr[2] + ptr[5] + ptr[8] + ptr[11];
-			ptr += 12;
-		} else if (flags & ANIMFIELD_S16_TRANSLATE) {
-			bitoffset += ptr[2] + ptr[5] + ptr[8];
-			ptr += 9;
-		} else if (flags & ANIMFIELD_S32_TRANSLATE) {
-			bitoffset += ptr[0] + ptr[5] + ptr[10];
-			ptr += 15;
-		}
+    for (i = 0; i < part && ptr < end; i++) {
+        u8 flags = *ptr;
+        ptr++;
 
-		if (flags & ANIMFIELD_S16_ROTATE) {
-			bitoffset += ptr[2] + ptr[5] + ptr[8];
-			ptr += 9;
-		} else if (flags & ANIMFIELD_F32_ROTATE) {
-			bitoffset += 96;
-		}
 
-		if (flags & ANIMFIELD_CAMERA) {
-			bitoffset += ptr[0];
-			ptr += 5;
-		}
+        if (flags & ANIMFIELD_08) {
+            bitoffset += ptr[2] + ptr[5] + ptr[8] + ptr[11];
+            ptr += 12;
+        } else if (flags & ANIMFIELD_S16_TRANSLATE) {
+            bitoffset += ptr[2] + ptr[5] + ptr[8];
+            ptr += 9;
+        } else if (flags & ANIMFIELD_S32_TRANSLATE) {
+            bitoffset += ptr[0] + ptr[5] + ptr[10];
+            ptr += 15;
+        }
 
-		if (flags & ANIMFIELD_F32_SCALE) {
-			bitoffset += 0x60;
-		}
-	}
+        if (flags & ANIMFIELD_S16_ROTATE) {
+            bitoffset += ptr[2] + ptr[5] + ptr[8];
+            ptr += 9;
+        } else if (flags & ANIMFIELD_F32_ROTATE) {
+            bitoffset += 96;
+        }
 
-	if (ptr < end) {
-		u8 flags = *ptr;
-		ptr++;
+        if (flags & ANIMFIELD_CAMERA) {
+            bitoffset += ptr[0];
+            ptr += 5;
+        }
 
-		if (flags & ANIMFIELD_S16_TRANSLATE) {
-			readbitlen = ptr[2];
-			translate->x = (s16) (animReadSignedShort(framebytes, readbitlen, bitoffset) + (ptr[0] << 8) + ptr[1]);
-			bitoffset += readbitlen;
+        if (flags & ANIMFIELD_F32_SCALE) {
+            bitoffset += 0x60;
+        }
+    }
 
-			readbitlen = ptr[5];
-			translate->y = (s16) (animReadSignedShort(framebytes, readbitlen, bitoffset) + (ptr[3] << 8) + ptr[4]);
-			bitoffset += readbitlen;
+    if (ptr < end) {
+        u8 flags = *ptr;
+        ptr++;
 
-			readbitlen = ptr[8];
-			translate->z = (s16) (animReadSignedShort(framebytes, readbitlen, bitoffset) + (ptr[6] << 8) + ptr[7]);
-			bitoffset += readbitlen;
+        if (flags & ANIMFIELD_S16_TRANSLATE) {
+            readbitlen = ptr[2];
+            translate->x = (s16) (animReadSignedShort(framebytes, readbitlen, bitoffset) + (ptr[0] << 8) + ptr[1]);
+            bitoffset += readbitlen;
 
-			ptr += 9;
-		} else if (flags & ANIMFIELD_S32_TRANSLATE) {
-			readbitlen = ptr[0];
-			translate->x = (animReadBits(framebytes, readbitlen, bitoffset) + ((ptr[1] << 24) + (ptr[2] << 16) + (ptr[3] << 8) + ptr[4])) * 0.001f;
-			bitoffset += readbitlen;
+            readbitlen = ptr[5];
+            translate->y = (s16) (animReadSignedShort(framebytes, readbitlen, bitoffset) + (ptr[3] << 8) + ptr[4]);
+            bitoffset += readbitlen;
 
-			readbitlen = ptr[5];
-			translate->y = (animReadBits(framebytes, readbitlen, bitoffset) + ((ptr[6] << 24) + (ptr[7] << 16) + (ptr[8] << 8) + ptr[9])) * 0.001f;
-			bitoffset += readbitlen;
+            readbitlen = ptr[8];
+            translate->z = (s16) (animReadSignedShort(framebytes, readbitlen, bitoffset) + (ptr[6] << 8) + ptr[7]);
+            bitoffset += readbitlen;
 
-			readbitlen = ptr[10];
-			translate->z = (animReadBits(framebytes, readbitlen, bitoffset) + ((ptr[11] << 24) + (ptr[12] << 16) + (ptr[13] << 8) + ptr[14])) * 0.001f;
-			bitoffset += readbitlen;
+            ptr += 9;
+        } else if (flags & ANIMFIELD_S32_TRANSLATE) {
+            readbitlen = ptr[0];
+            translate->x = (animReadBits(framebytes, readbitlen, bitoffset) + ((ptr[1] << 24) + (ptr[2] << 16) + (ptr[3] << 8) + ptr[4])) * 0.001f;
+            bitoffset += readbitlen;
 
-			ptr += 15;
-		} else {
-			if (flags & ANIMFIELD_08) {
-				bitoffset += ptr[2] + ptr[5] + ptr[8] + ptr[11];
-				ptr += 12;
-			}
+            readbitlen = ptr[5];
+            translate->y = (animReadBits(framebytes, readbitlen, bitoffset) + ((ptr[6] << 24) + (ptr[7] << 16) + (ptr[8] << 8) + ptr[9])) * 0.001f;
+            bitoffset += readbitlen;
 
-			translate->x = translate->y = translate->z = 0.0f;
-		}
+            readbitlen = ptr[10];
+            translate->z = (animReadBits(framebytes, readbitlen, bitoffset) + ((ptr[11] << 24) + (ptr[12] << 16) + (ptr[13] << 8) + ptr[14])) * 0.001f;
+            bitoffset += readbitlen;
 
-		if (flags & ANIMFIELD_S16_ROTATE) {
-			readbitlen = ptr[2];
-			introt[0] = animReadBits(framebytes, readbitlen, bitoffset);
-			introt[0] += (ptr[0] << 8) + ptr[1];
-			introt[0] <<= 16 - framelen;
-			bitoffset += readbitlen;
+            ptr += 15;
+        } else {
+            if (flags & ANIMFIELD_08) {
+                bitoffset += ptr[2] + ptr[5] + ptr[8] + ptr[11];
+                ptr += 12;
+            }
 
-			readbitlen = ptr[5];
-			introt[1] = animReadBits(framebytes, readbitlen, bitoffset);
-			introt[1] += (ptr[3] << 8) + ptr[4];
-			introt[1] <<= 16 - framelen;
-			bitoffset += readbitlen;
+            translate->x = translate->y = translate->z = 0.0f;
+        }
 
-			readbitlen = ptr[8];
-			introt[2] = animReadBits(framebytes, readbitlen, bitoffset);
-			introt[2] += (ptr[6] << 8) + ptr[7];
-			introt[2] <<= 16 - framelen;
-			bitoffset += readbitlen;
+        if (flags & ANIMFIELD_S16_ROTATE) {
+            readbitlen = ptr[2];
+            introt[0] = animReadBits(framebytes, readbitlen, bitoffset);
+            introt[0] += (ptr[0] << 8) + ptr[1];
+            introt[0] <<= 16 - framelen;
+            bitoffset += readbitlen;
 
-			rot->x = introt[0] * M_BADTAU / 65536.0f;
+            readbitlen = ptr[5];
+            introt[1] = animReadBits(framebytes, readbitlen, bitoffset);
+            introt[1] += (ptr[3] << 8) + ptr[4];
+            introt[1] <<= 16 - framelen;
+            bitoffset += readbitlen;
 
-			if (flip) {
-				if (introt[1] != 0) {
-					rot->y = (0x10000 - introt[1]) * M_BADTAU / 65536.0f;
-				} else {
-					rot->y = 0.0f;
-				}
+            readbitlen = ptr[8];
+            introt[2] = animReadBits(framebytes, readbitlen, bitoffset);
+            introt[2] += (ptr[6] << 8) + ptr[7];
+            introt[2] <<= 16 - framelen;
+            bitoffset += readbitlen;
 
-				if (introt[2] != 0) {
-					rot->z = (0x10000 - introt[2]) * M_BADTAU / 65536.0f;
-				} else {
-					rot->z = 0.0f;
-				}
-			} else {
-				rot->y = introt[1] * M_BADTAU / 65536.0f;
-				rot->z = introt[2] * M_BADTAU / 65536.0f;
-			}
-		} else if (flags & ANIMFIELD_F32_ROTATE) {
-			s32 sp38;
+            rot->x = introt[0] * M_BADTAU / 65536.0f;
 
-			sp38 = animReadBits(framebytes, 32, bitoffset);
-			rot->x = *(f32 *)&sp38;
-			bitoffset += 32;
+            if (flip) {
+                if (introt[1] != 0) {
+                    rot->y = (0x10000 - introt[1]) * M_BADTAU / 65536.0f;
+                } else {
+                    rot->y = 0.0f;
+                }
 
-			sp38 = animReadBits(framebytes, 32, bitoffset);
-			rot->y = *(f32 *)&sp38;
-			bitoffset += 32;
+                if (introt[2] != 0) {
+                    rot->z = (0x10000 - introt[2]) * M_BADTAU / 65536.0f;
+                } else {
+                    rot->z = 0.0f;
+                }
+            } else {
+                rot->y = introt[1] * M_BADTAU / 65536.0f;
+                rot->z = introt[2] * M_BADTAU / 65536.0f;
+            }
+        } else if (flags & ANIMFIELD_F32_ROTATE) {
+            s32 sp38;
 
-			sp38 = animReadBits(framebytes, 32, bitoffset);
-			rot->z = *(f32 *)&sp38;
-			bitoffset += 32;
+            sp38 = animReadBits(framebytes, 32, bitoffset);
+            rot->x = *(f32 *)&sp38;
+            bitoffset += 32;
 
-			if (flip) {
-				if (rot->y != 0.0f) {
-					rot->y = M_BADTAU - rot->y;
-				}
+            sp38 = animReadBits(framebytes, 32, bitoffset);
+            rot->y = *(f32 *)&sp38;
+            bitoffset += 32;
 
-				if (rot->z != 0.0f) {
-					rot->z = M_BADTAU - rot->z;
-				}
-			}
-		} else {
-			rot->x = rot->y = rot->z = 0.0f;
-		}
+            sp38 = animReadBits(framebytes, 32, bitoffset);
+            rot->z = *(f32 *)&sp38;
+            bitoffset += 32;
 
-		if (flags & ANIMFIELD_F32_SCALE) {
-			s32 word;
+            if (flip) {
+                if (rot->y != 0.0f) {
+                    rot->y = M_BADTAU - rot->y;
+                }
 
-			word = animReadBits(framebytes, 32, bitoffset);
-			scale->x = *(f32 *)&word;
-			bitoffset += 32;
+                if (rot->z != 0.0f) {
+                    rot->z = M_BADTAU - rot->z;
+                }
+            }
+        } else {
+            rot->x = rot->y = rot->z = 0.0f;
+        }
 
-			word = animReadBits(framebytes, 32, bitoffset);
-			scale->y = *(f32 *)&word;
-			bitoffset += 32;
+        if (flags & ANIMFIELD_F32_SCALE) {
+            s32 word;
 
-			word = animReadBits(framebytes, 32, bitoffset);
-			scale->z = *(f32 *)&word;
-		} else {
-			scale->x = scale->y = scale->z = 1.0f;
-		}
+            word = animReadBits(framebytes, 32, bitoffset);
+            scale->x = *(f32 *)&word;
+            bitoffset += 32;
 
-		return;
-	}
+            word = animReadBits(framebytes, 32, bitoffset);
+            scale->y = *(f32 *)&word;
+            bitoffset += 32;
 
-	rot->x = rot->y = rot->z = 0.0f;
-	translate->x = translate->y = translate->z = 0.0f;
-	scale->x = scale->y = scale->z = 1.0f;
+            word = animReadBits(framebytes, 32, bitoffset);
+            scale->z = *(f32 *)&word;
+        } else {
+            scale->x = scale->y = scale->z = 1.0f;
+        }
+
+        return;
+    }
+
+    rot->x = rot->y = rot->z = 0.0f;
+    translate->x = translate->y = translate->z = 0.0f;
+    scale->x = scale->y = scale->z = 1.0f;
+
 }
 
 /**
@@ -642,102 +745,102 @@ void animGetRotTranslateScale(s32 part, bool flip, struct skeleton *skel, s16 an
  */
 u16 animGetPosAngleAsInt(s32 part, bool flip, struct skeleton *skel, s16 animnum, s32 framenum, s16 inttranslate[3], bool arg6)
 {
-	u16 result = 0;
-	s32 bitoffset;
-	u8 readbitlen;
-	u8 slot;
-	u8 *framebytes;
-	u8 *ptr;
-	s32 i;
+    u16 result = 0;
+    s32 bitoffset;
+    u8 readbitlen;
+    u8 slot;
+    u8 *framebytes;
+    u8 *ptr;
+    s32 i;
 
-	if (arg6) {
-		inttranslate[0] = 0;
-		inttranslate[1] = 0;
-		inttranslate[2] = var8005f014[animnum];
-	} else {
-		animLoadHeader(animnum);
-		slot = animLoadFrame(animnum, framenum);
-		animForgetFrameBirths();
+    if (arg6) {
+        inttranslate[0] = 0;
+        inttranslate[1] = 0;
+        inttranslate[2] = var8005f014[animnum];
+    } else {
+        animLoadHeader(animnum);
+        slot = animLoadFrame(animnum, framenum);
+        animForgetFrameBirths();
 
-		framebytes = g_AnimFrameBytes[slot];
+        framebytes = g_AnimFrameBytes[slot];
 
-		if (flip) {
-			part = skel->things[part][1];
-		}
+        if (flip) {
+            part = skel->things[part][1];
+        }
 
-		bitoffset = 0;
-		ptr = g_AnimHeaderBytes[g_AnimToHeaderSlot[animnum]];
+        bitoffset = 0;
+        ptr = g_AnimHeaderBytes[g_AnimToHeaderSlot[animnum]];
 
-		for (i = 0; i < part; i++) {
-			u8 flags = *ptr;
-			ptr++;
+        for (i = 0; i < part; i++) {
+            u8 flags = *ptr;
+            ptr++;
 
-			if (flags & ANIMFIELD_08) {
-				bitoffset += ptr[2] + ptr[5] + ptr[8] + ptr[11];
-				ptr += 12;
-			} else if (flags & ANIMFIELD_S16_TRANSLATE) {
-				bitoffset += ptr[2] + ptr[5] + ptr[8];
-				ptr += 9;
-			} else if (flags & ANIMFIELD_S32_TRANSLATE) {
-				bitoffset += ptr[0] + ptr[5] + ptr[10];
-				ptr += 15;
-			}
+            if (flags & ANIMFIELD_08) {
+                bitoffset += ptr[2] + ptr[5] + ptr[8] + ptr[11];
+                ptr += 12;
+            } else if (flags & ANIMFIELD_S16_TRANSLATE) {
+                bitoffset += ptr[2] + ptr[5] + ptr[8];
+                ptr += 9;
+            } else if (flags & ANIMFIELD_S32_TRANSLATE) {
+                bitoffset += ptr[0] + ptr[5] + ptr[10];
+                ptr += 15;
+            }
 
-			if (flags & ANIMFIELD_S16_ROTATE) {
-				bitoffset += ptr[2] + ptr[5] + ptr[8];
-				ptr += 9;
-			} else if (flags & ANIMFIELD_F32_ROTATE) {
-				bitoffset += 96;
-			}
+            if (flags & ANIMFIELD_S16_ROTATE) {
+                bitoffset += ptr[2] + ptr[5] + ptr[8];
+                ptr += 9;
+            } else if (flags & ANIMFIELD_F32_ROTATE) {
+                bitoffset += 96;
+            }
 
-			if (flags & ANIMFIELD_CAMERA) {
-				bitoffset += *ptr;
-				ptr += 5;
-			}
+            if (flags & ANIMFIELD_CAMERA) {
+                bitoffset += *ptr;
+                ptr += 5;
+            }
 
-			if (flags & ANIMFIELD_F32_SCALE) {
-				bitoffset += 96;
-			}
-		}
+            if (flags & ANIMFIELD_F32_SCALE) {
+                bitoffset += 96;
+            }
+        }
 
-		readbitlen = ptr[3];
-		inttranslate[0] = animReadSignedShort(framebytes, readbitlen, bitoffset) + ptr[1] * 256 + ptr[2];
-		bitoffset += readbitlen;
+        readbitlen = ptr[3];
+        inttranslate[0] = animReadSignedShort(framebytes, readbitlen, bitoffset) + ptr[1] * 256 + ptr[2];
+        bitoffset += readbitlen;
 
-		readbitlen = ptr[6];
-		inttranslate[1] = animReadSignedShort(framebytes, readbitlen, bitoffset) + ptr[4] * 256 + ptr[5];
-		bitoffset += readbitlen;
+        readbitlen = ptr[6];
+        inttranslate[1] = animReadSignedShort(framebytes, readbitlen, bitoffset) + ptr[4] * 256 + ptr[5];
+        bitoffset += readbitlen;
 
-		readbitlen = ptr[9];
-		inttranslate[2] = animReadSignedShort(framebytes, readbitlen, bitoffset) + ptr[7] * 256 + ptr[8];
-		bitoffset += readbitlen;
+        readbitlen = ptr[9];
+        inttranslate[2] = animReadSignedShort(framebytes, readbitlen, bitoffset) + ptr[7] * 256 + ptr[8];
+        bitoffset += readbitlen;
 
-		readbitlen = ptr[12];
-		result = animReadSignedShort(framebytes, readbitlen, bitoffset) + ptr[10] * 256 + ptr[11];
+        readbitlen = ptr[12];
+        result = animReadSignedShort(framebytes, readbitlen, bitoffset) + ptr[10] * 256 + ptr[11];
 
-		if (flip) {
-			inttranslate[0] = -inttranslate[0];
+        if (flip) {
+            inttranslate[0] = -inttranslate[0];
 
-			if (result != 0) {
-				result = 0x10000 - result;
-			}
-		}
-	}
+            if (result != 0) {
+                result = 0x10000 - result;
+            }
+        }
+    }
 
-	return result;
+    return result;
 }
 
 f32 animGetTranslateAngle(s32 part, bool flip, struct skeleton *skel, s16 animnum, s32 framenum, struct coord *translate, bool arg6)
 {
-	s16 inttranslate[3];
+    s16 inttranslate[3];
 
-	f32 angle = animGetPosAngleAsInt(part, flip, skel, animnum, framenum, inttranslate, arg6);
+    f32 angle = animGetPosAngleAsInt(part, flip, skel, animnum, framenum, inttranslate, arg6);
 
-	translate->x = inttranslate[0];
-	translate->y = inttranslate[1];
-	translate->z = inttranslate[2];
+    translate->x = inttranslate[0];
+    translate->y = inttranslate[1];
+    translate->z = inttranslate[2];
 
-	return angle * M_BADTAU / 65536.0f;
+    return angle * M_BADTAU / 65536.0f;
 }
 
 /**
@@ -751,63 +854,63 @@ f32 animGetTranslateAngle(s32 part, bool flip, struct skeleton *skel, s16 animnu
  */
 f32 animGetCameraValue(s32 part, s16 animnum, u8 frameslot)
 {
-	u32 stack[2];
-	u8 *framebytes = g_AnimFrameBytes[frameslot];
-	u8 *ptr = g_AnimHeaderBytes[g_AnimToHeaderSlot[animnum]];
-	f32 result = 0;
-	s32 bitoffset = 0;
-	s32 i;
-	u8 *end = ptr + g_Anims[animnum].headerlen;
+    u32 stack[2];
+    u8 *framebytes = g_AnimFrameBytes[frameslot];
+    u8 *ptr = g_AnimHeaderBytes[g_AnimToHeaderSlot[animnum]];
+    f32 result = 0;
+    s32 bitoffset = 0;
+    s32 i;
+    u8 *end = ptr + g_Anims[animnum].headerlen;
 
-	for (i = 0; i < part && ptr < end; i++) {
-		u8 flags = ptr[0];
-		ptr++;
+    for (i = 0; i < part && ptr < end; i++) {
+        u8 flags = ptr[0];
+        ptr++;
 
-		if (flags & ANIMFIELD_08) {
-			bitoffset += ptr[2] + ptr[5] + ptr[8] + ptr[11];
-			ptr += 12;
-		} else if (flags & ANIMFIELD_S16_TRANSLATE) {
-			bitoffset += ptr[2] + ptr[5] + ptr[8];
-			ptr += 9;
-		} else if (flags & ANIMFIELD_S32_TRANSLATE) {
-			bitoffset += ptr[0] + ptr[5] + ptr[10];
-			ptr += 15;
-		}
+        if (flags & ANIMFIELD_08) {
+            bitoffset += ptr[2] + ptr[5] + ptr[8] + ptr[11];
+            ptr += 12;
+        } else if (flags & ANIMFIELD_S16_TRANSLATE) {
+            bitoffset += ptr[2] + ptr[5] + ptr[8];
+            ptr += 9;
+        } else if (flags & ANIMFIELD_S32_TRANSLATE) {
+            bitoffset += ptr[0] + ptr[5] + ptr[10];
+            ptr += 15;
+        }
 
-		if (flags & ANIMFIELD_S16_ROTATE) {
-			bitoffset += ptr[2] + ptr[5] + ptr[8];
-			ptr += 9;
-		} else if (flags & ANIMFIELD_F32_ROTATE) {
-			bitoffset += 0x60;
-		}
+        if (flags & ANIMFIELD_S16_ROTATE) {
+            bitoffset += ptr[2] + ptr[5] + ptr[8];
+            ptr += 9;
+        } else if (flags & ANIMFIELD_F32_ROTATE) {
+            bitoffset += 0x60;
+        }
 
-		if (flags & ANIMFIELD_CAMERA) {
-			bitoffset += ptr[0];
-			ptr += 5;
-		}
+        if (flags & ANIMFIELD_CAMERA) {
+            bitoffset += ptr[0];
+            ptr += 5;
+        }
 
-		if (flags & ANIMFIELD_F32_SCALE) {
-			bitoffset += 0x60;
-		}
-	}
+        if (flags & ANIMFIELD_F32_SCALE) {
+            bitoffset += 0x60;
+        }
+    }
 
-	if (ptr < end) {
-		u8 flags = ptr[0];
-		ptr++;
+    if (ptr < end) {
+        u8 flags = ptr[0];
+        ptr++;
 
-		if (flags & ANIMFIELD_CAMERA) {
-			/**
-			 * In the header:
-			 * ptr[0] = number of bits to read in the frame data
-			 * ptr[1,2,3,4] = base value
-			 *
-			 * The value in the frame data is an adjustment value that is added
-			 * to the base value.
-			 */
-			s32 framevalue = animReadBits(framebytes, ptr[0], bitoffset);
-			result = (framevalue + ptr[1] * 0x1000000 + ptr[2] * 0x10000 + ptr[3] * 0x100 + ptr[4]) * 0.001f;
-		}
-	}
+        if (flags & ANIMFIELD_CAMERA) {
+            /**
+             * In the header:
+             * ptr[0] = number of bits to read in the frame data
+             * ptr[1,2,3,4] = base value
+             *
+             * The value in the frame data is an adjustment value that is added
+             * to the base value.
+             */
+            s32 framevalue = animReadBits(framebytes, ptr[0], bitoffset);
+            result = (framevalue + ptr[1] * 0x1000000 + ptr[2] * 0x10000 + ptr[3] * 0x100 + ptr[4]) * 0.001f;
+        }
+    }
 
-	return result;
+    return result;
 }

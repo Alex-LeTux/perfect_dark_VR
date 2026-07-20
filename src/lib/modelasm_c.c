@@ -104,6 +104,7 @@ bool modelasm00018680(struct modelrenderdata *renderdata, struct model *model)
 	s32 i;
 	f32 yrot;
 
+
 	for (i = 0; i < model->definition->nummatrices; i++) {
 		sp00[i].unk00 = 0;
 	}

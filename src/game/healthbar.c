@@ -169,26 +169,41 @@ Gfx *healthbarDraw(Gfx *gdl, struct chrdata *chr, s32 offyarg, f32 heightfracarg
 	f32 len0 = 0.0f;
 	s32 coloursize;
 
-	static s32 radmax = 30; // outer radius of the shield
-	static s32 radmed = 18; // inner radius of the shield
-	static s32 radmin = 12; // radius of the health bar
-	static s32 len1 = 170; // x pos of right side radius centre
-	static s32 len2 = 47;  // x pos of the left side of armour
-	static s32 len3 = 40;  // x pos of the right side of trauma (left side is 0)
+//	static s32 radmax = 30; // outer radius of the shield
+//	static s32 radmed = 18; // inner radius of the shield
+//	static s32 radmin = 12; // radius of the health bar
+//	static s32 len1 = 170; // x pos of right side radius centre
+//	static s32 len2 = 47;  // x pos of the left side of armour
+//	static s32 len3 = 40;  // x pos of the right side of trauma (left side is 0)
+    static s32 radmax = 15; // outer radius of the shield ////////////////////// VR
+    static s32 radmed = 9; // inner radius of the shield
+    static s32 radmin = 6; // radius of the health bar
+    static s32 len1 = 85; // x pos of right side radius centre
+    static s32 len2 = 23;  // x pos of the left side of armour
+    static s32 len3 = 20;  // x pos of the right side of trauma (left side is 0)
+
 	static u32 shieldcol = 0x10500090;
 	static u32 armourcol = 0x00c00060;
 	static u32 traumacol = 0xff000060;
 	static u32 bgcol = 0x00000080;
-	static s32 offx = -85;
-	static s32 offy = -185;
+//	static s32 offx = -85;
+//	static s32 offy = -185;
+    static s32 offx = -42; // VR
+    static s32 offy = -130;
+
 	static s32 shieldfade = 100;
 	static s32 armourfade = 100;
 	static s32 traumafade = 200;
 	static s32 shielddir = 1;
-	static s32 underleft = 95;
-	static s32 undertop = 18;
-	static s32 underright = 225;
-	static s32 underbottom = 46;
+//	static s32 underleft = 95;
+//	static s32 undertop = 18;
+//	static s32 underright = 225;
+//	static s32 underbottom = 46;
+    static s32 underleft = 47; // VR
+    static s32 undertop = 9;
+    static s32 underright = 112;
+    static s32 underbottom = 23;
+
 	static u32 undercol = 0x00000000;
 
 	vertices = gfxAllocateVertices(56);

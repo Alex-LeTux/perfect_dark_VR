@@ -20,6 +20,10 @@ import android.view.SurfaceView;
 import android.view.View;
 import android.view.WindowManager;
 
+// VR
+import android.os.Handler;
+import android.os.Looper;
+
 
 /**
     SDLSurface. This is what we draw on, so we need to know when it's created
@@ -100,6 +104,13 @@ public class SDLSurface extends SurfaceView implements SurfaceHolder.Callback,
         SDLActivity.onNativeSurfaceDestroyed();
     }
 
+
+    private Handler mResizeRetryHandler = new Handler(Looper.getMainLooper());
+    public native float get_RENDER_SCALE(); // VR
+
+    public native int get_targetW(); // VR Screen Width
+    public native int get_targetH(); // VR Screen Height
+
     // Called when the surface is resized
     @Override
     public void surfaceChanged(SurfaceHolder holder,
@@ -110,20 +121,18 @@ public class SDLSurface extends SurfaceView implements SurfaceHolder.Callback,
             return;
         }
 
-        mWidth = width;
-        mHeight = height;
-        int nDeviceWidth = width;
-        int nDeviceHeight = height;
-        try
-        {
-            if (Build.VERSION.SDK_INT >= 17 /* Android 4.2 (JELLY_BEAN_MR1) */) {
-                DisplayMetrics realMetrics = new DisplayMetrics();
-                mDisplay.getRealMetrics( realMetrics );
-                nDeviceWidth = realMetrics.widthPixels;
-                nDeviceHeight = realMetrics.heightPixels;
-            }
-        } catch(Exception ignored) {
-        }
+        int fakeWidth = (int)(get_targetW() * get_RENDER_SCALE() + 0.5f);  // VR
+        int fakeHeight = (int)(get_targetH() * get_RENDER_SCALE() + 0.5f);
+
+        mWidth = fakeWidth;
+        mHeight = fakeHeight;
+
+        width = fakeWidth;
+        height = fakeHeight;
+
+        int nDeviceWidth = fakeWidth;
+        int nDeviceHeight = fakeHeight;
+
 
         synchronized(SDLActivity.getContext()) {
             // In case we're waiting on a size change after going fullscreen, send a notification.
@@ -150,42 +159,13 @@ public class SDLSurface extends SurfaceView implements SurfaceHolder.Callback,
             }
         }
 
-        // Special Patch for Square Resolution: Black Berry Passport
-        if (skip) {
-           double min = Math.min(mWidth, mHeight);
-           double max = Math.max(mWidth, mHeight);
-
-           if (max / min < 1.20) {
-              Log.v("SDL", "Don't skip on such aspect-ratio. Could be a square resolution.");
-              skip = false;
-           }
-        }
-
-        // Don't skip in MultiWindow.
-        if (skip) {
-            if (Build.VERSION.SDK_INT >= 24 /* Android 7.0 (N) */) {
-                if (SDLActivity.mSingleton.isInMultiWindowMode()) {
-                    Log.v("SDL", "Don't skip in Multi-Window");
-                    skip = false;
-                }
-            }
-        }
-
-        if (skip) {
-           Log.v("SDL", "Skip .. Surface is not ready.");
-           mIsSurfaceReady = false;
-           return;
-        }
-
-        /* If the surface has been previously destroyed by onNativeSurfaceDestroyed, recreate it here */
-        SDLActivity.onNativeSurfaceChanged();
-
         /* Surface is ready */
         mIsSurfaceReady = true;
 
         SDLActivity.mNextNativeState = SDLActivity.NativeState.RESUMED;
         SDLActivity.handleNativeState();
     }
+
 
     // Key events
     @Override
@@ -403,3 +383,6 @@ public class SDLSurface extends SurfaceView implements SurfaceHolder.Callback,
         return false;
     }
 }
+
+
+

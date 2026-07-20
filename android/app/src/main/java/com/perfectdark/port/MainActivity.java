@@ -1,49 +1,58 @@
 package com.perfectdark.port;
 
 import org.libsdl.app.SDLActivity;
-import android.app.Activity;
-import android.content.Context;
-import android.content.pm.PackageManager;
+import android.content.Intent;
 import android.os.Bundle;
-import android.os.Environment;
 import android.view.View;
-import android.view.WindowManager;
-import android.widget.Toast;
-import androidx.core.app.ActivityCompat;
-import androidx.core.content.ContextCompat;
+import android.util.Log;
 import java.io.File;
 
 public class MainActivity extends SDLActivity {
-    private static final int PERMISSION_REQUEST_CODE = 1;
-    
+    private static final String TAG = "PerfectDark";
+
+    private static native void nativeSetVrJavaContext(android.app.Activity activity, android.view.Surface surface);
+
     static {
+        System.loadLibrary("openxr_loader");
         System.loadLibrary("SDL2");
         System.loadLibrary("pd");
     }
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
-        android.util.Log.i("PerfectDark", "MainActivity onCreate start");
-        
         super.onCreate(savedInstanceState);
-        android.util.Log.i("PerfectDark", "MainActivity super.onCreate complete");
-        
-        // Keep screen on and hide system UI
-        getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
-        
-        // Handle display cutouts (remove white bars)
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
-            getWindow().getAttributes().layoutInDisplayCutoutMode = 
-                WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
+
+        Log.i(TAG, "MainActivity onCreate - checking ROM");
+
+        // Vérifier si ROM existe
+        File dataDir = new File(getExternalFilesDir(null), "data");
+        File romFile = new File(dataDir, "pd.ntsc-final.z64");
+        if (!romFile.exists() || romFile.length() == 0) {
+            // No ROM found -> launch LauncherActivity for ROM selection
+            Log.i(TAG, "ROM not found, launching LauncherActivity");
+            Intent intent = new Intent(this, LauncherActivity.class);
+            startActivity(intent);
+            finish();
+            return;
         }
-        
-        hideSystemUI();
-        
-        // No external storage permissions needed with SAF + app-scoped storage
+
+        // ROM found -> continue in VR mode
+        Log.i(TAG, "ROM found, starting VR mode");
         initializeGame();
-        android.util.Log.i("PerfectDark", "MainActivity onCreate complete");
     }
-    
+
+
+
+    @Override
+    public void onWindowFocusChanged(boolean hasFocus) {
+        super.onWindowFocusChanged(hasFocus);
+        Log.i(TAG, "onWindowFocusChanged: " + hasFocus);
+        if (hasFocus) {
+            getWindow().getDecorView().post(this::hideSystemUI);
+        }
+    }
+
+
     private void hideSystemUI() {
         View decorView = getWindow().getDecorView();
         int uiOptions = View.SYSTEM_UI_FLAG_FULLSCREEN
@@ -54,53 +63,68 @@ public class MainActivity extends SDLActivity {
                 | View.SYSTEM_UI_FLAG_LAYOUT_STABLE;
         decorView.setSystemUiVisibility(uiOptions);
     }
-    
-    private boolean checkPermissions() { return true; }
-    
-    private void requestPermissions() { /* no-op */ }
-    
-    @Override
-    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
-        // No storage permissions requested; proceed regardless
-    }
-    
+
     private void initializeGame() {
-        android.util.Log.i("PerfectDark", "initializeGame start");
-        
+        Log.i(TAG, "initializeGame start");
+
         // Create data directory in external storage
         File dataDir = new File(getExternalFilesDir(null), "data");
-        android.util.Log.i("PerfectDark", "Data dir: " + dataDir.getAbsolutePath());
+        Log.i(TAG, "Data dir: " + dataDir.getAbsolutePath());
+
         if (!dataDir.exists()) {
             dataDir.mkdirs();
         }
-        
+
         // Initialize native game
-        android.util.Log.i("PerfectDark", "Calling nativeInit");
+        Log.i(TAG, "Calling nativeInit");
         nativeInit(dataDir.getAbsolutePath());
-        
-        android.util.Log.i("PerfectDark", "initializeGame complete");
+        Log.i(TAG, "initializeGame complete");
     }
-    
+
     @Override
     protected void onResume() {
+        Log.i(TAG, "MainActivity onResume - VR mode");
+        SDLActivity.mHasFocus = true;
         super.onResume();
-        hideSystemUI();
+
+        new Thread(() -> {
+            final int MAX_ATTEMPTS = 50;
+            final int DELAY_MS = 100;
+            for (int attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+                try {
+                    Thread.sleep(DELAY_MS);
+                    android.view.Surface surface = org.libsdl.app.SDLActivity.getNativeSurface();
+                    if (surface != null && surface.isValid()) {
+                        Log.i(TAG, "SDL Surface found after " + (attempt * DELAY_MS) + "ms");
+                        // Called directly from this background thread
+                        // xrInitializeLoaderKHR is thread-safe and must NOT block the UI thread
+                        nativeSetVrJavaContext(MainActivity.this, surface);
+                        return;
+                    }
+                } catch (InterruptedException e) {
+                    Log.e(TAG, "Surface polling interrupted", e);
+                    break;
+                }
+            }
+            Log.e(TAG, "SDL Surface timeout after " + (MAX_ATTEMPTS * DELAY_MS) + "ms");
+        }, "SurfacePollingThread").start();
     }
-    
+
     @Override
     protected void onPause() {
+        Log.i(TAG, "MainActivity onPause - VR may be going to sleep");
         super.onPause();
     }
-    
+
     @Override
     protected void onDestroy() {
+        Log.i(TAG, "MainActivity onDestroy");
         super.onDestroy();
         nativeDestroy();
     }
 
     // Native methods
     public native void nativeInit(String dataPath);
-    public native void nativeStartGame();
+    private static native void nativeVrResume();
     public native void nativeDestroy();
 }

@@ -25,4 +25,5 @@ u32 romdataFileGetEstimatedSize(const u32 size, const u32 loadtype);
 
 s32 romdataCheckGbcRom(void);
 
+
 #endif

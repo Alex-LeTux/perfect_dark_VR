@@ -34,6 +34,15 @@
 #define NUM_CACHE_SLOTS 45
 #define NUM_KEYTHINGS 9
 
+
+#ifdef ANDROID
+#include <android/log.h>
+
+#define LOGI(...) __android_log_print(ANDROID_LOG_INFO,  "PD-VR", __VA_ARGS__)
+#else
+#define LOGI(...) printf(__VA_ARGS__)
+#endif
+
 struct sndcache {
 	/*0x0000*/ u16 *indexes; // indexed by sfxnum, value is cache index (0-44) or 0xffff
 	/*0x0004*/ u8 refcounts[NUM_CACHE_SLOTS];
@@ -1529,7 +1538,7 @@ void sndInit(void)
 
 		// Promote segment-relative offsets to ROM addresses
 		g_SeqRomAddrs = mempAlloc(g_SeqTable->count * sizeof(uintptr_t), MEMPOOL_PERMANENT);
-		
+
 		for (i = 0; i < g_SeqTable->count; i++) {
 			g_SeqRomAddrs[i] = g_SeqTable->entries[i].romaddr + (romptr_t) REF_SEG _sequencesSegmentRomStart;
 		}
@@ -1691,7 +1700,7 @@ bool seqPlay(struct seqinstance *seq, s32 tracknum)
 
 		binstart = seq->data;
 		zipstart = binstart + binlen - ziplen;
-	
+
 		dmaExec(zipstart, g_SeqRomAddrs[seq->tracknum], ziplen);
 		ziplen = rzipInflate(zipstart, binstart, scratch);
 	}
@@ -2153,6 +2162,8 @@ struct sndstate *sndStart(s32 arg0, s16 sound, struct sndstate **handle, s32 vol
 	u8 pan;
 	u16 volume;
 	f32 pitch;
+
+    LOGI("sound %d, volume %d, pan %d, pitch %f, fxbus %d, fxmix %d\n", sound, volumearg, panarg, pitcharg, fxbusarg, fxmixarg);
 
 	fxmix = fxmixarg != -1 ? fxmixarg : 0;
 	fxbus = fxbusarg != -1 ? fxbusarg : 1;

@@ -1,4 +1,5 @@
 #define NOMINMAX
+// gfx_pc.cpp
 
 #include <cmath>
 #include <cstdint>
@@ -31,6 +32,13 @@
 #include "gfx_rendering_api.h"
 #include "gfx_screen_config.h"
 
+#include "../port/vr/vr_openxr.h"
+#include "glad/glad.h"
+
+#include <atomic>
+
+#include "../vr/vr_log.h"
+
 uintptr_t gfxFramebuffer;
 
 #define ALIGN(x, a) (((x) + (a - 1)) & ~(a - 1))
@@ -52,7 +60,13 @@ uintptr_t gfxFramebuffer;
 #define RATIO_X (gfx_current_dimensions.width / (float)SCREEN_WIDTH)
 #define RATIO_Y (gfx_current_dimensions.height / (float)SCREEN_HEIGHT)
 
-#define MAX_BUFFERED 256
+
+#ifdef ANDROID
+#define MAX_BUFFERED 64 // better on Quest 2 Standalone
+#else
+#define MAX_BUFFERED 1024
+#endif
+
 #define MAX_LIGHTS 4
 #define MAX_VERTICES 128
 #define MAX_VERTEX_COLORS 64
@@ -61,6 +75,28 @@ uintptr_t gfxFramebuffer;
 
 #define C0(pos, width) ((cmd->words.w0 >> (pos)) & ((1U << width) - 1))
 #define C1(pos, width) ((cmd->words.w1 >> (pos)) & ((1U << width) - 1))
+
+
+// ============================================================================
+// VR STEREO Global
+// ============================================================================
+
+extern "C" bool   vr_is_initialized();
+void   vr_begin_eye_render();
+void   vr_end_eye_render();
+float* vr_get_eye_proj_mtx(int eye);
+void   vr_get_eye_view_offset(int eye, float* out_tx, float* out_ty, float* out_tz, float *out_tx_HUD);
+bool vr_dl_is_pause_or_menu = false;
+int vr_MpPause = 0;
+static float s_vr_proj_col_major[16] = {};
+extern "C" int vr_get_internal_render_width();
+extern "C" int vr_get_internal_render_height();
+extern "C" bool vr_end_frame_and_submit();
+//static int s_debug_fb_shader = -1;
+extern float vr_get_horizontal_fov_offset_ratio(int eye);
+static float g_vr_internal_scale = 1.0f;
+
+//------------------------------------------------------------------------------
 
 struct RGBA {
     uint8_t r, g, b, a;
@@ -217,9 +253,9 @@ float gfx_current_native_aspect = 4.f / 3.f;
 bool gfx_framebuffers_enabled = true;
 bool gfx_detail_textures_enabled = true;
 
-static bool game_renders_to_framebuffer;
-static int game_framebuffer;
-static int game_framebuffer_msaa_resolved;
+bool game_renders_to_framebuffer;
+int game_framebuffer;
+int game_framebuffer_msaa_resolved;
 
 uint32_t gfx_msaa_level = 1;
 
@@ -256,11 +292,14 @@ static void gfx_flush(void) {
     }
 }
 
+
+
 static struct ShaderProgram* gfx_lookup_or_create_shader_program(uint64_t shader_id0, uint32_t shader_id1) {
     struct ShaderProgram* prg = gfx_rapi->lookup_shader(shader_id0, shader_id1);
     if (prg == NULL) {
         gfx_rapi->unload_shader(rendering_state.shader_program);
         prg = gfx_rapi->create_and_load_new_shader(shader_id0, shader_id1);
+
         rendering_state.shader_program = prg;
     }
     return prg;
@@ -268,22 +307,22 @@ static struct ShaderProgram* gfx_lookup_or_create_shader_program(uint64_t shader
 
 static const char* ccmux_to_string(uint32_t ccmux) {
     static const char* const tbl[] = {
-        "G_CCMUX_COMBINED",
-        "G_CCMUX_TEXEL0",
-        "G_CCMUX_TEXEL1",
-        "G_CCMUX_PRIMITIVE",
-        "G_CCMUX_SHADE",
-        "G_CCMUX_ENVIRONMENT",
-        "G_CCMUX_1",
-        "G_CCMUX_COMBINED_ALPHA",
-        "G_CCMUX_TEXEL0_ALPHA",
-        "G_CCMUX_TEXEL1_ALPHA",
-        "G_CCMUX_PRIMITIVE_ALPHA",
-        "G_CCMUX_SHADE_ALPHA",
-        "G_CCMUX_ENV_ALPHA",
-        "G_CCMUX_LOD_FRACTION",
-        "G_CCMUX_PRIM_LOD_FRAC",
-        "G_CCMUX_K5",
+            "G_CCMUX_COMBINED",
+            "G_CCMUX_TEXEL0",
+            "G_CCMUX_TEXEL1",
+            "G_CCMUX_PRIMITIVE",
+            "G_CCMUX_SHADE",
+            "G_CCMUX_ENVIRONMENT",
+            "G_CCMUX_1",
+            "G_CCMUX_COMBINED_ALPHA",
+            "G_CCMUX_TEXEL0_ALPHA",
+            "G_CCMUX_TEXEL1_ALPHA",
+            "G_CCMUX_PRIMITIVE_ALPHA",
+            "G_CCMUX_SHADE_ALPHA",
+            "G_CCMUX_ENV_ALPHA",
+            "G_CCMUX_LOD_FRACTION",
+            "G_CCMUX_PRIM_LOD_FRAC",
+            "G_CCMUX_K5",
     };
     if (ccmux > 15) {
         return "G_CCMUX_0";
@@ -295,14 +334,14 @@ static const char* ccmux_to_string(uint32_t ccmux) {
 
 static const char* acmux_to_string(uint32_t acmux) {
     static const char* const tbl[] = {
-        "G_ACMUX_COMBINED or G_ACMUX_LOD_FRACTION",
-        "G_ACMUX_TEXEL0",
-        "G_ACMUX_TEXEL1",
-        "G_ACMUX_PRIMITIVE",
-        "G_ACMUX_SHADE",
-        "G_ACMUX_ENVIRONMENT",
-        "G_ACMUX_1 or G_ACMUX_PRIM_LOD_FRAC",
-        "G_ACMUX_0",
+            "G_ACMUX_COMBINED or G_ACMUX_LOD_FRACTION",
+            "G_ACMUX_TEXEL0",
+            "G_ACMUX_TEXEL1",
+            "G_ACMUX_PRIMITIVE",
+            "G_ACMUX_SHADE",
+            "G_ACMUX_ENVIRONMENT",
+            "G_ACMUX_1 or G_ACMUX_PRIM_LOD_FRAC",
+            "G_ACMUX_0",
     };
     return tbl[acmux];
 }
@@ -590,7 +629,7 @@ static void import_texture_rgba16(int tile, const LoadedTexture& loaded_texture,
     const uint8_t* addr = loaded_texture.addr;
     const uint32_t size_bytes = loaded_texture.size_bytes;
     const uint32_t full_image_line_size_bytes =
-        loaded_texture.full_image_line_size_bytes;
+            loaded_texture.full_image_line_size_bytes;
     const uint32_t line_size_bytes = loaded_texture.line_size_bytes;
     // SUPPORT_CHECK(full_image_line_size_bytes == line_size_bytes);
     // TODO: this trips in some places with a garbage size in full_image_line_size_bytes
@@ -621,7 +660,7 @@ static void import_texture_rgba32(int tile, const LoadedTexture& loaded_texture,
     const uint8_t* addr = loaded_texture.addr;
     const uint32_t size_bytes = loaded_texture.size_bytes;
     const uint32_t full_image_line_size_bytes =
-        loaded_texture.full_image_line_size_bytes;
+            loaded_texture.full_image_line_size_bytes;
     const uint32_t line_size_bytes = loaded_texture.line_size_bytes;
     SUPPORT_CHECK(full_image_line_size_bytes == line_size_bytes);
 
@@ -642,7 +681,7 @@ static void import_texture_ia4(int tile, const LoadedTexture& loaded_texture, bo
     const uint8_t* addr = loaded_texture.addr;
     const uint32_t size_bytes = loaded_texture.size_bytes;
     const uint32_t full_image_line_size_bytes =
-        loaded_texture.full_image_line_size_bytes;
+            loaded_texture.full_image_line_size_bytes;
     const uint32_t line_size_bytes = loaded_texture.line_size_bytes;
     SUPPORT_CHECK(full_image_line_size_bytes == line_size_bytes);
 
@@ -671,7 +710,7 @@ static void import_texture_ia8(int tile, const LoadedTexture& loaded_texture, bo
     const uint8_t* addr = loaded_texture.addr;
     const uint32_t size_bytes = loaded_texture.size_bytes;
     const uint32_t full_image_line_size_bytes =
-        loaded_texture.full_image_line_size_bytes;
+            loaded_texture.full_image_line_size_bytes;
     const uint32_t line_size_bytes = loaded_texture.line_size_bytes;
     SUPPORT_CHECK(full_image_line_size_bytes == line_size_bytes);
 
@@ -697,7 +736,7 @@ static void import_texture_ia16(int tile, const LoadedTexture& loaded_texture, b
     const uint8_t* addr = loaded_texture.addr;
     const uint32_t size_bytes = loaded_texture.size_bytes;
     const uint32_t full_image_line_size_bytes =
-        loaded_texture.full_image_line_size_bytes;
+            loaded_texture.full_image_line_size_bytes;
     const uint32_t line_size_bytes = loaded_texture.line_size_bytes;
     SUPPORT_CHECK(full_image_line_size_bytes == line_size_bytes);
 
@@ -723,7 +762,7 @@ static void import_texture_i4(int tile, const LoadedTexture& loaded_texture, boo
     const uint8_t* addr = loaded_texture.addr;
     const uint32_t size_bytes = loaded_texture.size_bytes;
     const uint32_t full_image_line_size_bytes =
-        loaded_texture.full_image_line_size_bytes;
+            loaded_texture.full_image_line_size_bytes;
     const uint32_t line_size_bytes = loaded_texture.line_size_bytes;
     SUPPORT_CHECK(full_image_line_size_bytes == line_size_bytes);
 
@@ -750,7 +789,7 @@ static void import_texture_i8(int tile, const LoadedTexture& loaded_texture, boo
     const uint8_t* addr = loaded_texture.addr;
     const uint32_t size_bytes = loaded_texture.size_bytes;
     uint32_t full_image_line_size_bytes =
-        loaded_texture.full_image_line_size_bytes;
+            loaded_texture.full_image_line_size_bytes;
     const uint32_t line_size_bytes = loaded_texture.line_size_bytes;
     SUPPORT_CHECK(full_image_line_size_bytes == line_size_bytes);
 
@@ -796,7 +835,7 @@ static void import_texture_ci4(int tile, const LoadedTexture& loaded_texture, bo
     const uint8_t* addr = loaded_texture.addr;
     const uint32_t size_bytes = loaded_texture.size_bytes;
     const uint32_t full_image_line_size_bytes =
-        loaded_texture.full_image_line_size_bytes;
+            loaded_texture.full_image_line_size_bytes;
     const uint32_t line_size_bytes = loaded_texture.line_size_bytes;
     const uint32_t pal_idx = rdp.texture_tile[tile].palette; // 0-15
     const uint16_t* palette = (const uint16_t *)(rdp.palette + pal_idx * 16); // 16 pixel entries, 16 bits each
@@ -824,7 +863,7 @@ static void import_texture_ci8(int tile, const LoadedTexture& loaded_texture, bo
     const uint8_t* addr = loaded_texture.addr;
     const uint32_t size_bytes = loaded_texture.size_bytes;
     const uint32_t full_image_line_size_bytes =
-        loaded_texture.full_image_line_size_bytes;
+            loaded_texture.full_image_line_size_bytes;
     const uint32_t line_size_bytes = loaded_texture.line_size_bytes;
 
     for (uint32_t i = 0, j = 0; i < size_bytes; j += full_image_line_size_bytes - line_size_bytes) {
@@ -959,11 +998,11 @@ static void gfx_matrix_mul(float res[4][4], const float a[4][4], const float b[4
     memcpy(res, tmp, sizeof(tmp));
 }
 
+
 static void gfx_sp_matrix(uint8_t parameters, const int32_t* addr) {
     float matrix[4][4];
 
 #ifndef GBI_FLOATS
-    // Original GBI where fixed point matrices are used
     for (int i = 0; i < 4; i++) {
         for (int j = 0; j < 4; j += 2) {
             int32_t int_part = addr[i * 2 + j / 2];
@@ -973,7 +1012,6 @@ static void gfx_sp_matrix(uint8_t parameters, const int32_t* addr) {
         }
     }
 #else
-    // For a modified GBI where fixed point values are replaced with floats
     memcpy(matrix, addr, sizeof(matrix));
 #endif
 
@@ -997,23 +1035,32 @@ static void gfx_sp_matrix(uint8_t parameters, const int32_t* addr) {
         }
         rsp.lights_changed = 1;
     }
+
     gfx_matrix_mul(rsp.MP_matrix, rsp.modelview_matrix_stack[rsp.modelview_matrix_stack_size - 1], rsp.P_matrix);
+
 }
+
+
 
 static void gfx_sp_pop_matrix(uint32_t count) {
     while (count--) {
         if (rsp.modelview_matrix_stack_size > 0) {
             --rsp.modelview_matrix_stack_size;
             if (rsp.modelview_matrix_stack_size > 0) {
-                gfx_matrix_mul(rsp.MP_matrix, rsp.modelview_matrix_stack[rsp.modelview_matrix_stack_size - 1],
+                gfx_matrix_mul(rsp.MP_matrix,
+                               rsp.modelview_matrix_stack[rsp.modelview_matrix_stack_size - 1],
                                rsp.P_matrix);
             }
         }
     }
 }
 
+
+
 static float gfx_adjust_x_for_aspect_ratio(float x, float w = 1.f) {
-    if (fbActive) {
+    // In VR, no aspect correction should be applied here.
+    // In VR, it must use the headset framebuffer's actual aspect ratio, e.g. ~0.916.
+    if (fbActive || vr_is_initialized()) {
         return x;
     } else {
         return (rsp.aspect_ofs * w + x) * rsp.aspect_scale / gfx_current_dimensions.aspect_ratio;
@@ -1030,6 +1077,7 @@ static void gfx_adjust_width_height_for_scale(uint32_t& width, uint32_t& height)
         height = 1;
     }
 }
+
 
 static void gfx_sp_vertex(size_t n_vertices, size_t dest_index, const Vtx* vertices) {
     SUPPORT_CHECK(n_vertices <= MAX_VERTICES);
@@ -1174,6 +1222,7 @@ static void gfx_sp_vertex(size_t n_vertices, size_t dest_index, const Vtx* verti
     }
 }
 
+
 static void gfx_sp_modify_vertex(uint16_t vtx_idx, uint8_t where, uint32_t val) {
     SUPPORT_CHECK(where == G_MWO_POINT_ST);
 
@@ -1269,7 +1318,7 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bo
 
     uint64_t cc_options = 0;
     bool use_alpha =
-        (rdp.other_mode_l & (3 << 20)) == (G_BL_CLR_MEM << 20) && (rdp.other_mode_l & (3 << 16)) == (G_BL_1MA << 16);
+            (rdp.other_mode_l & (3 << 20)) == (G_BL_CLR_MEM << 20) && (rdp.other_mode_l & (3 << 16)) == (G_BL_1MA << 16);
     const bool use_fog = ((rdp.other_mode_l >> 30) == G_BL_CLR_FOG) || ((rdp.other_mode_l >> 26) == G_BL_A_FOG);
     const bool texture_edge = (rdp.other_mode_l & CVG_X_ALPHA) == CVG_X_ALPHA;
     const bool use_noise = (rdp.other_mode_l & (3U << G_MDSFT_ALPHACOMPARE)) == G_AC_DITHER;
@@ -1395,7 +1444,7 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bo
     struct ShaderProgram* prg = comb->prg[tm];
     if (prg == NULL) {
         comb->prg[tm] = prg =
-            gfx_lookup_or_create_shader_program(comb->shader_id0, comb->shader_id1 | (tm * SHADER_OPT_TEXEL0_CLAMP_S));
+                gfx_lookup_or_create_shader_program(comb->shader_id0, comb->shader_id1 | (tm * SHADER_OPT_TEXEL0_CLAMP_S));
     }
     if (prg != rendering_state.shader_program) {
         gfx_flush();
@@ -1504,8 +1553,8 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bo
             struct RGBA tmp = { 0 };
             for (int k = 0; k < 1 + (use_alpha ? 1 : 0); k++) {
                 switch (comb->shader_input_mapping[k][j]) {
-                        // Note: CCMUX constants and ACMUX constants used here have same value, which is why this works
-                        // (except LOD fraction).
+                    // Note: CCMUX constants and ACMUX constants used here have same value, which is why this works
+                    // (except LOD fraction).
                     case G_CCMUX_PRIMITIVE:
                         color = &rdp.prim_color;
                         break;
@@ -1611,23 +1660,42 @@ static void gfx_sp_geometry_mode(uint32_t clear, uint32_t set) {
     rsp.geometry_mode |= set;
 }
 
-static inline void gfx_update_aspect_mode(void) {
-    const uint32_t side = rsp.aspect_mode & G_ASPECT_CENTER_EXT;
 
-    rsp.aspect_scale = rsp.aspect_mode ? gfx_current_native_aspect : gfx_current_window_dimensions.aspect_ratio;
+
+
+extern "C" bool vr_is_initialized(void);
+extern "C" int  vr_get_internal_render_width(void);
+extern "C" int  vr_get_internal_render_height(void);
+
+static inline void gfx_update_aspect_mode(void) {
+    // In VR, the resolution/FOV mapping is already fully handled by
+    // gfx_adjust_viewport_or_scissor() (viewport) and shaders_build_xr_projection().
+    if (vr_is_initialized()) {
+        rsp.aspect_mode = 0;
+        rsp.aspect_scale = 1.0f;
+        rsp.aspect_ofs = 0.0f;
+        return;
+    }
+
+    const uint32_t side = rsp.extra_geometry_mode & G_ASPECT_MODE_EXT;
+
+    rsp.aspect_mode = side != G_ASPECT_CENTER_EXT;
+    rsp.aspect_scale = rsp.aspect_mode
+                       ? gfx_current_native_aspect / gfx_current_window_dimensions.aspect_ratio
+                       : 1.0f;
 
     if (side == G_ASPECT_LEFT_EXT) {
-        rsp.aspect_ofs = 1.f - gfx_current_dimensions.aspect_ratio / gfx_current_native_aspect;
+        rsp.aspect_ofs = (1.f - gfx_current_dimensions.aspect_ratio / gfx_current_native_aspect);
     } else if (side == G_ASPECT_RIGHT_EXT) {
-        rsp.aspect_ofs = gfx_current_dimensions.aspect_ratio / gfx_current_native_aspect - 1.f;
+        rsp.aspect_ofs = (gfx_current_dimensions.aspect_ratio / gfx_current_native_aspect - 1.f);
     } else {
         rsp.aspect_ofs = 0.f;
     }
 
-    if (side && (rsp.aspect_mode & G_ASPECT_WIDE_EXT)) {
+    if (!side && rsp.aspect_mode == G_ASPECT_WIDE_EXT) {
         constexpr float c = 16.f / 9.f;
         if (gfx_current_dimensions.aspect_ratio > c) {
-            rsp.aspect_ofs *= c / gfx_current_dimensions.aspect_ratio;
+            rsp.aspect_ofs = c / gfx_current_dimensions.aspect_ratio;
         }
     }
 }
@@ -1640,43 +1708,69 @@ static void gfx_sp_extra_geometry_mode(uint32_t clear, uint32_t set) {
 }
 
 static void gfx_adjust_viewport_or_scissor(XYWidthHeight* area, bool preserve_aspect = false) {
-    // HACK: assume all target framebuffers have the same aspect
-    area->width *= RATIO_X;
-    area->x *= RATIO_X;
-    area->height *= RATIO_Y;
-    area->y = SCREEN_HEIGHT - area->y;
-    area->y *= RATIO_Y;
-    if (preserve_aspect) {
-        // preserve native aspect ratio
-        const float ratio = gfx_current_native_aspect / gfx_current_dimensions.aspect_ratio;
-        const float midx = gfx_current_dimensions.width * 0.5f;
-        area->x = midx + (area->x - midx) * ratio;
-        area->x += rsp.aspect_ofs * gfx_current_dimensions.width * 0.5f;
-        area->width *= ratio;
-    }
+    if (vr_is_initialized()) {
+        const float fboW = (float)vr_get_internal_render_width();
+        const float fboH = (float)vr_get_internal_render_height();
+        const float vrAspect = fboW / fboH;
 
-    if (!game_renders_to_framebuffer ||
-        (gfx_msaa_level > 1 && gfx_current_dimensions.width == gfx_current_game_window_viewport.width &&
-            gfx_current_dimensions.height == gfx_current_game_window_viewport.height)) {
-        area->x += gfx_current_game_window_viewport.x;
-        area->y += gfx_current_window_dimensions.height -
-                    (gfx_current_game_window_viewport.y + gfx_current_game_window_viewport.height);
+        const float refWidth  = (float)SCREEN_WIDTH  * g_vr_internal_scale;
+        const float refHeight = (float)SCREEN_HEIGHT * g_vr_internal_scale;
+
+        const float vrRatioX = fboW / refWidth;
+        const float vrRatioY = fboH / refHeight;
+        const float vrUniformRatio = std::max(vrRatioX, vrRatioY);
+
+        const float scaledW = refWidth  * vrUniformRatio;
+        const float scaledH = refHeight * vrUniformRatio;
+        const float offsetX = (fboW - scaledW) * 0.5f;
+        const float offsetY = (fboH - scaledH) * 0.5f;
+
+        area->width  = (int32_t)(area->width  * vrUniformRatio);
+        area->height = (int32_t)(area->height * vrUniformRatio);
+        area->x      = (int32_t)(area->x * vrUniformRatio + offsetX);
+        area->y      = (int32_t)(fboH - (area->y * vrUniformRatio + offsetY));
+
+        if (preserve_aspect) {
+            const float ratio = vrAspect / gfx_current_dimensions.aspect_ratio;
+            const float midx  = fboW * 0.5f;
+            area->x      = (int32_t)(midx + (area->x - midx) * ratio);
+            area->x     += (int32_t)(rsp.aspect_ofs * fboW * 0.5f);
+            area->width  = (int32_t)(area->width * ratio);
+        }
+        return;
     }
 }
 
+
+
 static void gfx_calc_and_set_viewport(const Vp_t* viewport) {
-    // 2 bits fraction
-    float width = 2.0f * viewport->vscale[0] / 4.0f;
+    float width  = 2.0f * viewport->vscale[0] / 4.0f;
     float height = 2.0f * viewport->vscale[1] / 4.0f;
-    float x = (viewport->vtrans[0] / 4.0f) - width / 2.0f;
-    float y = ((viewport->vtrans[1] / 4.0f) + height / 2.0f);
+    float x = viewport->vtrans[0] / 4.0f - width / 2.0f;
+    float y = viewport->vtrans[1] / 4.0f + height / 2.0f;
+
+    if (SCREEN_WIDTH > 0 && width > 0.0f) {
+        g_vr_internal_scale = width / (float)SCREEN_WIDTH;
+    }
 
     rdp.viewport.x = x;
     rdp.viewport.y = y;
     rdp.viewport.width = width;
     rdp.viewport.height = height;
 
-    gfx_adjust_viewport_or_scissor(&rdp.viewport);
+    if (vr_is_initialized()) {
+        // The 3D viewport MUST always cover the entire VR framebuffer:
+        // the OpenXR projection matrix is already built to map the entire FOV
+        // onto fboW x fboH. Resizing it using any arbitrary ratio
+        // systematically introduces distortion again,
+        // because OpenGL stretches the clip space [-1,1] to fit the specified viewport.
+        rdp.viewport.x = 0;
+        rdp.viewport.y = 0;
+        rdp.viewport.width  = (int32_t)vr_get_internal_render_width();
+        rdp.viewport.height = (int32_t)vr_get_internal_render_height();
+    } else {
+        gfx_adjust_viewport_or_scissor(&rdp.viewport);
+    }
 
     rdp.viewport_or_scissor_changed = true;
 }
@@ -1732,11 +1826,26 @@ static void gfx_sp_texture(uint16_t sc, uint16_t tc, uint8_t level, uint8_t tile
     }
 }
 
+
 static void gfx_dp_set_scissor(uint32_t mode, uint32_t ulx, uint32_t uly, uint32_t lrx, uint32_t lry) {
     float x = ulx / 4.0f;
     float y = lry / 4.0f;
     float width = (lrx - ulx) / 4.0f;
     float height = (lry - uly) / 4.0f;
+
+
+    // ----------------------------------------------------------------------------
+    // --- VR: widen the scissor box according to the actual lens offset ---
+    //  asymmetry reported by the OpenXR runtime for each eye)
+    if (vr_is_initialized()) {
+        const float offsetRatioL = std::fabs(vr_get_horizontal_fov_offset_ratio(0));
+        const float offsetRatioR = std::fabs(vr_get_horizontal_fov_offset_ratio(1));
+        const float margin = std::max(offsetRatioL, offsetRatioR) + 0.15f; // +15% de marge de sécurité
+        x -= width * margin;
+        width += width * margin * 2.0f;
+    }
+    // -------------------------------------------------------------------
+
 
     rdp.scissor.x = x;
     rdp.scissor.y = y;
@@ -1747,6 +1856,7 @@ static void gfx_dp_set_scissor(uint32_t mode, uint32_t ulx, uint32_t uly, uint32
 
     rdp.viewport_or_scissor_changed = true;
 }
+
 
 static void gfx_dp_set_texture_image(uint32_t format, uint32_t size, uint32_t width, uint32_t tex_flags, const void* addr) {
     rdp.texture_to_load.addr = (const uint8_t*)addr;
@@ -1977,6 +2087,7 @@ static void gfx_dp_set_subpixel_offset(int16_t x, int16_t y) {
     rdp.subpixel_ofs_y = y;
 }
 
+
 static void gfx_draw_rectangle(int32_t ulx, int32_t uly, int32_t lrx, int32_t lry) {
     uint32_t saved_other_mode_h = rdp.other_mode_h;
     uint32_t cycle_type = (rdp.other_mode_h & (3U << G_MDSFT_CYCLETYPE));
@@ -2009,39 +2120,33 @@ static void gfx_draw_rectangle(int32_t ulx, int32_t uly, int32_t lrx, int32_t lr
     struct LoadedVertex* lr = &rsp.loaded_vertices[MAX_VERTICES + 2];
     struct LoadedVertex* ur = &rsp.loaded_vertices[MAX_VERTICES + 3];
 
-    ul->x = ulxf;
-    ul->y = ulyf;
-    ul->z = -1.0f;
-    ul->w = 1.0f;
 
-    ll->x = ulxf;
-    ll->y = lryf;
-    ll->z = -1.0f;
-    ll->w = 1.0f;
-
-    lr->x = lrxf;
-    lr->y = lryf;
-    lr->z = -1.0f;
-    lr->w = 1.0f;
-
-    ur->x = lrxf;
-    ur->y = ulyf;
-    ur->z = -1.0f;
-    ur->w = 1.0f;
+    ul->x = ulxf; ul->y = ulyf; ul->z = -1.0f; ul->w = 1.0f;
+    ll->x = ulxf; ll->y = lryf; ll->z = -1.0f; ll->w = 1.0f;
+    lr->x = lrxf; lr->y = lryf; lr->z = -1.0f; lr->w = 1.0f;
+    ur->x = lrxf; ur->y = ulyf; ur->z = -1.0f; ur->w = 1.0f;
 
     // The coordinates for texture rectangle shall bypass the viewport setting
-    struct XYWidthHeight default_viewport = { 0, (int16_t)SCREEN_HEIGHT, (uint32_t)SCREEN_WIDTH, (uint32_t)SCREEN_HEIGHT };
+    struct XYWidthHeight default_viewport = {
+            0,
+            (int16_t)(SCREEN_HEIGHT * g_vr_internal_scale),
+            (uint32_t)(SCREEN_WIDTH  * g_vr_internal_scale),
+            (uint32_t)(SCREEN_HEIGHT * g_vr_internal_scale)
+    };
+
     struct XYWidthHeight viewport_saved = rdp.viewport;
     uint32_t geometry_mode_saved = rsp.geometry_mode;
 
-    gfx_adjust_viewport_or_scissor(&default_viewport);
 
+    gfx_adjust_viewport_or_scissor(&default_viewport, false);
     rdp.viewport = default_viewport;
     rdp.viewport_or_scissor_changed = true;
     rsp.geometry_mode = 0;
 
+
     gfx_sp_tri1(MAX_VERTICES + 0, MAX_VERTICES + 1, MAX_VERTICES + 3, true);
     gfx_sp_tri1(MAX_VERTICES + 1, MAX_VERTICES + 2, MAX_VERTICES + 3, true);
+
 
     rsp.geometry_mode = geometry_mode_saved;
     rdp.viewport = viewport_saved;
@@ -2072,6 +2177,7 @@ static void gfx_dp_texture_rectangle(int32_t ulx, int32_t uly, int32_t lrx, int3
     // dsdx and dtdy are S5.10
     // lrx, lry, ulx, uly are U10.2
     // lrs, lrt are S10.5
+
 
     const int16_t width = flip ? lry - uly : lrx - ulx;
     const int16_t height = flip ? lrx - ulx : lry - uly;
@@ -2118,6 +2224,7 @@ static void gfx_dp_image_rectangle(int32_t tile, int32_t w, int32_t h,
                                    int32_t ulx, int32_t uly, int16_t uls, int16_t ult,
                                    int32_t lrx, int32_t lry, int16_t lrs, int16_t lrt) {
     uint64_t saved_combine_mode = rdp.combine_mode;
+
 
     struct LoadedVertex* ul = &rsp.loaded_vertices[MAX_VERTICES + 0];
     struct LoadedVertex* ll = &rsp.loaded_vertices[MAX_VERTICES + 1];
@@ -2246,6 +2353,7 @@ static inline void *seg_addr(uintptr_t w1) {
 
 uintptr_t clearMtx;
 
+
 static void gfx_run_dl(Gfx* cmd) {
     // puts("dl");
     int dummy = 0;
@@ -2259,9 +2367,15 @@ static void gfx_run_dl(Gfx* cmd) {
         uint32_t opcode = cmd->words.w0 >> 24;
         // gfx_print_cmd(cmd);
         switch (opcode) {
-                // RSP commands:
-            case G_NOOP:
+            // RSP commands:
+            case G_NOOP: {
+                uint32_t tag_w1 = cmd->words.w1;
+                if ((tag_w1 >> 16) == 0x5652) {
+                    // Met à jour la variable globale instantanément
+                    vr_dl_is_pause_or_menu = (tag_w1 & 0xFFFF) != 0; // VR
+                }
                 break;
+            }
             case G_MTX: {
                 gfx_sp_matrix(C0(16, 8), (const int32_t*)seg_addr(cmd->words.w1));
                 break;
@@ -2321,7 +2435,7 @@ static void gfx_run_dl(Gfx* cmd) {
                 gfx_sp_set_vertex_colors(C0(0, 16) / 4, (NormalColor *)seg_addr(cmd->words.w1));
                 break;
 
-            // RDP Commands:
+                // RDP Commands:
             case G_SETTIMG: {
                 gfx_dp_set_texture_image(C0(21, 3), C0(19, 2), C0(0, 10), 0, seg_addr(cmd->words.w1));
                 break;
@@ -2329,6 +2443,9 @@ static void gfx_run_dl(Gfx* cmd) {
             case G_SETTIMG_FB_EXT:
                 gfx_flush();
                 gfx_rapi->select_texture_fb(cmd->words.w1);
+
+//                s_debug_fb_shader = cmd->words.w1;   // on veut tracer le shader qui sera utilisé pour ce FBO
+
                 rdp.textures_changed[0] = false;
                 rdp.textures_changed[1] = false;
                 break;
@@ -2372,8 +2489,8 @@ static void gfx_run_dl(Gfx* cmd) {
                                         color_comb(C0(5, 4), C1(24, 4), C0(0, 5), C1(6, 3)),
                                         alpha_comb(C1(21, 3), C1(3, 3), C1(18, 3), C1(0, 3)));
                 break;
-            // G_SETPRIMCOLOR, G_CCMUX_PRIMITIVE, G_ACMUX_PRIMITIVE, is used by Goddard
-            // G_CCMUX_TEXEL1, LOD_FRACTION is used in Bowser room 1
+                // G_SETPRIMCOLOR, G_CCMUX_PRIMITIVE, G_ACMUX_PRIMITIVE, is used by Goddard
+                // G_CCMUX_TEXEL1, LOD_FRACTION is used in Bowser room 1
             case G_SETSUBPIXELOFFSET_EXT: {
                 gfx_dp_set_subpixel_offset(C0(0, 16), C1(0, 16));
                 break;
@@ -2518,6 +2635,8 @@ extern "C" void gfx_get_dimensions(uint32_t* width, uint32_t* height, int32_t* p
     gfx_wapi->get_dimensions(width, height, posX, posY);
 }
 
+
+
 extern "C" void gfx_init(const GfxInitSettings *settings) {
     gfx_wapi = settings->wapi;
     gfx_rapi = settings->rapi;
@@ -2548,6 +2667,8 @@ extern "C" void gfx_init(const GfxInitSettings *settings) {
     rsp.lookat[0].dir[0] = rsp.lookat[1].dir[1] = 0x7F;
     rsp.current_lookat_coeffs[0][0] = rsp.current_lookat_coeffs[1][1] = 1.f;
     rsp.lookat_enabled = true;
+
+
 }
 
 extern "C" void gfx_destroy(void) {
@@ -2562,6 +2683,7 @@ extern "C" struct GfxRenderingAPI* gfx_get_current_rendering_api(void) {
 }
 
 extern "C" void gfx_start_frame(void) {
+
     gfx_wapi->handle_events();
     gfx_wapi->get_dimensions(&gfx_current_window_dimensions.width, &gfx_current_window_dimensions.height,
                              &gfx_current_window_position_x, &gfx_current_window_position_y);
@@ -2578,6 +2700,7 @@ extern "C" void gfx_start_frame(void) {
     gfx_current_game_window_viewport.width = gfx_current_dimensions.width;
     gfx_current_game_window_viewport.height = gfx_current_dimensions.height;
 
+
     if (gfx_current_dimensions.height != gfx_prev_dimensions.height) {
         for (auto& fb : framebuffers) {
             uint32_t width, height, msaa;
@@ -2585,6 +2708,7 @@ extern "C" void gfx_start_frame(void) {
                 if (fb.second.upscale) {
                     width = fb.second.orig_width;
                     height = fb.second.orig_height;
+
                     gfx_adjust_width_height_for_scale(width, height);
                 } else {
                     // assume this is a fullscreen fb
@@ -2626,17 +2750,16 @@ extern "C" void gfx_start_frame(void) {
 
     fbActive = 0;
 
-    // update aspect scale and offset
-    gfx_update_aspect_mode();
 }
 
 uint32_t num_dls = 0;
 
+
+extern "C" void gfx_sdl_get_mirror_dimensions(int* w, int* h);
+
 extern "C" void gfx_run(Gfx* commands) {
     ++num_dls;
     gfx_sp_reset();
-
-    // puts("New frame");
 
     if (!gfx_wapi->start_frame()) {
         dropped_frame = true;
@@ -2644,42 +2767,107 @@ extern "C" void gfx_run(Gfx* commands) {
     }
     dropped_frame = false;
 
-    gfx_rapi->update_framebuffer_parameters(0, gfx_current_window_dimensions.width,
-                                            gfx_current_window_dimensions.height, 1, false, true, true,
-                                            !game_renders_to_framebuffer);
+    // Dimensionner FBO 0:
+    if (vr_is_initialized() && gfx_rapi->is_multiview()) {
+        gfx_rapi->update_framebuffer_parameters(
+                0,
+                (uint32_t)vr_get_internal_render_width(),
+                (uint32_t)vr_get_internal_render_height(),
+                1,
+                false, true, true, true);
+    } else {
+        gfx_rapi->update_framebuffer_parameters(
+                0,
+                gfx_current_window_dimensions.width,
+                gfx_current_window_dimensions.height,
+                1,
+                false, true, true, !game_renders_to_framebuffer);
+
+    }
+
     gfx_rapi->start_frame();
-    gfx_rapi->start_draw_to_framebuffer(game_renders_to_framebuffer ? game_framebuffer : 0,
-                                        (float)gfx_current_dimensions.height / SCREEN_HEIGHT);
-    gfx_rapi->clear_framebuffer(true, false);
     rdp.viewport_or_scissor_changed = true;
     rendering_state.viewport = {};
     rendering_state.scissor = {};
-    gfx_run_dl(commands);
-    gfx_flush();
-    gfxFramebuffer = 0;
 
-    if (game_renders_to_framebuffer) {
-        gfx_rapi->start_draw_to_framebuffer(0, 1);
-        gfx_rapi->clear_framebuffer(true, true);
+    if (vr_is_initialized() && gfx_rapi->is_multiview()) {
+        // --- PATH VR + MULTIVIEW ---
 
-        if (gfx_msaa_level > 1) {
-            bool different_size = gfx_current_dimensions.width != gfx_current_game_window_viewport.width ||
-                                  gfx_current_dimensions.height != gfx_current_game_window_viewport.height;
+        gfx_current_dimensions.width  = (uint32_t)vr_get_internal_render_width();
+        gfx_current_dimensions.height = (uint32_t)vr_get_internal_render_height();
+        gfx_current_dimensions.aspect_ratio =
+                (float)gfx_current_dimensions.width / (float)gfx_current_dimensions.height;
+        gfx_current_game_window_viewport = { 0, 0,
+                                             gfx_current_dimensions.width,
+                                             gfx_current_dimensions.height };
 
-            if (different_size) {
-                gfx_rapi->resolve_msaa_color_buffer(game_framebuffer_msaa_resolved, game_framebuffer);
-                gfxFramebuffer = (uintptr_t)gfx_rapi->get_framebuffer_texture_id(game_framebuffer_msaa_resolved);
-            } else {
-                gfx_rapi->resolve_msaa_color_buffer(0, game_framebuffer);
-            }
-        } else {
-            gfxFramebuffer = (uintptr_t)gfx_rapi->get_framebuffer_texture_id(game_framebuffer);
+        // VR Aspect
+        gfx_update_aspect_mode();
+
+        // offsets + matrix
+        float tx0, ty0, tz0, tx_HUD0, tx1, ty1, tz1, tx_HUD1;
+        vr_get_eye_view_offset(0, &tx0, &ty0, &tz0, &tx_HUD0);
+        vr_get_eye_view_offset(1, &tx1, &ty1, &tz1, &tx_HUD1);
+
+        memcpy(s_vr_proj_col_major,
+               vr_get_eye_proj_mtx(0),
+               16 * sizeof(float));
+
+
+        float offsets[6] = {
+                tx0 * s_vr_proj_col_major[0], vr_get_eye_proj_mtx(0)[8], tx_HUD0 * vr_get_eye_proj_mtx(0)[0],
+                tx1 * s_vr_proj_col_major[0], vr_get_eye_proj_mtx(1)[8], tx_HUD1 * vr_get_eye_proj_mtx(1)[0]
+        };
+
+        gfx_rapi->set_eye_offsets(offsets[0], offsets[1], offsets[2],
+                                  offsets[3], offsets[4], offsets[5]);
+
+
+        // 1) Acquire + attach swapchain to g_multiviewFBO
+        vr_begin_eye_render();              // bind g_multiviewFBO, attache color+depth, clear
+
+        // 2) Tell the backend that "current FBO = index 0"
+        gfx_rapi->start_draw_to_framebuffer(0, 1.0f);
+
+        gfx_sp_reset();
+        buf_vbo_len = buf_vbo_num_tris = 0;
+        fbActive = 0;
+        rdp.textures_changed[0] = rdp.textures_changed[1] = true;
+        rdp.viewport_or_scissor_changed = true;
+
+        // 3) Render the game directly into the headset texture
+        gfx_run_dl(commands);
+        gfx_flush();
+
+        // 4) Release + submit
+        vr_end_eye_render();
+
+        // ─────────────────────────────────────────────────────
+        // 3) MIRROR: Blit the left eye to the desktop back buffer
+        // ─────────────────────────────────────────────────────
+#ifndef ANDROID // if PC
+        int mw = 0, mh = 0;
+        gfx_sdl_get_mirror_dimensions(&mw, &mh);
+
+        if (mw > 0 && mh > 0) {
+            gfx_rapi->mirror_to_desktop(
+                    (uint32_t)vr_get_internal_render_width(),   // src_w : résolution VR fixe
+                    (uint32_t)vr_get_internal_render_height(),  // src_h : résolution VR fixe
+                    (uint32_t)mw,                               // dst_w : taille miroir dynamique
+                    (uint32_t)mh                                // dst_h : taille miroir dynamique
+            );
         }
+#endif
+        // ─────────────────────────────────────────────────────
+
+        gfx_rapi->end_frame();
+        gfx_wapi->swap_buffers_begin();
+        return;
     }
 
-    gfx_rapi->end_frame();
-    gfx_wapi->swap_buffers_begin();
 }
+
+
 
 extern "C" void gfx_end_frame(void) {
     if (!dropped_frame) {
@@ -2763,3 +2951,4 @@ extern "C" void gfx_reset_framebuffer(void) {
     gfx_rapi->start_draw_to_framebuffer(0, (float)gfx_current_dimensions.height / SCREEN_HEIGHT);
     active_fb = framebuffers.end();
 }
+

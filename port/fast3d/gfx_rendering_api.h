@@ -12,7 +12,7 @@ struct GfxClipParameters {
     bool invert_y;
 };
 
-enum FilteringMode { FILTER_NONE, FILTER_LINEAR, FILTER_THREE_POINT };
+enum FilteringMode { FILTER_NONE, FILTER_LINEAR, FILTER_THREE_POINT, FILTER_TRILINEAR };
 
 struct GfxRenderingAPI {
     const char* (*get_name)(void);
@@ -52,6 +52,12 @@ struct GfxRenderingAPI {
     void (*delete_texture)(uint32_t texID);
     void (*set_texture_filter)(enum FilteringMode mode);
     enum FilteringMode (*get_texture_filter)(void);
+
+    // VR
+    void (*set_eye_offsets)(float lx, float lfrustum, float lhud, float rx, float rfrustum, float rhud);
+    bool (*is_multiview)(void);
+    void (*mirror_to_desktop)(uint32_t src_w, uint32_t src_h, uint32_t dst_w, uint32_t dst_h);
+
 };
 
 #endif

@@ -4,6 +4,8 @@
 #include "data.h"
 #include "types.h"
 
+
+
 bool sightIsPropFriendly(struct prop *prop);
 bool sightCanTargetProp(struct prop *prop, s32 max);
 bool sightIsReactiveToProp(struct prop *prop);
@@ -12,17 +14,23 @@ void func0f0d7364(void);
 void sightTick(bool sighton);
 s32 sightCalculateBoxBound(s32 arg0, s32 arg1, s32 arg2, s32 arg3);
 Gfx *sightDrawTargetBox(Gfx *gdl, struct trackedprop *trackedprop, s32 textid, s32 time);
-Gfx *sightDrawAimer(Gfx *gdl, s32 x, s32 y, s32 radius, s32 cornergap, u32 colour);
+
+Gfx *sightDrawAimer(Gfx *gdl, f32 fx, f32 fy, s32 radius, s32 cornergap, u32 colour); //// VR
+
 Gfx *sightDrawDelayedAimer(Gfx *gdl, s32 x, s32 y, s32 radius, s32 cornergap, u32 colour);
 Gfx *sightDrawDefault(Gfx *gdl, bool sighton, f32 crossx, f32 crossy);
 Gfx *sightDrawClassic(Gfx *gdl, bool sighton, f32 crossx, f32 crossy);
 Gfx *sightDrawType2(Gfx *gdl, bool sighton, f32 crossx, f32 crossy);
-Gfx *sightDrawSkedarTriangle(Gfx *gdl, s32 x, s32 y, s32 dir, u32 colour);
+
+Gfx *sightDrawSkedarTriangle(Gfx *gdl, f32 x, f32 y, s32 dir, u32 colour); // VR
+
 Gfx *sightDrawSkedar(Gfx *gdl, bool sighton, f32 crossx, f32 crossy);
 Gfx *sightDrawZoom(Gfx *gdl, bool sighton, f32 crossx, f32 crossy);
 Gfx *sightDrawMaian(Gfx *gdl, bool sighton, f32 crossx, f32 crossy);
 Gfx *sightDrawTarget(Gfx *gdl, f32 crossx, f32 crossy);
 bool sightHasTargetWhileAiming(s32 sight);
 Gfx *sightDraw(Gfx *gdl, bool sighton, s32 sight);
+
+//f32 sightGetAdjustedX(const f32 x);
 
 #endif

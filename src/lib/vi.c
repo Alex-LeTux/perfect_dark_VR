@@ -19,6 +19,10 @@
 #include "platform.h"
 #endif
 
+//VR
+extern int VrSmallW;
+extern int VrSmallH;
+
 #define TO_U16_A(x) ((u16)(x))
 #define TO_U16_B(x) ((x) & 0xffff)
 #define TO_U16_C(x) ((u16)((x) & 0xffff))
@@ -34,6 +38,7 @@ u8 g_ViBackIndex;
 
 struct rend_vidat g_ViDataArray[NUM_GFXTASKS] = {
 	{
+
 		0, 0, 0, 0,
 		FBALLOC_WIDTH_LO, FBALLOC_HEIGHT_LO,    // x and y
 		60,                                     // fovy
@@ -166,7 +171,7 @@ void viConfigureForLegal(void)
 }
 
 const s16 g_ViModeWidths[]  = {FBALLOC_WIDTH_LO,  FBALLOC_WIDTH_LO,  SCREEN_320 * 2};
-const s16 g_ViModeHeights[] = {FBALLOC_HEIGHT_LO, FBALLOC_HEIGHT_LO, (PAL ? 252 : 220) * 2};
+const s16 g_ViModeHeights[] = {FBALLOC_HEIGHT_LO, FBALLOC_HEIGHT_LO, (PAL ? 504 : 440) * 2};// VR
 
 /**
  * Allocate the colour framebuffers for the given stage.
@@ -215,7 +220,7 @@ void viReset(s32 stagenum)
 			g_Vars.fourmeg2player = true;
 		} else if ((g_Vars.coopplayernum >= 0 || g_Vars.antiplayernum >= 0) && PLAYERCOUNT() == 2) {
 			// PAL is using its correct size
-			fbsize = SCREEN_WIDTH_LO * SCREEN_HEIGHT_LO * NUM_FRAMEBUFFERS;
+			fbsize = VrSmallW * VrSmallH * NUM_FRAMEBUFFERS; // VR
 		}
 	}
 
@@ -363,7 +368,8 @@ void viUpdateMode(void)
 #endif
 
 		var8008dcc0[slot].comRegs.width = g_ViBackData->bufx;
-		var8008dcc0[slot].comRegs.xScale = g_ViBackData->bufx * 1024 / 640;
+//		var8008dcc0[slot].comRegs.xScale = g_ViBackData->bufx * 1024 / 640;
+        var8008dcc0[slot].comRegs.xScale = g_ViBackData->bufx * 2048 / 1024;
 		var8008dcc0[slot].fldRegs[0].origin = g_ViBackData->bufx * 2;
 		var8008dcc0[slot].fldRegs[1].origin = g_ViBackData->bufx * 2;
 
@@ -372,11 +378,15 @@ void viUpdateMode(void)
 		var8008dcc0[slot].fldRegs[1].yScale = 1024;
 #else
 		if (IS4MB()) {
-			var8008dcc0[slot].fldRegs[0].yScale = 1024;
-			var8008dcc0[slot].fldRegs[1].yScale = 1024;
+//			var8008dcc0[slot].fldRegs[0].yScale = 1024;
+//			var8008dcc0[slot].fldRegs[1].yScale = 1024;
+            var8008dcc0[slot].fldRegs[0].yScale = 2048;
+            var8008dcc0[slot].fldRegs[1].yScale = 2048;
 		} else {
-			var8008dcc0[slot].fldRegs[0].yScale = g_ViBackData->bufy * 2048 / 440;
-			var8008dcc0[slot].fldRegs[1].yScale = g_ViBackData->bufy * 2048 / 440;
+//			var8008dcc0[slot].fldRegs[0].yScale = g_ViBackData->bufy * 2048 / 440;
+//			var8008dcc0[slot].fldRegs[1].yScale = g_ViBackData->bufy * 2048 / 440;
+            var8008dcc0[slot].fldRegs[0].yScale = g_ViBackData->bufy * 4096 / 880;
+            var8008dcc0[slot].fldRegs[1].yScale = g_ViBackData->bufy * 4096 / 880;
 		}
 #endif
 
@@ -384,13 +394,13 @@ void viUpdateMode(void)
 		var8008de08 = var8008dcc0[slot].comRegs.hStart = ADD_LOW_AND_HI_16_MOD(hstart, g_ViTargetHStart);
 
 		v1 = g_ViBackData->bufy;
-		v1 = v1 * 1024 / var8008dcc0[slot].fldRegs[0].yScale;
+		v1 = v1 * 2048 / var8008dcc0[slot].fldRegs[0].yScale;
 
-		if (v1 > 300) {
+		if (v1 > 600) {
 			v1 >>= 1;
 		}
 
-		tmp = ((PAL ? 320 : 277) - v1);
+		tmp = ((PAL ? 640 : 554) - v1);
 		vstart = ((tmp + 2) << 16) | (tmp + ((v1 - 2) << 1) + 2);
 
 		g_ViCurVStart0 = var8008dcc0[slot].fldRegs[0].vStart = ADD_LOW_AND_HI_16_MOD(vstart, g_ViTargetVStart);
@@ -409,9 +419,13 @@ void viUpdateMode(void)
 #endif
 
 		var8008dcc0[slot].comRegs.width = g_ViBackData->bufx;
-		var8008dcc0[slot].comRegs.xScale = g_ViBackData->bufx * 1024 / 640;
-		var8008dcc0[slot].fldRegs[0].yScale = 2048;
-		var8008dcc0[slot].fldRegs[1].yScale = 2048;
+//		var8008dcc0[slot].comRegs.xScale = g_ViBackData->bufx * 1024 / 640;
+//		var8008dcc0[slot].fldRegs[0].yScale = 2048;
+//		var8008dcc0[slot].fldRegs[1].yScale = 2048;
+        var8008dcc0[slot].comRegs.xScale = g_ViBackData->bufx * 2048 / 1024;
+        var8008dcc0[slot].fldRegs[0].yScale = 4096;
+        var8008dcc0[slot].fldRegs[1].yScale = 4096;
+
 		var8008dcc0[slot].fldRegs[0].origin = g_ViBackData->bufx * 2;
 		var8008dcc0[slot].fldRegs[1].origin = g_ViBackData->bufx * 4;
 

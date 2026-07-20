@@ -257,37 +257,40 @@ MenuItemHandlerResult mpArenaMenuHandler(s32 operation, struct menuitem *item, u
 	return 0;
 }
 
-MenuItemHandlerResult menuhandlerMpControlStyle(s32 operation, struct menuitem *item, union handlerdata *data)
+MenuItemHandlerResult menuhandlerMpControlStyle(s32 operation, struct menuitem *item, union handlerdata *data) // VR
 {
-	u16 labels[] = {
-		L_OPTIONS_239, // "1.1"
-		L_OPTIONS_240, // "1.2"
-		L_OPTIONS_241, // "1.3"
-		L_OPTIONS_242, // "1.4"
-	};
+    // Display index 0 -> actual value 1 ("1.2")
+    // Display index 1 -> actual value 4 ("Ext" / CONTROLMODE_PC)
+    static const s32 vrModes[] = { 1, 4 };
 
-	switch (operation) {
-	case MENUOP_GETOPTIONCOUNT:
-		data->dropdown.value = 5;
-		break;
-	case MENUOP_GETOPTIONTEXT:
-		return (intptr_t) ((data->dropdown.value == 4) ? "Ext" : langGet(labels[data->dropdown.value]));
-	case MENUOP_SET:
-		optionsSetControlMode(g_MpPlayerNum, (data->dropdown.value == 4 ? CONTROLMODE_PC : data->dropdown.value));
+    switch (operation) {
+        case MENUOP_GETOPTIONCOUNT:
+            data->dropdown.value = 1; // Only VR-1 (VR-2 is not used)
+            break;
+        case MENUOP_GETOPTIONTEXT:
+            if (data->dropdown.value == 0) {
+                return (intptr_t) "VR-1";
+            } else {
+                return (intptr_t) "VR-2";
+            }
+        case MENUOP_SET: {
+            s32 actualValue = vrModes[data->dropdown.value];
+            optionsSetControlMode(g_MpPlayerNum, (actualValue == 4 ? CONTROLMODE_PC : actualValue));
 #ifndef PLATFORM_N64
-		g_PlayerExtCfg[g_MpPlayerNum & 3].extcontrols = (data->dropdown.value == 4);
+            g_PlayerExtCfg[g_MpPlayerNum & 3].extcontrols = (actualValue == 4);
 #endif
-		break;
-	case MENUOP_GETSELECTEDINDEX:
-		data->dropdown.value = optionsGetControlMode(g_MpPlayerNum);
-		if (data->dropdown.value == CONTROLMODE_PC) {
-			data->dropdown.value = 4;
-		}
-		break;
-	}
+            break;
+        }
+        case MENUOP_GETSELECTEDINDEX: {
+            s32 currentMode = optionsGetControlMode(g_MpPlayerNum);
+            data->dropdown.value = (currentMode == CONTROLMODE_PC) ? 1 : 0;
+            break;
+        }
+    }
 
-	return 0;
+    return 0;
 }
+
 
 MenuItemHandlerResult menuhandlerMpWeaponSlot(s32 operation, struct menuitem *item, union handlerdata *data)
 {
@@ -625,7 +628,7 @@ MenuItemHandlerResult mpCharacterBodyMenuHandler(s32 operation, struct menuitem 
 	case MENUOP_CHECKPREFOCUSED:
 		g_Menus[g_MpPlayerNum].menumodel.removingpiece = false;
 
-		menuConfigureModel(&g_Menus[g_MpPlayerNum].menumodel, 0, 0, 0, 0, 0, 0, 1, MENUMODELFLAG_HASSCALE);
+		menuConfigureModel(&g_Menus[g_MpPlayerNum].menumodel, 0, 0, 0, 0, 0, 0, 1, MENUMODELFLAG_HASSCALE); // VR
 
 		g_Menus[g_MpPlayerNum].menumodel.curposx = 8.2f;
 		g_Menus[g_MpPlayerNum].menumodel.newposx = 8.2f;
@@ -2174,7 +2177,7 @@ MenuItemHandlerResult mpCharacterHeadMenuHandler(s32 operation, struct menuitem 
 
 		mpGetNumHeads2();
 
-		menuConfigureModel(&g_Menus[g_MpPlayerNum].menumodel, 0, 0, 0, 0, 0, 0, 1, MENUMODELFLAG_HASSCALE);
+		menuConfigureModel(&g_Menus[g_MpPlayerNum].menumodel, 0, 0, 0, 0, 0, 0, 1, MENUMODELFLAG_HASSCALE); // VR
 
 		g_Menus[g_MpPlayerNum].menumodel.curposx = 0;
 		g_Menus[g_MpPlayerNum].menumodel.curposy = 0;
@@ -2188,6 +2191,7 @@ MenuItemHandlerResult mpCharacterHeadMenuHandler(s32 operation, struct menuitem 
 		g_Menus[g_MpPlayerNum].menumodel.newroty = -0.3f;
 
 		g_Menus[g_MpPlayerNum].menumodel.newscale = 1;
+
 		g_Menus[g_MpPlayerNum].menumodel.zoom = 30;
 		break;
 	}

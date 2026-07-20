@@ -24,17 +24,18 @@ android {
         versionName "1.0"
 
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
-        
+
         ndk {
-            abiFilters 'arm64-v8a', 'armeabi-v7a', 'x86_64', 'x86'
+//            abiFilters 'arm64-v8a', 'armeabi-v7a', 'x86_64', 'x86'
+            abiFilters 'arm64-v8a' // only arm64-v8a for a success build on Android Studio
         }
-        
+
         externalNativeBuild {
             cmake {
                 cppFlags "-std=c++20"
                 arguments "-DANDROID_STL=c++_shared",
-                         "-DANDROID_PLATFORM=android-21",
-                         "-DTARGET_OS=android"
+                        "-DANDROID_PLATFORM=android-21",
+                        "-DTARGET_OS=android"
             }
         }
     }
@@ -80,19 +81,19 @@ android {
             ndk { debugSymbolLevel 'SYMBOL_TABLE' }
         }
     }
-    
+
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_1_8
         targetCompatibility JavaVersion.VERSION_1_8
     }
-    
+
     externalNativeBuild {
         cmake {
             path file('../../CMakeLists.txt')
             version '3.22.1'
         }
     }
-    
+
     sourceSets {
         main {
             jniLibs.srcDirs = ['src/main/jniLibs']
