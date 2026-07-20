@@ -124,8 +124,9 @@ extern SDL_GLContext ctx;
 
 static float g_eyeProjMtx[2][16] = {};
 static float g_eyeViewMtx[2][16] = {};
-extern float s_eye_offsets[6];
+extern float s_eye_offsets[8];
 float XrFov = 0.0f;
+float XrAspect = 1.0f;
 float g_eyeTanHalfFov[2];
 float ipd_meters = 0.0f;;
 float VrStereoCrosshair = 0.70f;
@@ -503,6 +504,7 @@ extern "C" bool vr_configure_resolution() {
 
     // --- Calculate the actual HMD aspect ratio ---
     double aspectRatio = (double)VrRealRecommendedW / (double)VrRealRecommendedH;
+    XrAspect = (float)aspectRatio;
     LOGI("HMD aspect ratio: %.4f", aspectRatio);
 
     // --- Fixed width enforced, height derived from aspect ratio ---
@@ -1354,7 +1356,7 @@ static VrEyeFovTan vr_get_eye_fov_tan(int eye) {
     return out;
 }
 
-extern float s_eye_offsets[6];
+extern float s_eye_offsets[8];
 
 // -----------------------------------------------------------------------
 // STEREO: Asymmetric projection from XrFovf angles
@@ -1481,14 +1483,56 @@ extern "C" bool vr_begin_frame_and_update_poses()
         return false;
     }
 
+    // Build the symmetric projection used by the original game from the
+    // average OpenXR tangent extents.  Using the angular span directly is
+    // only correct for a perfectly symmetric frustum, and using the render
+    // target dimensions is not guaranteed to match the optical frustum.
+    // The per-eye centre offsets are applied later by the multiview shader.
+    float tanHalfWidthSum = 0.0f;
+    float tanHalfHeightSum = 0.0f;
+
+    for (int eye = 0; eye < 2; eye++) {
+        const XrFovf& fov = g_frameViews[eye].fov;
+        tanHalfWidthSum += (std::tanf(fov.angleRight) - std::tanf(fov.angleLeft)) * 0.5f;
+        tanHalfHeightSum += (std::tanf(fov.angleUp) - std::tanf(fov.angleDown)) * 0.5f;
+    }
+
+    const float tanHalfWidth = tanHalfWidthSum * 0.5f;
+    const float tanHalfHeight = tanHalfHeightSum * 0.5f;
+
+    if (tanHalfWidth > 0.001f && tanHalfHeight > 0.001f) {
+        XrFov = 2.0f * std::atanf(tanHalfHeight) * (180.0f / 3.14159265f);
+        XrAspect = tanHalfWidth / tanHalfHeight;
+    }
+
+    static bool projectionLogged = false;
+    if (!projectionLogged) {
+        for (int eye = 0; eye < 2; eye++) {
+            const XrFovf& fov = g_frameViews[eye].fov;
+            LOGI("OpenXR eye %d FOV radians: left=%.6f right=%.6f up=%.6f down=%.6f",
+                 eye, fov.angleLeft, fov.angleRight, fov.angleUp, fov.angleDown);
+        }
+        LOGI("OpenXR game projection: vertical_fov=%.4f aspect=%.6f",
+             XrFov, XrAspect);
+        for (int eye = 0; eye < 2; eye++) {
+            const XrFovf& fov = g_frameViews[eye].fov;
+            const float tanLeft = std::tanf(fov.angleLeft);
+            const float tanRight = std::tanf(fov.angleRight);
+            const float tanUp = std::tanf(fov.angleUp);
+            const float tanDown = std::tanf(fov.angleDown);
+            LOGI("OpenXR eye %d projection: scale_x=%.6f center_x=%.6f scale_y=%.6f center_y=%.6f",
+                 eye,
+                 2.0f / (tanRight - tanLeft),
+                 (tanRight + tanLeft) / (tanRight - tanLeft),
+                 2.0f / (tanUp - tanDown),
+                 (tanUp + tanDown) / (tanUp - tanDown));
+        }
+        projectionLogged = true;
+    }
+
     for (int eye = 0; eye < 2; eye++) {
         const XrFovf&  fov  = g_frameViews[eye].fov;
         const XrPosef& pose = g_frameViews[eye].pose;
-        // GET Fov
-        float vert = fov.angleUp - fov.angleDown;
-        XrFov =  vert * (180.0f / 3.14159265f);
-        XrFov = roundf(XrFov * 10.0f) / 10.0f;
-        //---
 
         float projMtx[16], viewMtx[16];
 
@@ -1506,7 +1550,7 @@ extern "C" bool vr_begin_frame_and_update_poses()
         std::memcpy(g_eyeProjMtx[eye], projMtx, 16 * sizeof(float));
         std::memcpy(g_eyeViewMtx[eye], viewMtx, 16 * sizeof(float));
 
-        VrEyeFovTan fovTan = vr_get_eye_fov_tan(0);
+        VrEyeFovTan fovTan = vr_get_eye_fov_tan(eye);
         float tanFovHalf = fovTan.tanHalfWidth;
 
         g_eyeTanHalfFov[eye] = tanFovHalf;

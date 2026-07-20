@@ -114,6 +114,7 @@ extern void vr_player_rot();
 static s16 g_PrevAnimNumForContinuity = -1;
 static f32 g_RefHMDQuat[4] = { 1.0f, 0.0f, 0.0f, 0.0f };
 extern float XrFov;
+extern float XrAspect;
 float VrSetWorldScale = 1.0f;
 //---
 
@@ -3374,6 +3375,12 @@ f32 player0f0bd358(void)
 #ifdef PLATFORM_N64
     return result;
 #else
+    // OpenXR's optical frustum, rather than the swapchain dimensions, defines
+    // the projection aspect. The previous expression cancelled the render
+    // target ratio and forced this value to exactly 1.0 on every headset.
+    if (XrAspect > 0.01f) {
+        return XrAspect;
+    }
     return result * (videoGetAspect() / ((f32)VrSmallW / (f32)VrSmallH));
 #endif
 }

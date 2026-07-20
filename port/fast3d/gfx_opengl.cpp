@@ -31,7 +31,10 @@
 // GLOBAL STATE - OVR_multiview / Render Targets / others
 // ============================================================================
 bool use_multiview = false;
-float s_eye_offsets[6] = { 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
+// Per eye: IPD translation, horizontal frustum centre, HUD parallax,
+// vertical frustum centre.
+float s_eye_offsets[8] = { 0.0f, 0.0f, 0.0f, 0.0f,
+                           0.0f, 0.0f, 0.0f, 0.0f };
 extern float g_eyeTanHalfFov[2];
 extern "C" bool vr_dl_is_pause_or_menu;
 extern float vr_world_scale;
@@ -313,17 +316,19 @@ static bool gfx_opengl_is_multiview(void) {
 }
 
 
-static void gfx_opengl_set_eye_offsets(float left_ipd, float left_asym, float left_hud,
-                                       float right_ipd, float right_asym, float right_hud) {
+static void gfx_opengl_set_eye_offsets(float left_ipd, float left_asym_x, float left_hud, float left_asym_y,
+                                       float right_ipd, float right_asym_x, float right_hud, float right_asym_y) {
     // Left eye (gl_ViewID_OVR == 0)
-    s_eye_offsets[0] = left_ipd;   // vec3.x: 3D IPD
-    s_eye_offsets[1] = left_asym;  // vec3.y: Lens asymmetry
-    s_eye_offsets[2] = left_hud;   // vec3.z: 2D offset (HUD)
+    s_eye_offsets[0] = left_ipd;     // vec4.x: 3D IPD
+    s_eye_offsets[1] = left_asym_x;  // vec4.y: horizontal lens asymmetry
+    s_eye_offsets[2] = left_hud;     // vec4.z: 2D offset (HUD)
+    s_eye_offsets[3] = left_asym_y;  // vec4.w: vertical lens asymmetry
 
     // Right eye (gl_ViewID_OVR == 1)
-    s_eye_offsets[3] = right_ipd;  // vec3.x: 3D IPD
-    s_eye_offsets[4] = right_asym; // vec3.y: Lens asymmetry
-    s_eye_offsets[5] = right_hud;  // vec3.z: 2D offset (HUD)
+    s_eye_offsets[4] = right_ipd;
+    s_eye_offsets[5] = right_asym_x;
+    s_eye_offsets[6] = right_hud;
+    s_eye_offsets[7] = right_asym_y;
 
 }
 
@@ -471,10 +476,12 @@ static void gfx_opengl_set_uniforms(struct ShaderProgram* prg) {
     if (use_multiview) { // VR
 
         if (prg->eyeOffsetLeftLocation >= 0)
-            glUniform3f(prg->eyeOffsetLeftLocation, s_eye_offsets[0], s_eye_offsets[1], s_eye_offsets[2]);
+            glUniform4f(prg->eyeOffsetLeftLocation,
+                        s_eye_offsets[0], s_eye_offsets[1], s_eye_offsets[2], s_eye_offsets[3]);
 
         if (prg->eyeOffsetRightLocation >= 0)
-            glUniform3f(prg->eyeOffsetRightLocation, s_eye_offsets[3], s_eye_offsets[4], s_eye_offsets[5]);
+            glUniform4f(prg->eyeOffsetRightLocation,
+                        s_eye_offsets[4], s_eye_offsets[5], s_eye_offsets[6], s_eye_offsets[7]);
 
         if (prg->isMenuLocation >= 0)
             glUniform1i(prg->isMenuLocation, vr_dl_is_pause_or_menu ? 1 : 0);
@@ -632,6 +639,9 @@ static void append_formula(char* buf, size_t* len, uint8_t c[2][4], bool do_sing
 }
 
 
+// OpenXR supplies asymmetric projection centres.  The original renderer only
+// accounted for the horizontal centre, so carry the vertical centre in the
+// fourth eye-offset component and apply it to clip-space Y below.
 const char* vr_shader = R"(
 vec4 mvPos = aVtxPos;
 
@@ -648,7 +658,7 @@ bool vr_is_crosshair_left = (abs(mvPos.w - 1.0) == 7.0);
 bool vr_is_Menu_blur = (abs(mvPos.w - 1.0) == 8.0);
 
 
-vec3 eyeOffset = (gl_ViewID_OVR == 0u) ? uEyeOffsetLeft : uEyeOffsetRight;
+vec4 eyeOffset = (gl_ViewID_OVR == 0u) ? uEyeOffsetLeft : uEyeOffsetRight;
 
 // --------------------
 // MENU / HUD IN PAUSE MODE (uIsMenu == 1)
@@ -695,8 +705,11 @@ else if (uIsMenu == 0 && vr_is_crosshair_left) {
     mvPos.w += 2.0f; // distance correction for the left crosshair
 }
 else if (uIsMenu == 0 && !vr_is_Menu_blur) {
-    // "Normal" 3D world: IPD & asymmetry
+    // "Normal" 3D world: IPD and asymmetric OpenXR projection. Menus and HUD
+    // are already authored in screen space, so applying the optical Y centre
+    // to them would shift and clip the interface vertically.
     mvPos.x -= eyeOffset.x + (eyeOffset.y * mvPos.w);
+    mvPos.y -= eyeOffset.w * mvPos.w;
 }
 
 // --------------------
@@ -717,9 +730,11 @@ static struct ShaderProgram* gfx_opengl_create_and_load_new_shader(uint64_t shad
     struct CCFeatures cc_features = { 0 };
     gfx_cc_get_features(shader_id0, shader_id1, &cc_features);
 
-    //    char vs_buf[2048];
-    char vs_buf[4096]; // VR
-    char fs_buf[8192];
+    // Shader variants used by menus can be substantially larger than gameplay
+    // variants.  The VR prelude alone is over 3 KiB, so the former 4 KiB vertex
+    // buffer could overflow while entering a menu and corrupt the native stack.
+    char vs_buf[16384];
+    char fs_buf[16384];
     size_t vs_len = 0;
     size_t fs_len = 0;
     size_t num_floats = 4;
@@ -738,8 +753,8 @@ static struct ShaderProgram* gfx_opengl_create_and_load_new_shader(uint64_t shad
 
         // --- New Menu uniforms ---
         append_line(vs_buf, &vs_len, "uniform int uIsMenu;");
-        append_line(vs_buf, &vs_len, "uniform vec3 uEyeOffsetLeft;");
-        append_line(vs_buf, &vs_len, "uniform vec3 uEyeOffsetRight;");
+        append_line(vs_buf, &vs_len, "uniform vec4 uEyeOffsetLeft;");
+        append_line(vs_buf, &vs_len, "uniform vec4 uEyeOffsetRight;");
         append_line(vs_buf, &vs_len, "uniform float uWorldScale;");
         append_line(vs_buf, &vs_len, "uniform float uCrosshairParallaxLoc;");
         append_line(vs_buf, &vs_len, "uniform float uCrosshairParallaxLeftLoc;");

@@ -52,6 +52,7 @@ int shaders_build_xr_projection(
 extern XrVector3f gHeadPos;
 extern XrQuaternionf vr_HMD_rot_Q;
 extern XrQuaternionf gRawHeadQ;
+extern float XrAspect;
 
 extern float gCtrlPos[2][3];
 extern float gCtrlQuat[2][4];

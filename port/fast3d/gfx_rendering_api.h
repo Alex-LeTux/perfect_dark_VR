@@ -54,7 +54,8 @@ struct GfxRenderingAPI {
     enum FilteringMode (*get_texture_filter)(void);
 
     // VR
-    void (*set_eye_offsets)(float lx, float lfrustum, float lhud, float rx, float rfrustum, float rhud);
+    void (*set_eye_offsets)(float lx, float lfrustum_x, float lhud, float lfrustum_y,
+                            float rx, float rfrustum_x, float rhud, float rfrustum_y);
     bool (*is_multiview)(void);
     void (*mirror_to_desktop)(uint32_t src_w, uint32_t src_h, uint32_t dst_w, uint32_t dst_h);
 
