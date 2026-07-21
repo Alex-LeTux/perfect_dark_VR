@@ -46,8 +46,8 @@ extern f32 fabsf(f32);
 
 
 // Original vectors (initialized only once)
-static struct coord original_look = { 0.0f, 0.0f, 1.0f };
-static struct coord original_up = { 0.0f, -1.0f, 0.0f };
+const struct coord original_look = {0.0f, 0.0f, 1.0f };
+const struct coord original_up = {0.0f, -1.0f, 0.0f };
 XrQuaternionf vr_joy_rot_Q = { 0, 0, 0, 1 };
 float vr_joyAccum = 0.0f;
 float VrYawRot = 0.0f;
@@ -63,6 +63,8 @@ VrEyeheightMode sVrEyeheightMode = VR_EYEHEIGHT_STAND;
 
 extern bool VrSeatedMode;
 
+bool is_grabbing_mode = false;
+bool is_hoverbike_mode = false;
 
 void vr_rotate_vector_by_quaternion(struct coord* v, const XrQuaternionf* q) {
     float qx = q->x, qy = q->y, qz = q->z, qw = q->w;
@@ -234,6 +236,8 @@ void vr_player_rot(void) {
        && g_Vars.currentplayer->bondmovemode != MOVEMODE_BIKE
        && g_Vars.currentplayer->bondmovemode != MOVEMODE_GRAB
        && !vr_is_duel
+       && !is_grabbing_mode
+       && !is_hoverbike_mode
             ) {
 
         joy_for_vr();
@@ -262,6 +266,8 @@ void vr_player_rot(void) {
         g_Vars.currentplayer->vv_theta = -VrYawRot * 180.0f / M_PI;
 
 
+
+
 // Not needed anymore ?
 //    float horiz = sqrtf(g_Vars.currentplayer->bond2.unk1c.x * g_Vars.currentplayer->bond2.unk1c.x +
 //    		g_Vars.currentplayer->bond2.unk1c.z * g_Vars.currentplayer->bond2.unk1c.z);
@@ -274,10 +280,10 @@ void vr_player_rot(void) {
 
 void vr_special_rot_mode(void) {
     // Hoverbike
-    bool is_hoverbike_mode =
+    is_hoverbike_mode =
             (g_Vars.currentplayer->bondmovemode == MOVEMODE_BIKE);
     // Flying crate / stretcher...
-    bool is_grabbing_mode =
+    is_grabbing_mode =
             (g_Vars.currentplayer->bondmovemode == MOVEMODE_GRAB);
 
     if(!is_hoverbike_mode && !is_grabbing_mode) return;
@@ -286,10 +292,7 @@ void vr_special_rot_mode(void) {
         vr_align_with_game_angle(0.0f);
         vr_hoverbike_can_mount = false;
     }
-    else if (!is_hoverbike_mode) {
-        vr_hoverbike_can_mount = true;
-    }
-    else if (is_hoverbike_mode) {
+    else if (is_hoverbike_mode || is_grabbing_mode) {
 
         joy_for_vr();
 
@@ -297,6 +300,7 @@ void vr_special_rot_mode(void) {
         // bond2.unk00 = vehicle forward horizontal, e.g. {-sin(angle), 0, cos(angle)}
         float veh_yaw = atan2f(g_Vars.currentplayer->bond2.unk00.x,
                                g_Vars.currentplayer->bond2.unk00.z);
+
         XrQuaternionf vehQuat;
         vehQuat.x = 0.0f;
         vehQuat.y = sinf(veh_yaw * 0.5f);
@@ -320,23 +324,11 @@ void vr_special_rot_mode(void) {
         g_Vars.currentplayer->bond2.unk28.x =  up.x;
         g_Vars.currentplayer->bond2.unk28.y = -up.y;
         g_Vars.currentplayer->bond2.unk28.z =  up.z;
-    }
 
-    if(is_grabbing_mode) {
-        joy_for_vr();
-        struct coord look = original_look;
-        struct coord up = original_up;
-        vr_rotate_vector_by_quaternion(&look, &vr_HMD_rot_Q);
-        vr_rotate_vector_by_quaternion(&up, &vr_HMD_rot_Q);
-        vr_rotate_vector_by_quaternion(&look, &vr_joy_rot_Q);
-        vr_rotate_vector_by_quaternion(&up, &vr_joy_rot_Q);
-        g_Vars.currentplayer->bond2.unk1c.x = look.x;
-        g_Vars.currentplayer->bond2.unk1c.y = -look.y;
-        g_Vars.currentplayer->bond2.unk1c.z = look.z;
-        g_Vars.currentplayer->bond2.unk28.x = up.x;
-        g_Vars.currentplayer->bond2.unk28.y = -up.y;
-        g_Vars.currentplayer->bond2.unk28.z = up.z;
+    }else if (!is_hoverbike_mode) {
+        vr_hoverbike_can_mount = true;
     }
+    
 }
 
 //------------------------------------------------------------------------------------------
