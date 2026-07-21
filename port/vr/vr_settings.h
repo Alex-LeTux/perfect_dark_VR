@@ -7,7 +7,7 @@ extern int g_ExtMenuPlayer;
 extern float XrFov;
 extern float VrStereoCrosshair;
 #define HUD_STEREO_DEPTH_MIN 0.0f
-#define HUD_STEREO_DEPTH_MAX 2.0f
+#define HUD_STEREO_DEPTH_MAX 4.0f
 extern bool VrSeatedMode;
 extern bool VrMotionThrowing;
 extern bool VrWeaponRecoil;
