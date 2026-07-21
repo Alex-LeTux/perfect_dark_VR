@@ -25,6 +25,12 @@
 #include "video.h"
 #endif
 
+//VR
+extern int VrSmallW;
+extern int VrSmallH;
+extern float XrAspect;
+
+
 #ifdef AVOID_UB
 char var800a41c0[26];
 #else
@@ -1002,7 +1008,7 @@ Gfx *bviewDrawEyespyMetrics(Gfx *gdl)
     s32 scale = 1;
 	f32 palscale = viewwidth > SCREEN_WIDTH_LO ? 1.4f : 1.0f;
 #else
-    s32 scale = viewwidth > SCREEN_WIDTH_LO ? 2 : 1;
+    s32 scale = viewwidth > VrSmallW ? 2 : 1; // VR
 #endif
 #if VERSION >= VERSION_NTSC_1_0
     bool vsplit = false;
@@ -2398,7 +2404,7 @@ Gfx *bviewDrawIrLens(Gfx *gdl)
             // Rendering a line that overlaps the semicircle
             // in the middle of the screen
             f32 f0 = a0;
-            s32 semicirclewidth = sqrtf(sqinnerradius - (s32) (f0 * f0)) * (viewwidth / (f32) SCREEN_WIDTH_LO);
+            s32 semicirclewidth = sqrtf(sqinnerradius - (s32) (f0 * f0)) * (viewwidth / (f32) VrSmallW); // VR
             s32 semicircleright = viewcentrex + semicirclewidth;
             s32 rightsidewidth = viewwidth - semicircleright;
             // if playernum is 1 or 3, shift to the right by viewwidth
@@ -2837,7 +2843,7 @@ Gfx *bviewDrawIrBinoculars(Gfx *gdl)
         }
 
         if (sqytocentre < sqradius) {
-            s32 xoffset = (viewwidth / (f32) SCREEN_WIDTH_LO) * sqrtf(sqradius - sqytocentre);
+            s32 xoffset = (viewwidth / (f32) VrSmallW) * sqrtf(sqradius - sqytocentre); // VR
 
             // Left side
             if (leftx - xoffset > viewleft) {

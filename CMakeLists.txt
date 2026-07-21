@@ -458,4 +458,14 @@ if(WIN32)
     COMMENT "Copying openxr_loader.dll to output directory"
   )
 endif()
+
+if(WIN32)
+    set(LOGO_IMG "${CMAKE_SOURCE_DIR}/logo.bmp")
+  add_custom_command(TARGET pd POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+      "${LOGO_IMG}"
+      "$<TARGET_FILE_DIR:pd>/logo.bmp"
+    COMMENT "Copying logo.bmp to output directory"
+  )
+endif()
 # ---------------------------------------------------------------

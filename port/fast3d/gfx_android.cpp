@@ -1,3 +1,4 @@
+/* Removed for VR
 #ifdef ANDROID
 
 #include <GLES3/gl3.h>
@@ -217,4 +218,4 @@ struct GfxWindowManagerAPI gfx_android_api = {
     gfx_android_set_swap_interval,
 };
 
-#endif // ANDROID
+#endif // ANDROID*/

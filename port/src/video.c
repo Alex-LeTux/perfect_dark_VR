@@ -260,7 +260,7 @@ s32 videoGetCenterWindow(void)
 
 f32 videoGetAspect(void)
 {
-    return 1.0f; // VR
+    return XrAspect;
 }
 
 s32 videoGetDisplayModeIndex(void)

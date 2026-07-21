@@ -49,6 +49,7 @@
 #include "vr_runtime_launcher.h"
 #endif
 
+
 #include "../port/fast3d/gfx_rendering_api.h"
 #include "../port/fast3d/gfx_pc.h"
 
@@ -450,6 +451,8 @@ static bool vr_get_system()
 }
 
 
+
+
 // ============================================================================
 // RESOLUTION - View Configuration & Target Resolution
 // ============================================================================
@@ -505,13 +508,13 @@ extern "C" bool vr_configure_resolution() {
     // --- Calculate the actual HMD aspect ratio ---
     double aspectRatio = (double)VrRealRecommendedW / (double)VrRealRecommendedH;
     XrAspect = (float)aspectRatio;
-    LOGI("HMD aspect ratio: %.4f", aspectRatio);
+    LOGI("HMD aspect ratio: %.4f", XrAspect);
 
     // --- Fixed width enforced, height derived from aspect ratio ---
     constexpr uint32_t VR_FIXED_WIDTH = 1832;
 
     VrRecommendedW = VR_FIXED_WIDTH & ~1u; // ensures an even width too, for consistency
-    uint32_t derivedH = (uint32_t)std::lround((double)VrRecommendedW / aspectRatio);
+    uint32_t derivedH = (uint32_t)std::lround((double)VrRecommendedW / XrAspect);
     VrRecommendedH = (derivedH + 1u) & ~1u; // rounds up to the nearest even number, instead of truncating down
 
     //Get correct aspect ratio and size for HUD VR
@@ -527,7 +530,7 @@ extern "C" bool vr_configure_resolution() {
 
     // --- Internal render resolution: keep the same aspect ratio, fixed width ---
     g_internalRenderWidth = (uint32_t)(VR_FIXED_WIDTH * RENDER_SCALE);
-    g_internalRenderHeight = (uint32_t)std::lround(g_internalRenderWidth / aspectRatio);
+    g_internalRenderHeight = (uint32_t)std::lround(g_internalRenderWidth / XrAspect);
     LOGI("HMD g_internalRenderWidth/Height resolution: %u x %u", g_internalRenderWidth, g_internalRenderHeight);
 
     // Set real VR resolution in Display list
@@ -1330,7 +1333,7 @@ extern "C" void vr_initialize()
 float vr_get_horizontal_fov_offset_ratio(int eye) {
     if (!g_vrInitialized || eye < 0 || eye > 1) return 0.0f;
 
-    const XrFovf& fov = g_frameViews[eye].fov;
+    XrFovf& fov = g_frameViews[eye].fov;
     const float tanLeft  = std::tan(fov.angleLeft);
     const float tanRight = std::tan(fov.angleRight);
     const float denom = tanRight - tanLeft;
@@ -1346,8 +1349,8 @@ struct VrEyeFovTan {
 };
 
 // Helper to compute the tangent of FOV angles for a given eye
-static VrEyeFovTan vr_get_eye_fov_tan(int eye) {
-    const XrFovf& fov = g_frameViews[eye].fov;
+VrEyeFovTan vr_get_eye_fov_tan(int eye) {
+    XrFovf& fov = g_frameViews[eye].fov;
     VrEyeFovTan out;
     out.tanLeft  = tanf(fov.angleLeft);
     out.tanRight = tanf(fov.angleRight);
@@ -1492,7 +1495,7 @@ extern "C" bool vr_begin_frame_and_update_poses()
     float tanHalfHeightSum = 0.0f;
 
     for (int eye = 0; eye < 2; eye++) {
-        const XrFovf& fov = g_frameViews[eye].fov;
+        XrFovf& fov = g_frameViews[eye].fov;
         tanHalfWidthSum += (std::tanf(fov.angleRight) - std::tanf(fov.angleLeft)) * 0.5f;
         tanHalfHeightSum += (std::tanf(fov.angleUp) - std::tanf(fov.angleDown)) * 0.5f;
     }
@@ -1508,14 +1511,14 @@ extern "C" bool vr_begin_frame_and_update_poses()
     static bool projectionLogged = false;
     if (!projectionLogged) {
         for (int eye = 0; eye < 2; eye++) {
-            const XrFovf& fov = g_frameViews[eye].fov;
+            XrFovf& fov = g_frameViews[eye].fov;
             LOGI("OpenXR eye %d FOV radians: left=%.6f right=%.6f up=%.6f down=%.6f",
                  eye, fov.angleLeft, fov.angleRight, fov.angleUp, fov.angleDown);
         }
         LOGI("OpenXR game projection: vertical_fov=%.4f aspect=%.6f",
              XrFov, XrAspect);
         for (int eye = 0; eye < 2; eye++) {
-            const XrFovf& fov = g_frameViews[eye].fov;
+            XrFovf& fov = g_frameViews[eye].fov;
             const float tanLeft = std::tanf(fov.angleLeft);
             const float tanRight = std::tanf(fov.angleRight);
             const float tanUp = std::tanf(fov.angleUp);
@@ -1531,7 +1534,7 @@ extern "C" bool vr_begin_frame_and_update_poses()
     }
 
     for (int eye = 0; eye < 2; eye++) {
-        const XrFovf&  fov  = g_frameViews[eye].fov;
+        XrFovf&  fov  = g_frameViews[eye].fov;
         const XrPosef& pose = g_frameViews[eye].pose;
 
         float projMtx[16], viewMtx[16];
@@ -1562,6 +1565,7 @@ extern "C" bool vr_begin_frame_and_update_poses()
     vr_update_head_tracking(g_frameState.predictedDisplayTime);
     update_vr_controllers(g_frameState.predictedDisplayTime);
     controller_pose();
+
 
     return true;
 }

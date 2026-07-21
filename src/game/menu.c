@@ -63,6 +63,7 @@
 //VR
 extern int VrSmallW;
 extern int VrSmallH;
+extern float XrAspect;
 
 #if VERSION >= VERSION_PAL_FINAL
 char g_CheatMarqueeString[300];
@@ -2335,7 +2336,7 @@ Gfx *menuRenderModel(Gfx *gdl, struct menumodel *menumodel, s32 modeltype)
 				s32 x2 = g_MenuScissorX2;
 #else
                 s32 halfScreenWidth = VrSmallW >> 1;
-                f32 scale = SCREEN_ASPECT / videoGetAspect();
+                f32 scale = XrAspect / videoGetAspect(); // VR
                 f32 width = (g_MenuScissorX2 - g_MenuScissorX1) * scale;
                 f32 center = (g_MenuScissorX1 + g_MenuScissorX2) * 0.5f;
                 center = ((center - halfScreenWidth) * scale) + halfScreenWidth;
@@ -4807,7 +4808,7 @@ void menuProcessInput(void)
             inputs.mousescroll = inputKeyPressed(VK_MOUSE_WHEEL_DN) - inputKeyPressed(VK_MOUSE_WHEEL_UP);
             inputs.mousemoved = inputMouseGetPosition(&inputs.mousex, &inputs.mousey) || inputs.mousescroll;
             // aspect correct the X
-            const f32 cx = ((f32)inputs.mousex - (f32)(VrSmallW / 2)) * (videoGetAspect() / SCREEN_ASPECT);
+            const f32 cx = ((f32)inputs.mousex - (f32)(VrSmallW / 2)) * (videoGetAspect() / XrAspect);
             inputs.mousex = (f32)(VrSmallW / 2) + cx;
         }
         if (dialog && inputs.mousemoved) {

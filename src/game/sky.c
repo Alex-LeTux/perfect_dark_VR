@@ -24,6 +24,10 @@
 #include "game/player.h"
 #endif
 
+//VR
+extern float XrAspect;
+
+
 #define SKYABS(val) (val >= 0.0f ? (val) : -(val))
 
 #define CORNERSTATE_NONE     0x0
@@ -2740,7 +2744,7 @@ Gfx *skyRenderSuns(Gfx *gdl, bool xray)
 					sp12c[1] = radius * 0.50f;
 
 #ifndef PLATFORM_N64
-					sp12c[0] *=  SCREEN_ASPECT / videoGetAspect();
+					sp12c[0] *=  XrAspect / videoGetAspect();
 #endif
 
 					func0f0b2150(&gdl, sp134, sp12c, g_TexLightGlareConfigs[5].width, g_TexLightGlareConfigs[5].height, 0, 1, 1, 1, 0, 1);
@@ -2846,7 +2850,7 @@ Gfx *skyRenderFlare(Gfx *gdl, f32 x, f32 y, f32 intensityfrac, f32 size, s32 fla
 	sp174[0] = f2 * 0.5f * scale;
 
 #ifndef PLATFORM_N64
-	sp174[0] *=  SCREEN_ASPECT / videoGetAspect();
+	sp174[0] *=  XrAspect / videoGetAspect();
 #endif
 
 	func0f0b2150(&gdl, sp17c, sp174, g_TexLightGlareConfigs[6].width, g_TexLightGlareConfigs[6].height, 0, 1, 1, 1, 0, 1);
@@ -2907,7 +2911,7 @@ Gfx *skyRenderFlare(Gfx *gdl, f32 x, f32 y, f32 intensityfrac, f32 size, s32 fla
 		sp174[0] = tmp * 0.5f * scale;
 
 #ifndef PLATFORM_N64
-		sp174[0] *=  SCREEN_ASPECT / videoGetAspect();
+		sp174[0] *=  XrAspect / videoGetAspect();
 #endif
 
 		func0f0b2150(&gdl, sp17c, sp174, g_TexLightGlareConfigs[1].width, g_TexLightGlareConfigs[1].height, 0, 0, 0, 0, 0, 1);

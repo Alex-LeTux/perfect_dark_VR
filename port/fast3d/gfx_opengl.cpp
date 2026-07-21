@@ -684,6 +684,7 @@ else if (uIsMenu == 1 && !vr_is_Menu_blur) {
 if (uIsMenu == 0 && vr_is_Menu_or_HUD) {
     // In-game HUD (health, ammo, etc.)
     mvPos.x -= eyeOffset.z * mvPos.w;
+    mvPos.y -= eyeOffset.w * mvPos.w;
 }
 else if (uIsMenu == 0 && vr_is_Menu_or_crosshair_right) {
     // Right crosshair / reticle (parallax parameterized on C side via uCrosshairParallax*)
@@ -692,6 +693,7 @@ else if (uIsMenu == 0 && vr_is_Menu_or_crosshair_right) {
     mvPos.x -= (eyeOffset.z + crosshairParallaxLocFinal) * mvPos.w;
     mvPos.x += uCrosshairParallaxLoc * 2.0f;
     mvPos.y -= uCrosshairParallaxLoc * 2.0f;
+    mvPos.y -= eyeOffset.w * mvPos.w;
 }
 
 else if (uIsMenu == 0 && vr_is_crosshair_left) {

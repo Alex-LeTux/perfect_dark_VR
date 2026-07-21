@@ -1663,16 +1663,12 @@ static void gfx_sp_geometry_mode(uint32_t clear, uint32_t set) {
 
 
 
-extern "C" bool vr_is_initialized(void);
-extern "C" int  vr_get_internal_render_width(void);
-extern "C" int  vr_get_internal_render_height(void);
-
 static inline void gfx_update_aspect_mode(void) {
     // In VR, the resolution/FOV mapping is already fully handled by
     // gfx_adjust_viewport_or_scissor() (viewport) and shaders_build_xr_projection().
     if (vr_is_initialized()) {
         rsp.aspect_mode = 0;
-        rsp.aspect_scale = 1.0f;
+        rsp.aspect_scale = XrAspect;
         rsp.aspect_ofs = 0.0f;
         return;
     }
@@ -1682,7 +1678,7 @@ static inline void gfx_update_aspect_mode(void) {
     rsp.aspect_mode = side != G_ASPECT_CENTER_EXT;
     rsp.aspect_scale = rsp.aspect_mode
                        ? gfx_current_native_aspect / gfx_current_window_dimensions.aspect_ratio
-                       : 1.0f;
+                       : XrAspect;
 
     if (side == G_ASPECT_LEFT_EXT) {
         rsp.aspect_ofs = (1.f - gfx_current_dimensions.aspect_ratio / gfx_current_native_aspect);
@@ -1737,8 +1733,11 @@ static void gfx_adjust_viewport_or_scissor(XYWidthHeight* area, bool preserve_as
             area->x     += (int32_t)(rsp.aspect_ofs * fboW * 0.5f);
             area->width  = (int32_t)(area->width * ratio);
         }
+
         return;
     }
+
+
 }
 
 

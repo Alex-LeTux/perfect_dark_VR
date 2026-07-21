@@ -201,7 +201,7 @@ static u32 sightGetCrosshairHealthColor(float health, float shield)
 static inline f32 sightGetScaleX(void)
 {
 
-    return (videoGetAspect() / SCREEN_ASPECT);
+    return (videoGetAspect() / XrAspect);
 }
 
 
@@ -1109,7 +1109,7 @@ Gfx *sightDrawClassic(Gfx *gdl, bool sighton, f32 crossx, f32 crossy)
         static f32 vrdir_scale = 0.35f;
 
         const s32 halfw = roundf((f32)(tconfig->width >> 1)
-                                 * (SCREEN_ASPECT / videoGetAspect())
+                                 * (XrAspect / videoGetAspect())
                                  * vrdir_scale);
 
         gDPSetColorDither(gdl++,    G_CD_DISABLE);
