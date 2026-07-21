@@ -705,6 +705,7 @@ else if (uIsMenu == 0 && vr_is_crosshair_left) {
     mvPos.x += uCrosshairParallaxLoc * 2.0f;
     mvPos.y -= uCrosshairParallaxLoc * 2.0f;
     mvPos.w += 2.0f; // distance correction for the left crosshair
+    mvPos.y -= eyeOffset.w * mvPos.w;
 }
 else if (uIsMenu == 0 && !vr_is_Menu_blur) {
     // "Normal" 3D world: IPD and asymmetric OpenXR projection. Menus and HUD
