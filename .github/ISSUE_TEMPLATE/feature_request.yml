@@ -1,0 +1,33 @@
+name: Feature Request
+description: Suggest a new feature or improvement for the VR build.
+title: "[Feature]: "
+labels:
+  - enhancement
+
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: Feature Description
+      description: Describe the feature or improvement you would like to see.
+      placeholder: What would you like to be added or improved?
+    validations:
+      required: true
+
+  - type: textarea
+    id: reason
+    attributes:
+      label: Reason / Use Case
+      description: Explain why this feature would be useful.
+      placeholder: Why would this feature be useful?
+    validations:
+      required: true
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional Information
+      description: Add any additional details, examples, or suggestions.
+      placeholder: Anything else you'd like to add?
+    validations:
+      required: false
