@@ -67,7 +67,7 @@ extern bool VRDebugMtxPos;
 static char gExtendedGameFovLabel[80];
 extern void vrSettingsSave();
 //---
-#define HUD_STEREO_DEPTH_STEP  0.1f
+#define HUD_STEREO_DEPTH_STEP  0.05f
 #define HUD_STEREO_DEPTH_STEPS ((s32)((HUD_STEREO_DEPTH_MAX - HUD_STEREO_DEPTH_MIN) / HUD_STEREO_DEPTH_STEP))
 //---
 #define WORLDSCALE_STEP   0.01f
@@ -360,7 +360,7 @@ struct menuitem gVROptionsMenuItems[] = {
         MENUITEMTYPE_SLIDER,
         0,
         MENUITEMFLAG_LITERAL_TEXT,
-        (uintptr_t)"Crosshair Stereo Correction",
+        (uintptr_t)"HUD/Crosshair Depth",
         0xff,
         menuhandlerStereoCrosshair,
         },
