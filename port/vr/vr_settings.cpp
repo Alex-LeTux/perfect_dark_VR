@@ -21,6 +21,31 @@ extern "C" void vrSettingsSave(void)
     fprintf(f, "WeaponRecoil=%d\n", VrWeaponRecoil ? 1 : 0);
     fprintf(f, "WorldScale=%.4f\n", VrSetWorldScale);
     fprintf(f, "UseSnapTurn=%d\n", VrUseSnapTurn ? 1 : 0);
+
+    // --- VR hand placement (no menu UI; edit here) --------------------------------------------
+    fprintf(f, "\n");
+    fprintf(f, "; Where the gun sits in your hand, in the CONTROLLER's own frame (game units,\n");
+    fprintf(f, "; roughly cm). Adjust if the model's trigger finger does not land on your real\n");
+    fprintf(f, "; one. X = right, Y = up, Z = forward along the barrel. Everything else about the\n");
+    fprintf(f, "; placement is measured and baked in; these vary with hand size and grip style.\n");
+    fprintf(f, "GunOffX=%.4f\n", VrGunOffX);
+    fprintf(f, "GunOffY=%.4f\n", VrGunOffY);
+    fprintf(f, "GunOffZ=%.4f\n", VrGunOffZ);
+    fprintf(f, "\n");
+    fprintf(f, "; 0..1. How tightly the elbows are pulled in toward your body. 0 leaves them at the\n");
+    fprintf(f, "; animation's rest pose (they splay outward), 1 pins them hard against the torso.\n");
+    fprintf(f, "ArmElbowTuck=%.4f\n", VrArmElbowTuck);
+    fprintf(f, "\n");
+    fprintf(f, "; How fast the virtual torso turns to follow your head, per tick. The elbow anchor\n");
+    fprintf(f, "; is held steady relative to that torso, so this trades two things off: too LOW and\n");
+    fprintf(f, "; the elbows lag behind when you physically turn your whole body; too HIGH and they\n");
+    fprintf(f, "; drift when you merely glance around. ~0.02 suits most people.\n");
+    fprintf(f, "ArmBodyFollow=%.4f\n", VrArmBodyFollow);
+    fprintf(f, "\n");
+    fprintf(f, "; 1 = the empty off-hand closes into a fist while you squeeze the left grip,\n");
+    fprintf(f, "; 0 = it stays open. Single-handed weapons only, since on two-handers that grip\n");
+    fprintf(f, "; already means 'take the two-handed hold'.\n");
+    fprintf(f, "FistClench=%d\n", VrFistClench);
     fclose(f);
 }
 
@@ -35,7 +60,7 @@ extern "C" void vrSettingsLoad(void)
     int ival;
 
     while (fgets(line, sizeof(line), f)) {
-        if (line[0] == '[' || line[0] == '\n') continue;
+        if (line[0] == '[' || line[0] == '\n' || line[0] == ';' || line[0] == '#') continue;
 
         if (sscanf(line, "%63[^=]=%d", key, &ival) == 2) {
             if (strcmp(key, "ManualReloading") == 0) VrManualReloading = ival != 0;
@@ -44,6 +69,7 @@ extern "C" void vrSettingsLoad(void)
             else if (strcmp(key, "MotionThrowing") == 0) VrMotionThrowing = ival != 0;
             else if (strcmp(key, "WeaponRecoil") == 0) VrWeaponRecoil = (ival != 0);
             else if (strcmp(key, "UseSnapTurn") == 0) VrUseSnapTurn = (ival != 0);
+            else if (strcmp(key, "FistClench") == 0) VrFistClench = ival;
         }
 
         if (sscanf(line, "%63[^=]=%f", key, &fval) == 2) {
@@ -58,6 +84,11 @@ extern "C" void vrSettingsLoad(void)
                 if (fval > WORLDSCALE_MAX) fval = WORLDSCALE_MAX;
                 VrSetWorldScale = fval;
             }
+            else if (strcmp(key, "ArmElbowTuck") == 0) VrArmElbowTuck = fval;
+            else if (strcmp(key, "ArmBodyFollow") == 0) VrArmBodyFollow = fval;
+            else if (strcmp(key, "GunOffX") == 0) VrGunOffX = fval;
+            else if (strcmp(key, "GunOffY") == 0) VrGunOffY = fval;
+            else if (strcmp(key, "GunOffZ") == 0) VrGunOffZ = fval;
         }
     }
 
