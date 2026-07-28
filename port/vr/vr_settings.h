@@ -15,3 +15,14 @@ extern bool VrWeaponRecoil;
 #define WORLDSCALE_MAX    1.50f
 extern float VrSetWorldScale;
 extern bool VrUseSnapTurn;
+
+// VR hand/gun placement. Defined in bondgun.c. These are the only values still worth varying per
+// player -- everything else about the placement is measured and baked. There is deliberately no
+// menu UI for them; they live in pd-vr.ini and vrSettingsSave() documents each one.
+extern float VrGunOffX;         // grip fit trim in the controller frame, game units
+extern float VrGunOffY;
+extern float VrGunOffZ;
+extern float VrArmElbowTuck;    // 0..1, how tightly the elbow is pinned toward the body
+extern float VrArmBodyFollow;   // how fast the smoothed torso yaw chases the head (spin comfort)
+extern int   VrFistClench;      // close the off-hand while the left grip is squeezed
+extern float VrFistClenchAmt;   // runtime 0..1 clench amount (not persisted)

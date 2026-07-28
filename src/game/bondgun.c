@@ -165,6 +165,30 @@ bool VrManualReloading = false;
 // VrDebug Manual Reloading -------------------------------------------
 bool VRDebugMtxPos = false;
 int axis = 0;
+
+// ===== VR gun / hand placement ==============================================================
+// The geometry here was established by measurement rather than guesswork and is now baked in.
+// Only the handful of genuinely per-player values below stay configurable, via pd-vr.ini
+// (there is no menu UI for them -- see vrSettingsSave() for the documented key names).
+float VrGunOffX = 2.35f;       // grip fit trim in the controller frame, game units
+float VrGunOffY = -13.02f;
+float VrGunOffZ = -4.39f;
+float VrArmElbowTuck  = 0.80f; // 0..1, how tightly the elbow is pinned toward the body
+float VrArmBodyFollow = 0.02f; // how fast the torso yaw chases the head (spin comfort)
+int   VrFistClench    = 1;     // close the off-hand while the left grip is squeezed
+
+// --- Baked constants: measured/tuned, deliberately not user-facing --------------------------
+#define VR_ARM_ELBOW_SWING    0.0f   // legacy aim-follow factor in vr_wrist_rot, superseded by the tuck
+#define VR_FIST_SIDE         -1.0f   // elbow-tuck outboard direction for the mirrored fists hand
+#define VR_FIST_ROLL         80.0f   // fists grip roll about the forearm axis (degrees)
+#define VR_FIST_ROLL_CLENCH -80.0f   // extra roll blended in as the fist closes
+
+// --- Runtime state (not settings) -----------------------------------------------------------
+// Smoothed torso yaw. This is what makes the elbow anchor spin-safe: a quick glance leaves the
+// torso behind so the anchor holds still, while a sustained physical turn drags it around with
+// you. Counter-rotating by ABSOLUTE head yaw was the bug -- a 360 spin unwound the elbows.
+static float VrBodyYaw = 0.0f;
+float VrFistClenchAmt = 0.0f;  // 0 = open, 1 = closed; eased, shared by the pose and render paths
 float offsetX = 0.0f;
 float offsetY = 0.0f;
 float offsetZ = 0.0f;
@@ -579,6 +603,22 @@ static u32  *g_VrCopyWepRwdatasAlloc  = NULL;
 static u32  *g_VrCopyHandRwdatasAlloc = NULL;
 //----------------------------------------------------------
 
+// FISTS OFF-HAND ------------------------------------------------------------------------
+// The single-wield off-hand used to be the GUN model's left-hand submesh skinned onto the gun
+// skeleton's foregrip bones -- bone-welded to a grip pose, which is why no rigid roll/offset could
+// ever align it. Instead render the real UNARMED fists model. That asset is already resident while
+// armed as gunctrl.handmodeldef (measured: numparts 2, nummatrices 33, i.e. bones 1-16 = right hand,
+// 17-32 = left hand) -- it is the very same file WEAPON_UNARMED loads as its gunmodeldef. We keep our
+// OWN instance rather than reusing g_VrCopyHandModel, which is NULL for some weapons because
+// vrCopyWepLoad can early-return before initialising it.
+struct model     g_VrFistModel;
+struct anim      g_VrFistAnim;      // own anim state, so the clench can't disturb the real hands
+struct modeldef *g_VrFistModeldef = NULL;
+static u32      *g_VrFistRwdatasAlloc = NULL;
+static s32       g_VrFistFilenum = -1;
+Mtxf             g_VrFistSp2c4;
+static bool      g_VrFistReady = false;
+
 
 #define VR_MAG_R_MTX_INDEX 38
 #ifndef M_PI_2f
@@ -600,6 +640,7 @@ static void quaternionMul_XR(const XrQuaternionf *a, const XrQuaternionf *b, XrQ
     out->z = a->w * b->z + a->x * b->y - a->y * b->x + a->z * b->w;
     out->w = a->w * b->w - a->x * b->x - a->y * b->y - a->z * b->z;
 }
+
 
 
 static struct coord gVrBeltPosForDetection = {0};
@@ -773,9 +814,44 @@ static void apply_wrist_rot(struct hand *hand, Mtxf *armMtx, Mtxf *handMtx,
 
 }
 
-void vr_wrist_rot(struct hand *hand, struct modeldef *modeldef, Mtxf *matrices, float bg_scale) {
+// Tuck the elbow by ROTATING the forearm bone about the wrist (handMtx pivot) toward a body-anchor
+// DIRECTION, preserving the forearm length. Rotating about the pivot keeps the wrist vertex fixed
+// (joint stays connected -- unlike a raw position set, which compresses the bone and tears the wrist).
+// Only the direction of (ax,ay,az) matters; distance is ignored because length is preserved.
+static void tuck_elbow(Mtxf *armMtx, Mtxf *handMtx, float ax, float ay, float az, float blend) {
+    float px = handMtx->m[3][0], py = handMtx->m[3][1], pz = handMtx->m[3][2];  // wrist pivot
+    float dcx = armMtx->m[3][0] - px, dcy = armMtx->m[3][1] - py, dcz = armMtx->m[3][2] - pz; // wrist->elbow
+    float L = sqrtf(dcx*dcx + dcy*dcy + dcz*dcz);
+    if (L < 0.0001f) return;
+    float ddx = ax - px, ddy = ay - py, ddz = az - pz;                          // wrist->anchor
+    float dl = sqrtf(ddx*ddx + ddy*ddy + ddz*ddz);
+    if (dl < 0.0001f) return;
+    float ux = dcx/L, uy = dcy/L, uz = dcz/L;
+    float vx = ddx/dl, vy = ddy/dl, vz = ddz/dl;
+    float dot = ux*vx + uy*vy + uz*vz;
+    if (dot > 1.0f) dot = 1.0f; if (dot < -1.0f) dot = -1.0f;
+    if (dot > 0.9999f) return;
+    float rax = uy*vz - uz*vy, ray = uz*vx - ux*vz, raz = ux*vy - uy*vx;        // rotation axis
+    float al = sqrtf(rax*rax + ray*ray + raz*raz);
+    if (al < 0.0001f) return;
+    rax /= al; ray /= al; raz /= al;
+    float ang = acosf(dot) * blend;
+    float s = sinf(ang * 0.5f), qw = cosf(ang * 0.5f);
+    float qx = rax*s, qy = ray*s, qz = raz*s;
+    rotvec(&armMtx->m[0][0], &armMtx->m[0][1], &armMtx->m[0][2], qw, qx, qy, qz);
+    rotvec(&armMtx->m[1][0], &armMtx->m[1][1], &armMtx->m[1][2], qw, qx, qy, qz);
+    rotvec(&armMtx->m[2][0], &armMtx->m[2][1], &armMtx->m[2][2], qw, qx, qy, qz);
+    rotvec(&dcx, &dcy, &dcz, qw, qx, qy, qz);   // length preserved
+    armMtx->m[3][0] = px + dcx;
+    armMtx->m[3][1] = py + dcy;
+    armMtx->m[3][2] = pz + dcz;
+}
 
-    const float t = 2.0f;
+// primarySide: +1 when matrices[1]/[2] is the RIGHT hand (main gun), -1 when it's the LEFT hand
+// (dual-wield copy weapon) -- mirrors the elbow-tuck outboard direction so left/right stay symmetric.
+void vr_wrist_rot(struct hand *hand, struct modeldef *modeldef, Mtxf *matrices, float bg_scale, float primarySide) {
+
+    const float t = VR_ARM_ELBOW_SWING;   // legacy aim-follow; the elbow tuck below replaced it
     bool grip = false;
     if(VrTwoHandsGun(g_Vars.currentplayer->gunctrl.weaponnum)){
         grip = get_button_state(0, "grip");
@@ -789,6 +865,44 @@ void vr_wrist_rot(struct hand *hand, struct modeldef *modeldef, Mtxf *matrices, 
     apply_wrist_rot(hand, &matrices[1], &matrices[2], 1.0f, t, bg_scale);
     // Left Hand and arm
     apply_wrist_rot(hand, &matrices[17], &matrices[18], 1.0f, leftT, bg_scale);
+
+    // ELBOW TUCK: [ARMDIAG] proved the elbow bone (matrices[1]/[17]) is rigidly welded to the gun and
+    // swings ~68u with its rotation, while the hand bone ([2]/[18]) stays put -- so the built-in IK
+    // (which only nudges ~12u) can never keep up. Rotate the forearm about the WRIST toward a body-
+    // stable anchor DIRECTION (view space = head/shoulder-stable): down + back toward the torso, and
+    // outboard (right for RH, left for LH). Length-preserving so the wrist joint stays connected.
+    if (VrArmElbowTuck > 0.0f) {
+        // Mirror the outboard (x) direction by primarySide so the copy weapon's LEFT primary arm
+        // tucks outward-left instead of inward. y (down) and z (back) are symmetric, unchanged.
+        float outX = 8.0f * primarySide;
+        // The anchor offset is expressed in VIEW space, which rotates with the head -- so head yaw
+        // would drag the anchor sideways and the elbow would swim the opposite way. Counter-rotate it
+        // about view-up by the head yaw RELATIVE to the smoothed torso, so it is body-stable without
+        // coming unstuck when you physically turn (absolute yaw here unwound the elbows over a 360).
+        f32 ox = outX, oz = 12.0f;
+        {
+            f32 w = gRawHeadQ.w, y = gRawHeadQ.y;
+            f32 n = sqrtf(w*w + y*y);
+            if (n > 1e-6f) {
+                w /= n; y /= n;
+                if (w < 0.0f) { w = -w; y = -y; }
+                f32 rel = 2.0f * atan2f(y, w) - VrBodyYaw;
+                while (rel >  (f32)M_PI) rel -= 2.0f * (f32)M_PI;
+                while (rel < -(f32)M_PI) rel += 2.0f * (f32)M_PI;
+                f32 ca = cosf(-rel), sa = sinf(-rel);
+                f32 nx =  ox * ca + oz * sa;
+                f32 nz = -ox * sa + oz * ca;
+                ox = nx; oz = nz;
+            }
+        }
+
+        tuck_elbow(&matrices[1], &matrices[2],
+                   matrices[2].m[3][0] + ox, matrices[2].m[3][1] - 15.0f, matrices[2].m[3][2] + oz,
+                   VrArmElbowTuck);
+        tuck_elbow(&matrices[17], &matrices[18],
+                   matrices[18].m[3][0] - ox, matrices[18].m[3][1] - 15.0f, matrices[18].m[3][2] + oz,
+                   VrArmElbowTuck);
+    }
 }
 
 
@@ -2233,6 +2347,77 @@ static void vrUpdateBeltMagGrab(void)
     }
 }
 
+
+// Free the fists instance. Idempotent + NULL-safe, so it doubles as the "reload" step.
+static void vrFistUnload(void)
+{
+    if (g_VrFistRwdatasAlloc) {
+        sysMemFree(g_VrFistRwdatasAlloc);
+        g_VrFistRwdatasAlloc = NULL;
+    }
+    g_VrFistModeldef = NULL;
+    g_VrFistFilenum  = -1;
+    g_VrFistReady    = false;
+    memset(&g_VrFistModel, 0, sizeof(g_VrFistModel));
+}
+
+// Lazily (re)build the fists instance from gunctrl.handmodeldef. Self-healing: keyed on both the
+// modeldef pointer AND handfilenum, because gun memory is a fixed arena -- a reloaded hands asset can
+// land at the SAME address (e.g. after bgunEnterFlux(), which swaps gun mem without going through
+// vrCopyWepLoad). Returns false when there is no usable hands model, in which case callers fall back
+// to the legacy copy hand. Cheap: the hands modeldef has only 2 parts.
+static bool vrFistEnsureLoaded(void)
+{
+    struct player *player = g_Vars.currentplayer;
+    struct modeldef *md = player->gunctrl.handmodeldef;
+
+    if (md != NULL && md == g_VrFistModeldef
+        && (s32)player->gunctrl.handfilenum == g_VrFistFilenum
+        && g_VrFistRwdatasAlloc != NULL) {
+        return true;   // already current
+    }
+
+    vrFistUnload();
+
+    if (md == NULL || md->rootnode == NULL || md->numparts <= 0 || md->nummatrices <= 0) {
+        return false;
+    }
+
+    s32 rs = md->numparts * (s32)sizeof(union modelrwdata);
+    u32 *rw = (u32 *)sysMemAlloc(rs);
+    if (!rw) {
+        return false;
+    }
+    memset(rw, 0, rs);
+
+    modelInit(&g_VrFistModel, md, rw, false);
+    // Own anim state. Left at animnum 0 it is inert -- modelSetMatricesWithAnim tests
+    // (anim && anim->animnum) and falls through to the modeldef's rest pose, which IS the unarmed
+    // idle look. The clench sets a fixed frame of anim 1002 on top of it.
+    animInit(&g_VrFistAnim);
+    g_VrFistModel.anim   = &g_VrFistAnim;
+    g_VrFistRwdatasAlloc = rw;
+    g_VrFistModeldef     = md;
+    g_VrFistFilenum      = (s32)player->gunctrl.handfilenum;
+    return true;
+}
+
+// Collapse a range of the fists' WORLD matrices so those bones draw nothing. Deliberately
+// self-contained -- vrHideOnly/vrHideGunParts operate on an index list built from the GUN modeldef,
+// which does not apply here. Same collapse trick as vrHideGunParts. Never touches index 0 (the root).
+static void vrFistHideRange(Mtxf *m, s32 count, s32 first, s32 last)
+{
+    s32 k;
+    if (first < 1) first = 1;
+    if (last >= count) last = count - 1;
+
+    for (k = first; k <= last; k++) {
+        m[k].m[0][0] = m[k].m[0][1] = m[k].m[0][2] = 0.0f;
+        m[k].m[1][0] = m[k].m[1][1] = m[k].m[1][2] = 0.0f;
+        m[k].m[2][0] = m[k].m[2][1] = m[k].m[2][2] = 0.0f;
+        m[k].m[3][0] = 99999.0f;
+    }
+}
 
 void vrCopyWepUnload(void)
 {
@@ -5789,69 +5974,82 @@ s32 bgunTickIncState2(struct handweaponinfo* info, s32 handnum, struct hand* han
 }
 
 
+// Controller basis in GAME-world axes (per hand), produced by vr_gun_pos_rot and consumed at
+// render time by bgun0f0a5550 to world-lock the gun ORIENTATION via the live camera matrix.
+struct coord gVrGunRight[2] = { {1,0,0}, {1,0,0} };
+struct coord gVrGunUp[2]    = { {0,1,0}, {0,1,0} };
+struct coord gVrGunFwd[2]   = { {0,0,1}, {0,0,1} };
+// Per-weapon grip offset, passed from vr_gun_pos_rot (tick) to bgun0f0a5550 (render) so it can be
+// applied in the gun's STABLE world orientation instead of the head-relative view frame.
+struct coord gVrGunOff[2]   = { {0,0,0}, {0,0,0} };
+
 void vr_gun_pos_rot(int handnum, struct hand* hand) {
     int ctrlIndex = (!vr_invert_hands)
                     ? (handnum == HAND_RIGHT ? 1 : 0)
                     : (handnum == HAND_RIGHT ? 0 : 1);
 
+    // Per-weapon grip offset (delta from the tracked controller point to the gun model origin).
+    //
+    // X and Z are NEGATED relative to the values this mod originally shipped. Those were authored
+    // against the old placement `gCtrlPos + posrotmtx*off`; the offset now lands in the gun MODEL's
+    // frame (`gCtrlPos + Ry180*posrotmtx*off`, see the placement block in bgun0f0a5550), which is
+    // a 180deg-Y basis change -- so every authored value needs the matching (x,y,z) -> (-x,y,-z).
+    // Confirmed against a tuned Falcon2: total Z went +7.3 -> -8.4, i.e. sign flipped, magnitude kept.
+    // Applying it here preserves every per-weapon relationship the original author dialled in, so a
+    // single global trim serves all weapons and none of them need individual hand-tuning.
+    struct coord off;
     switch (g_Vars.currentplayer->gunctrl.weaponnum){
         case WEAPON_DRAGON:
         case WEAPON_SUPERDRAGON:
-            hand->posoffset.x = gCtrlPos[ctrlIndex][0] + 4.0f;
-            hand->posoffset.y = gCtrlPos[ctrlIndex][1] + 20.0f;
-            hand->posoffset.z = gCtrlPos[ctrlIndex][2] + -4.0f;
-            break;
+            // Y was 20 here; measured 4 units too high against the controller, so it matches the
+            // 16 every other rifle-class weapon uses.
+            off.x = -4.0f; off.y = 16.0f; off.z = 4.0f;  break;
         case WEAPON_RCP120:
         case WEAPON_AR34:
         case WEAPON_SHOTGUN:
         case WEAPON_SNIPERRIFLE:
         case WEAPON_FARSIGHT:
-            hand->posoffset.x = gCtrlPos[ctrlIndex][0] + 4.0f;
-            hand->posoffset.y = gCtrlPos[ctrlIndex][1] + 16.0f;
-            hand->posoffset.z = gCtrlPos[ctrlIndex][2] + -8.0f;
-            break;
+            off.x = -4.0f; off.y = 16.0f; off.z = 8.0f;  break;
         case WEAPON_CALLISTO:
         case WEAPON_ROCKETLAUNCHER:
-            hand->posoffset.x = gCtrlPos[ctrlIndex][0] + 8.0f;
-            hand->posoffset.y = gCtrlPos[ctrlIndex][1] + 14.0f;
-            hand->posoffset.z = gCtrlPos[ctrlIndex][2] + 4.0f;
-            break;
+            off.x = -8.0f; off.y = 14.0f; off.z = -4.0f; break;
         case WEAPON_REAPER:
-            hand->posoffset.x = gCtrlPos[ctrlIndex][0] + -8.00f;
-            hand->posoffset.y = gCtrlPos[ctrlIndex][1] + 12.00f;
-            hand->posoffset.z = gCtrlPos[ctrlIndex][2] + 4.00f;
-            break;
+            off.x = 8.0f;  off.y = 12.0f; off.z = -4.0f; break;
         case WEAPON_DEVASTATOR:
-            hand->posoffset.x = gCtrlPos[ctrlIndex][0] + 4.00f;
-            hand->posoffset.y = gCtrlPos[ctrlIndex][1] + 16.00f;
-            hand->posoffset.z = gCtrlPos[ctrlIndex][2] + -4.00f;
-            break;
+            off.x = -4.0f; off.y = 16.0f; off.z = 4.0f;  break;
         case WEAPON_COMBATKNIFE:
         case WEAPON_CROSSBOW:
         case WEAPON_GRENADE:
         case WEAPON_NBOMB:
-            hand->posoffset.x = gCtrlPos[ctrlIndex][0] + 2.0f;
-            hand->posoffset.y = gCtrlPos[ctrlIndex][1] + 12.0f;
-            hand->posoffset.z = gCtrlPos[ctrlIndex][2] + 12.0f;
-            break;
+            off.x = -2.0f; off.y = 12.0f; off.z = -12.0f; break;
         default:
-            hand->posoffset.x = gCtrlPos[ctrlIndex][0] + 0.0f;
-            hand->posoffset.y = gCtrlPos[ctrlIndex][1] + 16.0f;
-            hand->posoffset.z = gCtrlPos[ctrlIndex][2] + 4.0f;
-            break;
+            off.x = 0.0f;  off.y = 16.0f; off.z = -4.0f; break;
     }
 
-    float qx = gRawHeadQ.x;
-    float qy = gRawHeadQ.y;
-    float qz = gRawHeadQ.z;
-    float qw = gRawHeadQ.w;
+    // Per-player grip fit trim (pd-vr.ini), so the gun can be nudged onto the controller.
+    off.x += VrGunOffX;
+    off.y += VrGunOffY;
+    off.z += VrGunOffZ;
 
-    // Slight Pitch correction (up/down)
-    float pitch = asinf(2.0f * (qw*qx - qz*qy));
-    hand->posoffset.y += pitch * 15.0f;
-    hand->posoffset.z += pitch * 5.0f;
+    // Two-handed weapons carry their own per-weapon base offsets above (e.g. AR34/Shotgun/Sniper use
+    // (4,16,-8) vs the default (0,16,4)), and BOTH hands read the same one -- which is why they sit
+    // off by an identical amount on each side. The single global trim can only satisfy one base, so
+    // these get their own additive trim on top.
+    // ORIENTATION: straight from the controller quat, no extra alignment rotation needed.
+    {
+        // gCtrlQuat is stored [w,x,y,z]; quaternionToMtx wants the same order.
+        f32 qf[4] = { gCtrlQuat[ctrlIndex][0], gCtrlQuat[ctrlIndex][1],
+                      gCtrlQuat[ctrlIndex][2], gCtrlQuat[ctrlIndex][3] };
+        quaternionToMtx(qf, &hand->posrotmtx);
+    }
 
-    quaternionToMtx(gCtrlQuat[ctrlIndex], &hand->posrotmtx);
+    // The offset is applied properly at RENDER (bgun0f0a5550), which has the gun's world
+    // orientation; here we just stash it and keep the plain view-space sum so the other tick-time
+    // consumers (muzzle/recoil/laser) are unchanged.
+    gVrGunOff[handnum] = off;
+    hand->posoffset.x = gCtrlPos[ctrlIndex][0] + off.x;
+    hand->posoffset.y = gCtrlPos[ctrlIndex][1] + off.y;
+    hand->posoffset.z = gCtrlPos[ctrlIndex][2] + off.z;
 
     hand->posrotmtx.m[3][0] = hand->posoffset.x;
     hand->posrotmtx.m[3][1] = hand->posoffset.y;
@@ -8140,8 +8338,6 @@ void bgunCalculatePlayerShotSpread(struct coord* gunpos2d, struct coord* gundir2
     gunpos2d->z = (vz > 0.0f) ? vz : 1.0f;
 
 }
-
-
 
 void bgunCalculateBotShotSpread(struct coord* arg0, s32 weaponnum, s32 funcnum, bool arg3, s32 crouchpos, bool dual)
 {
@@ -10472,6 +10668,25 @@ void bgun0f0a5550(s32 handnum) {
 
     bgunUpdateBlend(hand, handnum);
 
+    // Chase the torso yaw toward the head yaw. HAND_RIGHT only so the rate is one step per tick
+    // regardless of how many hands/copy models are drawn. Uses the shortest-angle difference so a
+    // full 360 physical spin tracks correctly instead of unwinding.
+    if (handnum == HAND_RIGHT) {
+        static bool sBodyYawInit = false;
+        f32 w = gRawHeadQ.w, y = gRawHeadQ.y;
+        f32 n = sqrtf(w*w + y*y);
+        if (n > 1e-6f) {
+            w /= n; y /= n;
+            if (w < 0.0f) { w = -w; y = -y; }
+            f32 hy = 2.0f * atan2f(y, w);
+            if (!sBodyYawInit) { VrBodyYaw = hy; sBodyYawInit = true; }
+            f32 d = hy - VrBodyYaw;
+            while (d >  (f32)M_PI) d -= 2.0f * (f32)M_PI;
+            while (d < -(f32)M_PI) d += 2.0f * (f32)M_PI;
+            VrBodyYaw += d * VrArmBodyFollow;
+        }
+    }
+
 
 #ifndef PLATFORM_N64
     // adjust viewmodel position for different FOVs
@@ -10564,12 +10779,53 @@ void bgun0f0a5550(s32 handnum) {
     hand->lastrotangx = sp1a4.f[0];
     hand->lastrotangy = sp1a4.f[1];
 
+    // CLEAN-SLATE TEST: also freeze the crosshair auto-aim (matches Build 18's rotation state)
+    // so ALL gun rotation is frozen. Combined with identity posrotmtx, the gun cannot rotate at
+    // all -> any remaining head-motion drift would be genuine POSITION drift, not rotation.
+    sp1a4.x = 0.0f;
+    sp1a4.y = 0.0f;
+
     mtx4LoadRotation(&sp1a4, &sp124);
     mtx4MultMtx4(&sp124, &sp164, &sp284);
     mtx4MultMtx4InPlace(&sp284, &sp234);
     mtx4Copy(&sp234, &sp2c4);
+
     mtx4SetTranslation(&sp274, &sp2c4);
 
+    // GRIP OFFSET PLACEMENT. sp274 arrived here as FovOffset + gCtrlPos + off, where FovOffset and
+    // `off` are CONSTANT view-space vectors -- so camMtx orbits them about the head and the gun swims.
+    // Re-place the offset properly instead:
+    //   * rotate it by hand->posrotmtx, the clean controller orientation, so it becomes a fixed vector
+    //     in the CONTROLLER's frame that camMtx cancels the head out of;
+    //   * negate X/Z afterwards. gCtrlQuat is stored {w,-x,y,-z}, which is exactly conjugation by a
+    //     180deg Y rotation -- a change of basis. The render undoes that for the ROTATION (sp164), but
+    //     the translation is written by mtx4SetTranslation afterwards and never gets the compensating
+    //     180Y, so the offset would land mirrored. Measured proof: sweeping controller pitch gives
+    //     pipe_pitch = 90 - true_pitch (slope exactly -1), and the mis-placement peaks at 2*|off|;
+    //   * strip the FOV nudge, a flat-viewmodel hack that is wrong for a physically tracked gun.
+    // Net: sp2c4.m[3] = gCtrlPos + Ry180 * Rctrl * off, which tracks 1:1 on all 6 DOF.
+    {
+        struct coord o = gVrGunOff[handnum];
+
+        // Dual-wield / unarmed draw the LEFT hand as an X-mirrored copy of the right (the
+        // mtx00015e24(-1) further down). The per-player X trim is measured against the RIGHT hand, so
+        // on the mirrored copy it pushes the grip the wrong way. Cancel it there rather than mirror
+        // it: measured, the left grip sat one trim-width off, and negating o.x outright overshot by
+        // exactly 2x. The per-weapon base X is 0 for every dual-wieldable weapon, so this leaves the
+        // left hand on the model's own symmetric grip point.
+        if (handnum == HAND_LEFT
+            && (weaponHasFlag(weaponnum, WEAPONFLAG_DUALFLIP) || weaponnum == WEAPON_UNARMED)) {
+            o.x -= VrGunOffX;
+        }
+
+        Mtxf *pr = &hand->posrotmtx;
+        float orx = -(o.x*pr->m[0][0] + o.y*pr->m[1][0] + o.z*pr->m[2][0]);
+        float ory =   o.x*pr->m[0][1] + o.y*pr->m[1][1] + o.z*pr->m[2][1];
+        float orz = -(o.x*pr->m[0][2] + o.y*pr->m[1][2] + o.z*pr->m[2][2]);
+        sp2c4.m[3][0] += -o.x + orx;
+        sp2c4.m[3][1] += -o.y + ory + bgunGetFovOffsetY();   // undo sp274.y -= FovOffsetY
+        sp2c4.m[3][2] += -o.z + orz - bgunGetFovOffsetZ();   // undo sp274.z += FovOffsetZ
+    }
 
     mtx4Copy(&sp2c4, &hand->cammtx);
     mtx4Copy(&hand->posmtx, &hand->prevmtx);
@@ -10867,7 +11123,10 @@ void bgun0f0a5550(s32 handnum) {
             bool CrossbowLaserUnarmed =
                     currentWeapon == WEAPON_CROSSBOW || currentWeapon == WEAPON_LASER || (!VrMotionThrowing && currentWeapon == WEAPON_UNARMED);
             if (!CrossbowLaserUnarmed) {
-                vr_wrist_rot(hand, modeldef, hand->gunmodel.matrices, bg_scale);
+                // bgun0f0a5550 runs once per hand, so the primary arm side follows handnum:
+                // RIGHT hand's gun -> +1 (elbow tucks outward-right), LEFT hand's gun -> -1 (outward-left).
+                vr_wrist_rot(hand, modeldef, hand->gunmodel.matrices, bg_scale,
+                             (handnum == HAND_RIGHT) ? 1.0f : -1.0f);
             }
 
             if (vrSwitchGun == true && modeldef != NULL) {
@@ -13882,6 +14141,42 @@ GLOBAL_ASM(
 );
 #endif
 #else
+// Is the off-hand genuinely FREE, i.e. safe to replace with the fists model? Returns false whenever
+// the legacy copy hand is doing real work -- physically on the gun (reload / mag grab / two-hand grip /
+// reload-zone hold snap), mid weapon-switch, or on weapons whose left hand has a real role. Note it
+// deliberately does NOT test bare VrReloadGrip: that is just "left grip held", and gating on it would
+// pop the fists out every time the player squeezed the grip.
+static bool vrOffHandIsFree(struct player *player)
+{
+    struct hand *rhand = &player->hands[HAND_RIGHT];
+    struct hand *lhand = &player->hands[HAND_LEFT];
+    s32 wep = player->gunctrl.weaponnum;
+
+
+    // off-hand is on the gun
+    if (rhand->state == HANDSTATE_RELOAD) return false;
+    if (lhand->state == HANDSTATE_RELOAD) return false;
+    if (VrInReloadLoop) return false;
+    if (VrGrabMagBelt) return false;
+    if (VrTwoHandGrip && VrTwoHandsGun(wep)) return false;
+
+    // mid weapon switch: the legacy path runs the lower/raise pitch dip
+    if (rhand->state == HANDSTATE_CHANGEGUN || rhand->state == HANDSTATE_AUTOSWITCH) return false;
+    if (lhand->state == HANDSTATE_CHANGEGUN || lhand->state == HANDSTATE_AUTOSWITCH) return false;
+    if (lhand->stateminor == HANDSTATEMINOR_CHANGEGUN_LOWER) return false;
+
+    // weapons whose off-hand legitimately isn't free
+    if (wep == WEAPON_UNARMED || wep == WEAPON_NONE) return false;  // already real fists on both hands
+    if (wep == WEAPON_REMOTEMINE) return false;                     // left hand holds the detonator
+    if (wep == WEAPON_LASER) return false;
+
+    // asset / load-state safety
+    if (player->gunctrl.handmodeldef == NULL) return false;
+    if (!bgunIsLoaded()) return false;
+
+    return true;
+}
+
 // Mismatch: Goal uses different codegen for accessing vertices
 void bgunRender(Gfx * *gdlptr)
 {
@@ -14154,6 +14449,7 @@ void bgunRender(Gfx * *gdlptr)
         struct hand *lhand = &player->hands[HAND_LEFT];
 
         bool OnlyWeapons = g_Vars.currentplayer->gunctrl.weaponnum < 36;
+
         if (OnlyWeapons && g_VrCopyWepModeldef != NULL
             && g_Vars.currentplayer->gunctrl.dualwielding == false) {
 
@@ -14187,6 +14483,10 @@ void bgunRender(Gfx * *gdlptr)
             vr_sp274.y -= bgunGetFovOffsetY();
             vr_sp274.z += bgunGetFovOffsetZ();
 
+            // Off-hand is "free" (not reloading) -> replicate the good/unarmed pose (bgun0f0a5550):
+            // add the damplook step and freeze the auto-aim. During reload keep the copy-hand behavior.
+            bool offHandIdle = (rhand->state != HANDSTATE_RELOAD) && !VrInReloadLoop && !VrGrabMagBelt;
+
             mtx4LoadIdentity(&vr_sp234);
 
             if (lhand->useposrot) {
@@ -14197,6 +14497,19 @@ void bgunRender(Gfx * *gdlptr)
                 vr_sp234.m[3][0] = 0.0f;
                 vr_sp234.m[3][1] = 0.0f;
                 vr_sp234.m[3][2] = 0.0f;
+
+                // DAMPLOOK step -- the piece the good/unarmed path (bgun0f0a5550) has that this path
+                // lacks. Guard against a zero damplook vector (mtx00016d58 would normalize 0 -> NaN).
+                float dl2 = lhand->damplook.x*lhand->damplook.x
+                          + lhand->damplook.y*lhand->damplook.y
+                          + lhand->damplook.z*lhand->damplook.z;
+                if (offHandIdle && dl2 > 1e-6f) {
+                    Mtxf dampMtx;
+                    mtx00016d58(&dampMtx, 0.0f, 0.0f, 0.0f,
+                                lhand->damplook.x, lhand->damplook.y, lhand->damplook.z,
+                                lhand->dampup.x, lhand->dampup.y, lhand->dampup.z);
+                    mtx00015be0(&dampMtx, &vr_sp234);
+                }
             }
             else {
                 lhand->rotxoffset = 0.0f;
@@ -14215,13 +14528,88 @@ void bgunRender(Gfx * *gdlptr)
             vr_sp1a4.y = -bgun0f0a2498(vr_sp118.x, vr_sp118.z, vr_sp274.f[0], vr_sp274.f[2]);
             vr_sp1a4.x = bgun0f0a2498(vr_sp118.y, vr_sp118.z, vr_sp274.f[1], vr_sp274.f[2]);
 
+            // Freeze the auto-aim when idle (matches the good/unarmed path).
+            if (offHandIdle) {
+                vr_sp1a4.x = 0.0f;
+                vr_sp1a4.y = 0.0f;
+            }
+
             mtx4LoadRotation(&vr_sp1a4, &vr_sp124);
             mtx4MultMtx4(&vr_sp124, &vr_sp164, &vr_sp284);
             mtx4MultMtx4InPlace(&vr_sp284, &vr_sp234);
             mtx4Copy(&vr_sp234, &vr_sp2c4);
             mtx4SetTranslation(&vr_sp274, &vr_sp2c4);
 
+            // FREE LEFT HAND WORLD-LOCK. This path builds its own vr_sp2c4 rather than sharing
+            // bgun0f0a5550's, so it needs its own copy of the same grip-offset placement -- omitting
+            // it here is what left the off-hand misaligned while unarmed (which uses the main path)
+            // looked correct. See the matching block in bgun0f0a5550 for the derivation.
+            {
+                struct coord o = gVrGunOff[HAND_LEFT];
+                Mtxf *pr = &lhand->posrotmtx;
+                float orx = -(o.x*pr->m[0][0] + o.y*pr->m[1][0] + o.z*pr->m[2][0]);
+                float ory =   o.x*pr->m[0][1] + o.y*pr->m[1][1] + o.z*pr->m[2][1];
+                float orz = -(o.x*pr->m[0][2] + o.y*pr->m[1][2] + o.z*pr->m[2][2]);
+                vr_sp2c4.m[3][0] += -o.x + orx;
+                vr_sp2c4.m[3][1] += -o.y + ory + bgunGetFovOffsetY();
+                vr_sp2c4.m[3][2] += -o.z + orz - bgunGetFovOffsetZ();
+            }
 
+            // FISTS POSE: snapshot vr_sp2c4 HERE -- at this point it is the fully world-locked free
+            // left-hand frame and nothing below has run yet. Everything that follows (the per-weapon
+            // foregrip shove, vrApplyTwoHandGrip) exists purely to drag the GUN so its left-hand BONE
+            // lands on the controller, which is meaningless for a first-class hand model -- so the
+            // fists must not inherit any of it. Then apply the same tail transforms bgun0f0a5550
+            // gives the unarmed left hand.
+            {
+                Mtxf fist = vr_sp2c4;
+
+                // world scale, as bgun0f0a5550 does for the gun (the copy path omits this).
+                float bg = bgGetScaleBg2Gfx();
+                if (bg != 1.0f && bg != 0.0f) {
+                    mtx00015f04(bg, &fist);
+                    fist.m[3][0] *= bg;
+                    fist.m[3][1] *= bg;
+                    fist.m[3][2] *= bg;
+                }
+
+                // Clench amount is eased HERE (this block runs before the fists render in the same
+                // loop iteration) because the roll depends on it: the clenched anim-1002 hand sits at
+                // a different orientation than the rest pose, so the neutral roll over-rotates it.
+                // Single-handed weapons only -- on two-handers the grip button already means "two-hand
+                // grab pose", so binding the clench there would fight it.
+                {
+                    f32 want = (VrFistClench
+                                && !VrTwoHandsGun(g_Vars.currentplayer->gunctrl.weaponnum)
+                                && get_button_state(0, "grip")) ? 1.0f : 0.0f;
+                    VrFistClenchAmt += (want - VrFistClenchAmt) * 0.35f;
+                }
+
+                // Grip roll about the hand's own forward axis, to line the thumb up with the
+                // controller. Safe at the root here (unlike the legacy hand, whose origin sat at the
+                // elbow so a root roll swung the wrist): this is a first-class hand model and
+                // vr_wrist_rot re-aims the forearm afterwards, so the arm stays connected.
+                {
+                    float a = (VR_FIST_ROLL + VrFistClenchAmt * VR_FIST_ROLL_CLENCH)
+                              * (float)(M_PI / 180.0);
+                    float ca = cosf(a), sa = sinf(a);
+                    s32 c;
+                    for (c = 0; c < 3; c++) {          // rotate rows 0/1 about row 2 (local forward)
+                        float va = fist.m[0][c];
+                        float vb = fist.m[1][c];
+                        fist.m[0][c] = va * ca - vb * sa;
+                        fist.m[1][c] = va * sa + vb * ca;
+                    }
+                }
+
+                // Render bones 1-16 (the RIGHT hand) mirrored, exactly how the unarmed left hand is
+                // built (mtx00015e24 negates row 0).
+                mtx00015e24(-1, &fist);
+
+                mtx00015f04(0.10000001f, &fist);
+                g_VrFistSp2c4 = fist;
+                g_VrFistReady = true;
+            }
 
             // VR Fix left Hand position for some weapons.
             if(g_Vars.currentplayer->gunctrl.weaponnum == WEAPON_DRAGON
@@ -14238,7 +14626,6 @@ void bgunRender(Gfx * *gdlptr)
                 vr_sp2c4.m[3][1] -= vr_sp2c4.m[0][1] * 20.0f + vr_sp2c4.m[1][1] * 0.0f + vr_sp2c4.m[2][1] * 0.0f;
                 vr_sp2c4.m[3][2] -= vr_sp2c4.m[0][2] * 20.0f + vr_sp2c4.m[1][2] * 0.0f + vr_sp2c4.m[2][2] * 0.0f;
             }
-
 
             if(hand->animmode == HANDANIMMODE_IDLE && rhand->state == HANDSTATE_IDLE) {
                 VrReloadGrip = get_button_state(0, "grip");
@@ -14390,8 +14777,18 @@ void bgunRender(Gfx * *gdlptr)
                         modelUpdateRelations(&g_VrCopyWepModel);
                         modelSetMatricesWithAnim(&renderdata, &g_VrCopyWepModel);
 
-                        if (FALCON2S) vrHideAllExcept(LeftHandAndRightMagMtx);
-                        else vrHideAllExcept(LeftHandMtx);
+                        if (vrOffHandIsFree(player)) {
+                            // The fists model draws the off-hand now, so drop the legacy left hand --
+                            // but KEEP matrix 38: the spare mag parked on the belt by
+                            // vrPlaceRightMagOnBelt() belongs to THIS model, not to the hand.
+                            // (vrHideAllExcept drops 38 itself when !VrManualReloading.)
+                            if (FALCON2S) vrHideAllExcept(RightMagMtx);
+                            else vrHideAllExcept(HideAll);
+                        } else if (FALCON2S) {
+                            vrHideAllExcept(LeftHandAndRightMagMtx);
+                        } else {
+                            vrHideAllExcept(LeftHandMtx);
+                        }
 
                         vrHideGunParts(g_VrCopyWepModel.matrices);
 
@@ -14410,7 +14807,7 @@ void bgunRender(Gfx * *gdlptr)
                             currentWeapon == WEAPON_CROSSBOW || currentWeapon == WEAPON_LASER || (!VrMotionThrowing && currentWeapon == WEAPON_UNARMED);
                     if (!CrossbowLaserUnarmed) {
                         // TODO VR fixe left wrist rot on vr_world_scale = 42.5f levels
-                        vr_wrist_rot(lhand, g_VrCopyWepModeldef, g_VrCopyWepModel.matrices, VrCopyScale);
+                        vr_wrist_rot(lhand, g_VrCopyWepModeldef, g_VrCopyWepModel.matrices, VrCopyScale, -1.0f);
                     }
 
                     if (VrManualReloading && FALCON2S) {
@@ -14434,6 +14831,68 @@ void bgunRender(Gfx * *gdlptr)
 
                 }
             }
+
+            // ── FISTS OFF-HAND ───────────────────────────────────────────────────────────
+            // Render the real unarmed fists model for the free off-hand, from its own matrix
+            // buffer and the clean g_VrFistSp2c4 pose. i == HAND_RIGHT because this whole VR
+            // off-hand section sits inside the for(i = 0; i < 2) loop and would otherwise draw twice.
+            if (i == HAND_RIGHT && g_VrFistReady && vrOffHandIsFree(player)
+                && vrFistEnsureLoaded()) {
+                s32 fnm = g_VrFistModeldef->nummatrices;
+                Mtxf *fm = (Mtxf *)gfxAllocate(fnm * sizeof(Mtxf));
+
+                if (fm) {
+                    mtx4Copy(&g_VrFistSp2c4, fm);   // seed matrices[0] with the root, as the gun path does
+
+                    // NOTE: modelSetMatrices ADVANCES renderdata.unk10, so it must be re-pointed here
+                    // (the copy-weapon draw above already consumed it).
+                    renderdata.unk00 = &g_VrFistSp2c4;
+                    renderdata.unk10 = fm;
+
+                    // CLENCH: hold a fixed frame of the unarmed grip anim (1002, fully closed at 28),
+                    // eased so it opens/closes smoothly. Driven directly rather than via
+                    // bgunStartAnimation because this model has no hand state machine behind it.
+                    // Single-handed weapons ONLY: on two-handers the grip button already means "two-hand
+                    // grab pose", so binding the clench there would fight it.
+                    // VrFistClenchAmt was eased in the pose block above (the roll depends on it).
+                    // Note the grip is read there from the RAW left button, not vr_button_L_grip:
+                    // that flag is gated on vr_leftHasWeapon (port/src/input.c:884) and so is
+                    // permanently false for a FREE off-hand -- exactly our case.
+                    if (VrFistClenchAmt > 0.02f) {
+                        modelSetAnimation(&g_VrFistModel, 1002, false, VrFistClenchAmt * 28.0f, 0.0f, 0.0f);
+                    } else {
+                        g_VrFistAnim.animnum = 0;   // inert -> modeldef rest pose (open hand)
+                    }
+
+                    g_VrFistModel.matrices = fm;
+                    modelUpdateRelations(&g_VrFistModel);
+                    modelSetMatricesWithAnim(&renderdata, &g_VrFistModel);
+
+                    // ARM IK -- without this the forearm renders as a rigid rest pose. Same call the
+                    // unarmed hand gets in bgun0f0a5550 and the legacy copy hand gets: bends the arm so
+                    // the wrist reaches the controller, and applies our tuck_elbow. Driven by the LEFT
+                    // hand's posrotmtx (the off-hand tracks the left controller). Must run after
+                    // modelSetMatricesWithAnim and before the bones are collapsed, as the gun path does.
+                    vr_wrist_rot(lhand, g_VrFistModeldef, fm, bgGetScaleBg2Gfx(), VR_FIST_SIDE);
+
+                    // We render the model's RIGHT hand mirrored (as the unarmed left hand is built),
+                    // so collapse the native left-hand bones.
+                    vrFistHideRange(fm, fnm, 17, 32);
+
+                    // Mirroring inverts winding -> flip culling, as the unarmed left hand does.
+                    // modelApplyCullMode only auto-clears G_CULL_BOTH for CULLMODE_NONE, so bracket it.
+                    s32 prevcull = renderdata.cullmode;
+                    gSPClearGeometryMode(renderdata.gdl++, G_CULL_BOTH);
+                    renderdata.cullmode = CULLMODE_FRONT;
+
+                    modelRender(&renderdata, &g_VrFistModel);
+                    mtxF2LBulk(fm, fnm);
+
+                    renderdata.cullmode = prevcull;
+                    gSPClearGeometryMode(renderdata.gdl++, G_CULL_BOTH);
+                }
+            }
+            g_VrFistReady = false;
 
 
             gdl = renderdata.gdl;
