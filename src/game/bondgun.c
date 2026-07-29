@@ -376,6 +376,27 @@ bool VrTwoHandsGun(s32 weaponnum) {
     }
 }
 
+// Two-handed AIM is a narrower set than the two-handed POSE. Steering by the line between the
+// controllers needs the two hands to be meaningfully apart along some fixed axis of the weapon;
+// where they are not, the hand line is noise and would corrupt the aim rather than refine it.
+//
+// Only the Slayer fails that. Its off-hand wraps the bottom of the same pistol grip, so the hands
+// are nearly coincident, the separation sits in the fallback band anyway, and the direction between
+// them is vertical -- nowhere near any axis of the gun. It keeps its two-handed pose, mesh handling
+// and recoil, and aims from the trigger wrist exactly as it did before two-handed aiming existed.
+//
+// The Rocket Launcher and Reaper also hold the off-hand off-barrel, but consistently so, and are
+// handled by giving them a grip axis instead (vrTwoHandAxisYaw) rather than by exclusion.
+static bool vrTwoHandAimGun(s32 weaponnum)
+{
+    switch (weaponnum) {
+        case WEAPON_SLAYER:
+            return false;
+        default:
+            return VrTwoHandsGun(weaponnum);
+    }
+}
+
 static bool vrLaserDotAllowed(s32 weaponnum)
 {
     switch (weaponnum) {
@@ -1010,6 +1031,147 @@ static bool sVrForceSnapRecapture = false;
 static int ReloadZone = 0;
 static float sReloadPullBase  = 0.0f;
 static float sReloadYDistBase = 0.0f;
+
+// ===== TWO-HANDED AIMING ====================================================================
+// Two-handed weapons aim along the line between the two controllers, not just the primary
+// wrist. Position is untouched -- the gun still hangs off the trigger hand exactly as before,
+// it only rotates -- so this cannot disturb the grip alignment. Roll still comes from the
+// primary wrist, since a two-point line cannot define it.
+
+// Player preference, on the VR options menu. Off restores wrist-only aiming for every weapon,
+// which some players will prefer -- bracing with the off-hand is more physical but asks more of
+// them, and a seated or one-handed player cannot use it at all.
+bool VrTwoHandAim = true;
+
+// Hand separation over which aim fades from the wrist to the hand line. The lower bound is not a
+// comfort setting: controllers pressed physically together still read ~9 apart (measured with bulky
+// PSVR2 controllers; slimmer ones bottom out lower, which only widens the fallback). Aim
+// sensitivity scales as 1/separation, so without this the gun turns violently as the hands close.
+// The upper bound sits below any real bracing hold -- measured 20-27 -- so a natural grip always
+// gets full authority.
+#define VR_2H_SEP_MIN   9.0f
+#define VR_2H_SEP_MAX  18.0f
+#define VR_2H_EASE      0.15f   // per-tick engage/release easing, so the aim never snaps
+
+// Where each weapon's support grip sits relative to its barrel, in degrees of yaw about the gun's
+// up axis (+ = to the gun's LEFT). Zero -- straight down the barrel -- is correct for every
+// conventional two-hander, so only the exceptions are listed. Both exceptions hold the off-hand
+// square to the barrel rather than ahead of it: the Rocket Launcher on a horizontal handle out to
+// the left, the Reaper on the second of two symmetrical grips. Dialled in-headset; deriving these
+// from the models' own hand bones does not work, because a model's root is an arbitrary authoring
+// origin rather than the trigger grip, so bone offsets are not comparable between weapons.
+static f32 vrTwoHandAxisYaw(s32 weaponnum)
+{
+    switch (weaponnum) {
+        case WEAPON_ROCKETLAUNCHER:
+        case WEAPON_REAPER:
+            return 90.0f;
+        default:
+            return 0.0f;
+    }
+}
+
+static float sTwoHandAmt = 0.0f;
+static u32   sTwoHandEaseFrame = 0xffffffff;
+
+// Build the gun's orientation from a controller quaternion, applying the two-handed aim
+// override on top. BOTH writers of hand->posrotmtx must go through here: vr_gun_pos_rot builds
+// it normally, but bgun0f09a6f8 rebuilds it from scratch every recoil frame, and would
+// otherwise silently stomp the override exactly while firing.
+static void vrBuildGunRotation(s32 handnum, struct hand *hand, const f32 quat[4], Mtxf *out)
+{
+    quaternionToMtx((f32 *)quat, out);
+
+    // Reset the engage amount while disabled, so switching the option back on mid-game starts from
+    // one-handed rather than resuming a stale blend.
+    if (!VrTwoHandAim) { sTwoHandAmt = 0.0f; return; }
+
+    if (handnum != HAND_RIGHT) return;
+    if (!vrTwoHandAimGun(g_Vars.currentplayer->gunctrl.weaponnum)) return;
+
+    // Ease in/out so engaging or releasing the grip doesn't snap the aim. Guarded to advance once
+    // per frame: while firing, bgun0f09a6f8 calls this in the same frame vr_gun_pos_rot already
+    // did, which would otherwise make the grip engage twice as fast during a burst as at rest.
+    if (sTwoHandEaseFrame != g_Vars.lvframe60) {
+        f32 want = VrTwoHandGrip ? 1.0f : 0.0f;
+        sTwoHandEaseFrame = g_Vars.lvframe60;
+        sTwoHandAmt += (want - sTwoHandAmt) * VR_2H_EASE;
+    }
+    if (sTwoHandAmt <= 0.001f) return;
+
+    s32 pri = (!vr_invert_hands) ? 1 : 0;   // primary/trigger controller
+    s32 off = 1 - pri;                      // support hand
+
+    // Direction between the physical controllers, in the RAW OpenXR position frame.
+    f32 dx = gCtrlPos[off][0] - gCtrlPos[pri][0];
+    f32 dy = gCtrlPos[off][1] - gCtrlPos[pri][1];
+    f32 dz = gCtrlPos[off][2] - gCtrlPos[pri][2];
+    f32 sep = sqrtf(dx*dx + dy*dy + dz*dz);
+    if (sep < 1e-4f) return;
+    dx /= sep; dy /= sep; dz /= sep;
+
+    // Fade back to wrist aim as the hands close, where the line between them stops being a usable
+    // pointing direction.
+    f32 sepW = (sep - VR_2H_SEP_MIN) / (VR_2H_SEP_MAX - VR_2H_SEP_MIN);
+    sepW = CLAMP(sepW, 0.0f, 1.0f);
+    f32 blend = sTwoHandAmt * sepW;
+    if (blend <= 0.001f) return;
+
+    // FRAME: gCtrlPos is raw OpenXR, but this matrix is consumed in a different basis. Settled by
+    // measurement rather than derivation (the two consumers disagree -- the shot path post-negates
+    // Y while the visual path composes a 180deg Y): negating Y alone lines the gun up with the
+    // physical hand line, which is consistent with it cancelling the shot path's own Y flip.
+    dy = -dy;
+
+    // GRIP AXIS: the direction from the trigger grip toward the support grip, in the GUN's own
+    // frame. A conventional foregrip lies straight down the barrel at {0,0,-1}; the exceptions in
+    // vrTwoHandAxisYaw swing it about the gun's up axis. Yaw alone covered both of them, so there
+    // is deliberately no pitch term.
+    f32 yrad = vrTwoHandAxisYaw(g_Vars.currentplayer->gunctrl.weaponnum) * 0.017453292f;
+    f32 ax   = -sinf(yrad), ay = 0.0f, az = -cosf(yrad);
+
+    // The grip axis in world. At yaw 0 this is identically the gun's forward, which is what makes
+    // the whole block reduce to a plain "point the barrel down the hand line" for every
+    // conventional weapon -- the behaviour those weapons were validated with.
+    f32 vx = ax*out->m[0][0] + ay*out->m[1][0] + az*out->m[2][0];
+    f32 vy = ax*out->m[0][1] + ay*out->m[1][1] + az*out->m[2][1];
+    f32 vz = ax*out->m[0][2] + ay*out->m[1][2] + az*out->m[2][2];
+
+    // Blend it toward the physical hand line. blend==0 leaves it untouched.
+    f32 tx = vx + (dx - vx) * blend;
+    f32 ty = vy + (dy - vy) * blend;
+    f32 tz = vz + (dz - vz) * blend;
+    f32 tl = sqrtf(tx*tx + ty*ty + tz*tz);
+    if (tl < 1e-4f) return;
+    tx /= tl; ty /= tl; tz /= tl;
+
+    // Rotate the gun by the shortest arc carrying the grip axis onto that target, then read off
+    // where the barrel ended up. A shortest-arc rotation introduces no twist about itself, so
+    // primary-wrist roll survives exactly as it did when the barrel was aimed directly.
+    f32 kx = vy*tz - vz*ty;
+    f32 ky = vz*tx - vx*tz;
+    f32 kz = vx*ty - vy*tx;
+    f32 s  = sqrtf(kx*kx + ky*ky + kz*kz);
+    if (s < 1e-6f) return;   // already aligned (or exactly opposed): nothing well-defined to do
+    f32 c  = vx*tx + vy*ty + vz*tz;
+    kx /= s; ky /= s; kz /= s;
+
+    // Rodrigues, applied to the current barrel direction.
+    f32 fx = -out->m[2][0], fy = -out->m[2][1], fz = -out->m[2][2];
+    f32 kd = kx*fx + ky*fy + kz*fz;
+    f32 bx = fx*c + (ky*fz - kz*fy)*s + kx*kd*(1.0f - c);
+    f32 by = fy*c + (kz*fx - kx*fz)*s + ky*kd*(1.0f - c);
+    f32 bz = fz*c + (kx*fy - ky*fx)*s + kz*kd*(1.0f - c);
+    f32 bl = sqrtf(bx*bx + by*by + bz*bz);
+    if (bl < 1e-4f) return;
+    bx /= bl; by /= bl; bz /= bl;
+
+    // mtx00016b58 negates `look` internally (row2 = -normalize(look)), so rotating the model's
+    // {0,0,-1} forward by the result yields `look` itself. Up comes from row 1 of the wrist-derived
+    // rotation: already in the right frame, and what keeps primary-wrist roll working for free.
+    mtx00016b58(out, 0.0f, 0.0f, 0.0f, bx, by, bz,
+                out->m[1][0], out->m[1][1], out->m[1][2]);
+}
 
 // Current snap offsets
 static float RELOAD_SNAP_OX        = 0.0f;
@@ -4731,7 +4893,7 @@ bool bgun0f09aba4(struct hand* hand, struct handweaponinfo* info, s32 handnum, s
                     qTmp[0] *= invLen; qTmp[1] *= invLen; qTmp[2] *= invLen; qTmp[3] *= invLen;
                 }
 
-                quaternionToMtx(qTmp, &hand->posrotmtx);
+                vrBuildGunRotation(handnum, hand, qTmp, &hand->posrotmtx);
                 hand->posrotmtx.m[3][0] = hand->posoffset.x;
                 hand->posrotmtx.m[3][1] = hand->posoffset.y;
                 hand->posrotmtx.m[3][2] = hand->posoffset.z;
@@ -4789,7 +4951,7 @@ bool bgun0f09aba4(struct hand* hand, struct handweaponinfo* info, s32 handnum, s
                 qTmp[0] *= invLen; qTmp[1] *= invLen; qTmp[2] *= invLen; qTmp[3] *= invLen;
             }
 
-            quaternionToMtx(qTmp, &hand->posrotmtx);
+            vrBuildGunRotation(handnum, hand, qTmp, &hand->posrotmtx);
             hand->posrotmtx.m[3][0] = hand->posoffset.x;
             hand->posrotmtx.m[3][1] = hand->posoffset.y;
             hand->posrotmtx.m[3][2] = hand->posoffset.z;
@@ -6035,12 +6197,13 @@ void vr_gun_pos_rot(int handnum, struct hand* hand) {
     // (4,16,-8) vs the default (0,16,4)), and BOTH hands read the same one -- which is why they sit
     // off by an identical amount on each side. The single global trim can only satisfy one base, so
     // these get their own additive trim on top.
-    // ORIENTATION: straight from the controller quat, no extra alignment rotation needed.
+    // ORIENTATION: from the controller quat, plus the two-handed aim override for weapons that
+    // support it (see vrBuildGunRotation).
     {
         // gCtrlQuat is stored [w,x,y,z]; quaternionToMtx wants the same order.
         f32 qf[4] = { gCtrlQuat[ctrlIndex][0], gCtrlQuat[ctrlIndex][1],
                       gCtrlQuat[ctrlIndex][2], gCtrlQuat[ctrlIndex][3] };
-        quaternionToMtx(qf, &hand->posrotmtx);
+        vrBuildGunRotation(handnum, hand, qf, &hand->posrotmtx);
     }
 
     // The offset is applied properly at RENDER (bgun0f0a5550), which has the gun's world

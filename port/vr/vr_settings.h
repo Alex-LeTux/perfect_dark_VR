@@ -15,6 +15,7 @@ extern bool VrWeaponRecoil;
 #define WORLDSCALE_MAX    1.50f
 extern float VrSetWorldScale;
 extern bool VrUseSnapTurn;
+extern bool VrTwoHandAim;       // two-handed weapons aim along the line between both controllers
 
 // VR hand/gun placement. Defined in bondgun.c. These are the only values still worth varying per
 // player -- everything else about the placement is measured and baked. There is deliberately no

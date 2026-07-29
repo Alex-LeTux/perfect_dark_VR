@@ -21,6 +21,7 @@ extern "C" void vrSettingsSave(void)
     fprintf(f, "WeaponRecoil=%d\n", VrWeaponRecoil ? 1 : 0);
     fprintf(f, "WorldScale=%.4f\n", VrSetWorldScale);
     fprintf(f, "UseSnapTurn=%d\n", VrUseSnapTurn ? 1 : 0);
+    fprintf(f, "TwoHandedAiming=%d\n", VrTwoHandAim ? 1 : 0);
 
     // --- VR hand placement (no menu UI; edit here) --------------------------------------------
     fprintf(f, "\n");
@@ -69,6 +70,7 @@ extern "C" void vrSettingsLoad(void)
             else if (strcmp(key, "MotionThrowing") == 0) VrMotionThrowing = ival != 0;
             else if (strcmp(key, "WeaponRecoil") == 0) VrWeaponRecoil = (ival != 0);
             else if (strcmp(key, "UseSnapTurn") == 0) VrUseSnapTurn = (ival != 0);
+            else if (strcmp(key, "TwoHandedAiming") == 0) VrTwoHandAim = (ival != 0);
             else if (strcmp(key, "FistClench") == 0) VrFistClench = ival;
         }
 
