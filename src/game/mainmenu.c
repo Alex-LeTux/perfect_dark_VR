@@ -292,6 +292,20 @@ MenuItemHandlerResult menuhandlerVRManualReloading(s32 operation, struct menuite
 }
 
 
+MenuItemHandlerResult menuhandlerVRTwoHandedAiming(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+    switch (operation) {
+        case MENUOP_GET:
+            return VrTwoHandAim ? true : false;
+        case MENUOP_SET:
+            VrTwoHandAim = data->checkbox.value ? true : false;
+            g_Vars.modifiedfiles |= MODFILE_GAME;
+            break;
+    }
+
+    return 0;
+}
+
 MenuItemHandlerResult menuhandlerVRDebugMtxPos(s32 operation, struct menuitem *item, union handlerdata *data)
 {
     switch (operation) {
@@ -422,6 +436,16 @@ struct menuitem gVROptionsMenuItems[] = {
             (uintptr_t)"Snap Turn",
             0,
             menuhandlerVRSnapTurn,
+        },
+
+        // Two-Handed Aiming
+        {
+        MENUITEMTYPE_CHECKBOX,
+        0,
+        MENUITEMFLAG_LITERAL_TEXT,
+        (uintptr_t)"Two-Handed Aiming",
+        0,
+        menuhandlerVRTwoHandedAiming,
         },
 
         // Manual Reloading
