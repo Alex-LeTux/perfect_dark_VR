@@ -14564,15 +14564,6 @@ void bgunRender(Gfx * *gdlptr)
             {
                 Mtxf fist = vr_sp2c4;
 
-                // world scale, as bgun0f0a5550 does for the gun (the copy path omits this).
-                float bg = bgGetScaleBg2Gfx();
-                if (bg != 1.0f && bg != 0.0f) {
-                    mtx00015f04(bg, &fist);
-                    fist.m[3][0] *= bg;
-                    fist.m[3][1] *= bg;
-                    fist.m[3][2] *= bg;
-                }
-
                 // Clench amount is eased HERE (this block runs before the fists render in the same
                 // loop iteration) because the roll depends on it: the clenched anim-1002 hand sits at
                 // a different orientation than the rest pose, so the neutral roll over-rotates it.
