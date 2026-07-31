@@ -168,6 +168,9 @@ Java_org_libsdl_app_SDLSurface_get_1targetH(JNIEnv* env, jobject thiz) {
 // ============================================================================
 extern bool     use_multiview;
 static uint32_t g_acquiredSwapchainImageIndex = 0;
+// Tracks whether a swapchain image is currently checked out from the runtime, so a
+// teardown that lands mid-frame can hand it back instead of destroying it underneath.
+static bool     g_swapchainImageAcquired     = false;
 GLuint          g_multiviewFBO               = 0;
 static GLuint   g_multiviewDepthArray        = 0;
 GLuint          g_currentMultiviewSwapchainTex = 0;
@@ -902,7 +905,12 @@ static bool vr_create_swapchains()
     swapInfo.arraySize   = use_multiview ? 2 : 1;
     swapInfo.mipCount    = 1;
 
-    for (int eye = 0; eye < 2; eye++) {
+    // Under multiview both eyes are array layers of a single swapchain, so only [0] is ever
+    // acquired, submitted or enumerated -- a second one was a full extra set of eye buffers
+    // that nothing ever read. At a 3.0 render scale that is ~735 MiB of dead VRAM.
+    const int swapchainCount = use_multiview ? 1 : 2;
+
+    for (int eye = 0; eye < swapchainCount; eye++) {
         XrResult result = xrCreateSwapchain(g_vrState.session, &swapInfo, &g_vrState.swapchains[eye]);
         if (XR_FAILED(result)) {
             LOGE("xrCreateSwapchain eye=%d failed: %d (format=0x%llx)",
@@ -1749,7 +1757,13 @@ extern "C" void vr_poll_events(void)
                     xrDestroySpace(g_vrState.playSpace);
                     g_vrState.playSpace = XR_NULL_HANDLE;
                 }
-                vr_create_play_space();
+                // Runtimes can burst several of these (recentre, guardian/boundary reset,
+                // system menu). If the recreate fails the handle stays null and every
+                // xrLocateViews and xrEndFrame afterwards works off an invalid space, so
+                // say so loudly rather than limping on in silence.
+                if (!vr_create_play_space()) {
+                    LOGE("REFERENCE_SPACE_CHANGE_PENDING: play space recreate FAILED");
+                }
                 break;
             default: break;
         }
@@ -1991,10 +2005,37 @@ int shaders_build_xr_view(
 // FRAME LIFECYCLE - Begin Frame & Update Poses
 // ============================================================================
 
+// Sleep out the remainder of a nominal frame interval.
+//
+// xrWaitFrame below is the ONLY thing pacing the game's tick: the desktop mirror forces
+// swap interval 0 every frame and Video.FramerateLimit defaults to 0, so nothing else
+// throttles it. If the session dies and we just return early, mainTick free-runs -- it
+// pegs a core and floods the GPU queue, which starves the desktop compositor and any
+// streaming runtime alongside it. That is a whole-machine hang, not just a dead game.
+static void vr_idle_pace()
+{
+    static uint64_t sLastTick = 0;
+
+    const uint64_t freq = SDL_GetPerformanceFrequency();
+    const uint64_t now  = SDL_GetPerformanceCounter();
+
+    if (sLastTick != 0 && freq != 0) {
+        const double elapsedMs = (double)(now - sLastTick) * 1000.0 / (double)freq;
+        const double targetMs  = 1000.0 / 72.0;
+        if (elapsedMs < targetMs) {
+            SDL_Delay((Uint32)(targetMs - elapsedMs));
+        }
+    }
+
+    sLastTick = SDL_GetPerformanceCounter();
+}
+
 extern "C" bool vr_begin_frame_and_update_poses()
 {
-    if (!g_vrState.sessionRunning || g_vrState.session == XR_NULL_HANDLE)
+    if (!g_vrState.sessionRunning || g_vrState.session == XR_NULL_HANDLE) {
+        vr_idle_pace();
         return false;
+    }
 
     XrFrameWaitInfo waitInfo{ XR_TYPE_FRAME_WAIT_INFO };
     g_frameState = { XR_TYPE_FRAME_STATE };
@@ -2140,15 +2181,20 @@ extern "C" GLuint vr_get_current_multiview_swapchain_tex() {
     return g_currentMultiviewSwapchainTex;
 }
 
-// Begin OpenGL rendering for the current eye in multiview
-void vr_begin_eye_render()
+// Begin OpenGL rendering for the current eye in multiview.
+// Returns false when there is nothing valid to render into, in which case the caller must
+// skip the display list rather than submit it against a dead swapchain.
+bool vr_begin_eye_render()
 {
-    if (!gfx_get_current_rendering_api()->is_multiview()) return;
-    if (!vr_ensure_swapchain_images()) return;
+    if (!gfx_get_current_rendering_api()->is_multiview()) return false;
+    if (!vr_ensure_swapchain_images()) return false;
 
 
     XrSwapchainImageAcquireInfo acquireInfo = { XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO };
-    xrAcquireSwapchainImage(g_vrState.swapchains[0], &acquireInfo, &g_acquiredSwapchainImageIndex);
+    if (XR_FAILED(xrAcquireSwapchainImage(g_vrState.swapchains[0], &acquireInfo, &g_acquiredSwapchainImageIndex))) {
+        return false;
+    }
+    g_swapchainImageAcquired = true;
 
     XrSwapchainImageWaitInfo waitInfo = { XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO, nullptr, XR_INFINITE_DURATION };
     xrWaitSwapchainImage(g_vrState.swapchains[0], &waitInfo);
@@ -2182,17 +2228,20 @@ void vr_begin_eye_render()
     glViewport(0, 0, g_internalRenderWidth, g_internalRenderHeight);
     glScissor(0, 0, g_internalRenderWidth, g_internalRenderHeight);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    return true;
 }
 
 // End OpenGL rendering for the current eye and release swapchain image
 void vr_end_eye_render()
 {
     if (!gfx_get_current_rendering_api()->is_multiview()) return;
+    if (!g_swapchainImageAcquired) return;
 
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
     XrSwapchainImageReleaseInfo releaseInfo = { XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO };
     xrReleaseSwapchainImage(g_vrState.swapchains[0], &releaseInfo);
+    g_swapchainImageAcquired = false;
 
 }
 
@@ -2279,12 +2328,19 @@ extern "C" bool vr_end_frame_and_submit()
     if (!g_frameStarted)
         return false;
 
+    bool submitted = false;
     if (gfx_get_current_rendering_api()->is_multiview()) {
         vr_submit_frame(g_frameState, g_frameViews);
-        return true;
+        submitted = true;
     }
 
-    return false;
+    // xrEndFrame has run (or there was nothing to submit), so the frame is closed. This
+    // used to be left set on the success path, which meant g_frameStarted was stuck true
+    // for the rest of the process: the "called during open frame" guard in vr_shutdown
+    // fired unconditionally and could not distinguish a genuine mid-frame teardown.
+    g_frameStarted = false;
+
+    return submitted;
 }
 
 // ============================================================================
@@ -2312,14 +2368,27 @@ extern "C" void vr_shutdown()
         g_multiviewDepthArray = 0;
     }
     g_currentMultiviewSwapchainTex = 0;
-    // 3. Swapchains
-    if (g_vrState.swapchains[0] != XR_NULL_HANDLE) {
-        xrDestroySwapchain(g_vrState.swapchains[0]);
-        g_vrState.swapchains[0] = XR_NULL_HANDLE;
 
-        g_swapchainImagesInit[0] = false;
-        g_swapchainImages[0].clear();
+    // 3. Swapchains. Hand back any image still checked out before destroying anything --
+    // tearing down a swapchain while the runtime thinks we hold one of its images is how a
+    // teardown that lands mid-frame leaves an out-of-process runtime in a bad state.
+    if (g_swapchainImageAcquired && g_vrState.swapchains[0] != XR_NULL_HANDLE) {
+        XrSwapchainImageReleaseInfo releaseInfo = { XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO };
+        xrReleaseSwapchainImage(g_vrState.swapchains[0], &releaseInfo);
     }
+    g_swapchainImageAcquired = false;
+
+    // Destroy both handles: [1] only exists when multiview is off, and is XR_NULL_HANDLE
+    // otherwise. Only [0] is ever enumerated, so only its image cache needs clearing.
+    for (int eye = 0; eye < 2; eye++) {
+        if (g_vrState.swapchains[eye] != XR_NULL_HANDLE) {
+            xrDestroySwapchain(g_vrState.swapchains[eye]);
+            g_vrState.swapchains[eye] = XR_NULL_HANDLE;
+        }
+    }
+    g_swapchainImagesInit[0] = false;
+    g_swapchainImages[0].clear();
+
     if (g_menuSwapchain != XR_NULL_HANDLE) {
         xrDestroySwapchain(g_menuSwapchain);
         g_menuSwapchain = XR_NULL_HANDLE;
@@ -2378,6 +2447,35 @@ extern "C" bool vr_restart_with_new_scale(float new_scale) {
     vr_shutdown();
 
     vr_initialize();
+    if (!g_vrInitialized) {
+        LOGE("vr_restart_with_new_scale: re-init FAILED at scale %.2f", new_scale);
+    }
     return g_vrInitialized;
+}
+
+// A resolution change arrives from the options menu, which the game ticks with an OpenXR
+// frame open. Rebuilding the instance there is what wedges the runtime, so the request is
+// parked here and acted on from vr_apply_pending_scale() once the frame has been submitted.
+static float g_pendingRenderScale = 0.0f;
+
+extern "C" void vr_request_scale(float new_scale) {
+    if (new_scale > 0.0f) {
+        g_pendingRenderScale = new_scale;
+    }
+}
+
+// Called from mainTick after vr_end_frame_and_submit(), where no frame is open.
+extern "C" bool vr_apply_pending_scale(void) {
+    const float scale = g_pendingRenderScale;
+    if (scale <= 0.0f) {
+        return true;
+    }
+    g_pendingRenderScale = 0.0f;
+
+    if (scale == RENDER_SCALE) {
+        return true;
+    }
+
+    return vr_restart_with_new_scale(scale);
 }
 
