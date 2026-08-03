@@ -21248,7 +21248,7 @@ void projectileCreate(struct prop *fromprop, struct fireslotthing *arg1, struct 
 		u8 drug = false;
 		u32 stack3;
 
-		frompos.x = pos->x;
+        frompos.x = pos->x;
 		frompos.y = pos->y;
 		frompos.z = pos->z;
 
@@ -21258,6 +21258,7 @@ void projectileCreate(struct prop *fromprop, struct fireslotthing *arg1, struct 
 			drug = true;
 			frompos.y -= 40.0f;
 		}
+
 
 		if (arg1 && arg1->unk08 < g_Vars.lvframe60) {
 			switch (weaponnum) {

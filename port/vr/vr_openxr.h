@@ -56,6 +56,7 @@ extern float XrAspect;
 
 extern float gCtrlPos[2][3];
 extern float gCtrlQuat[2][4];
+extern float gCtrlQuatRaw[2][4];
 
 extern float gStandingHeadHeight;
 extern bool vr_init_done;
@@ -71,3 +72,20 @@ typedef enum {
     VR_EYEHEIGHT_SQUAT
 } VrEyeheightMode;
 
+
+#define VR_MENU_HUD_CAPTURE_BEGIN_L 0x56530000
+#define VR_MENU_HUD_CAPTURE_END_L   0x56530001
+#define VR_WEP_HUD_CAPTURE_BEGIN_L 0x56550000
+#define VR_WEP_HUD_CAPTURE_END_L   0x56550001
+extern void gfx_vr_hud_capture_begin_L(void);
+extern void gfx_vr_hud_capture_end_L(void);
+
+#define VR_WEP_HUD_CAPTURE_BEGIN_R 0x56560000
+#define VR_WEP_HUD_CAPTURE_END_R   0x56560001
+extern void gfx_vr_hud_capture_begin_R(void);
+extern void gfx_vr_hud_capture_end_R(void);
+
+#define VR_HUD_CAPTURE_BEGIN_H 0x56570000
+#define VR_HUD_CAPTURE_END_H 0x56570001
+extern void gfx_vr_hud_capture_begin_H(void);
+extern void gfx_vr_hud_capture_end_H(void);

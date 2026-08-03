@@ -425,23 +425,27 @@ static void cleanup(void)
 
 int main(int argc, const char** argv)
 {
+            vr_log("main.c 1");
         vrShowWaitingWindow("logo.bmp"); // VR
-
+ vr_log("main.c 2");
 		sysInitArgs(argc, argv);
-
+ vr_log("main.c 3");
 		if (!sysArgCheck("--no-crash-handler")) {
 				crashInit();
 		}
-
+ vr_log("main.c 4");
 		sysInit();
 		fsInit();
 		configInit();
-
+ vr_log("main.c 5");
 
 		videoInit();
+         vr_log("main.c 6");
 		inputInit();
+         vr_log("main.c 7");
 		audioInit();
 		romdataInit();
+
 
 		g_ValidGbcRomFound = romdataCheckGbcRom();
 
@@ -489,6 +493,7 @@ int main(int argc, const char** argv)
 				sysLogPrintf(LOG_NOTE, "player profile set to %d", g_FileAutoSelect);
 		}
 
+        vr_log("main.c OK");
 		mainProc();
 
 		return 0;

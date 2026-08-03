@@ -28,6 +28,11 @@
 #include "input.h"
 #endif
 
+
+#include "../vr/vr_openxr.h"
+#include "game/atan2f.h"
+
+
 u8 g_EyespyPickup = false;
 u8 g_EyespyHit = EYESPYHIT_NONE;
 u8 g_EyespyPrevHit = EYESPYHIT_NONE;
@@ -36,6 +41,12 @@ f32 g_EyespyMaxHeight = 160;
 f32 g_EyespyMinHeight = 80;
 u32 g_EyespyFallAccel = 100;
 u32 g_EyespyMaxFallSpeed = 3000;
+
+
+// VR
+extern void vr_rotate_vector_by_quaternion(struct coord* v, const XrQuaternionf* q);
+extern void joy_for_vr(void);
+extern XrQuaternionf vr_joy_rot_Q;
 
 /**
  * Determines the eyespy's ground Y value by doing a collision check for a
@@ -959,18 +970,20 @@ void eyespyProcessInput(bool allowbuttons)
 #endif
 
 		// Update theta
-		g_Vars.currentplayer->eyespy->theta += c1stickx * 0.0625f * g_Vars.lvupdate60freal;
+//		g_Vars.currentplayer->eyespy->theta += c1stickx * 0.0625f * g_Vars.lvupdate60freal; // Removed for VR
 
-/*		while (g_Vars.currentplayer->eyespy->theta < 0.0f) { // Removed for VR
-			g_Vars.currentplayer->eyespy->theta += 360.0f;
-		}
+//		while (g_Vars.currentplayer->eyespy->theta < 0.0f) {
+//			g_Vars.currentplayer->eyespy->theta += 360.0f;
+//		}
+//
+//		while (g_Vars.currentplayer->eyespy->theta >= 360.0f) {
+//			g_Vars.currentplayer->eyespy->theta -= 360.0f;
+//		}
 
-		while (g_Vars.currentplayer->eyespy->theta >= 360.0f) {
-			g_Vars.currentplayer->eyespy->theta -= 360.0f;
-		}*/
+//		g_Vars.currentplayer->eyespy->costheta = cosf(g_Vars.currentplayer->eyespy->theta * 0.017453292384744f);
+//		g_Vars.currentplayer->eyespy->sintheta = sinf(g_Vars.currentplayer->eyespy->theta * 0.017453292384744f);
 
-		g_Vars.currentplayer->eyespy->costheta = cosf(g_Vars.currentplayer->eyespy->theta * 0.017453292384744f);
-		g_Vars.currentplayer->eyespy->sintheta = sinf(g_Vars.currentplayer->eyespy->theta * 0.017453292384744f);
+
 
 		// Update verta
 #ifndef PLATFORM_N64
@@ -1123,13 +1136,42 @@ void eyespyProcessInput(bool allowbuttons)
 	g_Vars.currentplayer->eyespy->vel.x = g_Vars.currentplayer->eyespy->vels[0] + g_Vars.currentplayer->eyespy->velf[0];
 	g_Vars.currentplayer->eyespy->vel.z = g_Vars.currentplayer->eyespy->vels[1] + g_Vars.currentplayer->eyespy->velf[1];
 
-	g_Vars.currentplayer->eyespy->look.y = g_Vars.currentplayer->eyespy->sinverta;
-	g_Vars.currentplayer->eyespy->look.x = g_Vars.currentplayer->eyespy->cosverta * g_Vars.currentplayer->eyespy->sintheta;
-	g_Vars.currentplayer->eyespy->look.z = -g_Vars.currentplayer->eyespy->cosverta * g_Vars.currentplayer->eyespy->costheta;
 
-	g_Vars.currentplayer->eyespy->up.y = g_Vars.currentplayer->eyespy->cosverta;
-	g_Vars.currentplayer->eyespy->up.x = -g_Vars.currentplayer->eyespy->sinverta * g_Vars.currentplayer->eyespy->sintheta;
-	g_Vars.currentplayer->eyespy->up.z = g_Vars.currentplayer->eyespy->sinverta * g_Vars.currentplayer->eyespy->costheta;
+
+/* === VR rotation pipeline for the Eyespy === */
+
+/* Base vectors in the "engine" coordinate system (same as the player) */
+    struct coord look = { 0.0f,  0.0f,  1.0f };
+    struct coord up   = { 0.0f, -1.0f,  0.0f };
+
+/* Apply the HMD rotation (OpenXR) */
+    vr_rotate_vector_by_quaternion(&look, &vr_HMD_rot_Q);
+    vr_rotate_vector_by_quaternion(&up,   &vr_HMD_rot_Q);
+
+/* Add joystick rotation (snap / continuous yaw) */
+    vr_rotate_vector_by_quaternion(&look, &vr_joy_rot_Q);
+    vr_rotate_vector_by_quaternion(&up,   &vr_joy_rot_Q);
+
+/* Store the final orientation in the Eyespy structure */
+    g_Vars.currentplayer->eyespy->look.x = look.x;
+    g_Vars.currentplayer->eyespy->look.y = -look.y;
+    g_Vars.currentplayer->eyespy->look.z = look.z;
+
+    g_Vars.currentplayer->eyespy->up.x   = up.x;
+    g_Vars.currentplayer->eyespy->up.y   = -up.y;
+    g_Vars.currentplayer->eyespy->up.z   = up.z;
+
+
+    float yawRad = atan2f(g_Vars.currentplayer->eyespy->look.x,
+                          -g_Vars.currentplayer->eyespy->look.z);
+    g_Vars.currentplayer->eyespy->theta = yawRad * 180.0f / 3.14159265f;
+    if (g_Vars.currentplayer->eyespy->theta < 0.0f)
+        g_Vars.currentplayer->eyespy->theta += 360.0f;
+
+    g_Vars.currentplayer->eyespy->sintheta = cosf(g_Vars.currentplayer->eyespy->theta * 0.017453292384744f) == 0 ? 0 : sinf(g_Vars.currentplayer->eyespy->theta * 0.017453292384744f);
+    g_Vars.currentplayer->eyespy->costheta = cosf(g_Vars.currentplayer->eyespy->theta * 0.017453292384744f);
+    //---
+
 
 	g_EyespyPrevHit = g_EyespyHit;
 	g_EyespyHit = EYESPYHIT_NONE;

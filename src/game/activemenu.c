@@ -26,6 +26,9 @@
 #include "data.h"
 #include "types.h"
 
+#include "../../port/vr/vr_openxr.h"
+#include "../../port/vr/vr_log.h"
+
 struct activemenu g_AmMenus[MAX_PLAYERS];
 struct fontchar *g_AmFont1;
 struct font *g_AmFont2;
@@ -1255,6 +1258,8 @@ Gfx *amRender(Gfx *gdl)
 	s16 tmp1;
 	s16 tmp2;
 
+    gDPNoOpTag(gdl++, VR_HUD_CAPTURE_BEGIN_H);
+
 #if PAL
 	g_ScaleX = 1;
 #else
@@ -1702,5 +1707,6 @@ Gfx *amRender(Gfx *gdl)
 
 	g_ScaleX = 1;
 
+    gDPNoOpTag(gdl++, VR_HUD_CAPTURE_END_H);
 	return gdl;
 }

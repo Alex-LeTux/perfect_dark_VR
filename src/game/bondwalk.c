@@ -1,6 +1,7 @@
 #include <ultra64.h>
 
 #include <math.h>
+#include <game/bondgrab.h>
 #include "../../port/vr/vr_input.h"
 
 #include "constants.h"
@@ -66,6 +67,8 @@ extern bool VrSeatedMode;
 bool is_grabbing_mode = false;
 bool is_hoverbike_mode = false;
 
+int VrStickClickToCrouch = false;
+
 void vr_rotate_vector_by_quaternion(struct coord* v, const XrQuaternionf* q) {
     float qx = q->x, qy = q->y, qz = q->z, qw = q->w;
     float vx = v->x, vy = v->y, vz = v->z;
@@ -88,7 +91,8 @@ void vr_rotate_vector_by_quaternion(struct coord* v, const XrQuaternionf* q) {
 #define VR_SNAP_ACTIVATE    0.9f     // trigger threshold
 #define VR_SNAP_DEACTIVATE  0.0001f     // re-arm threshold (hysteresis)
 static bool vr_snapArmed = true;
-bool VrUseSnapTurn = false;   // true = snap turn, false = continuous turn
+int VrUseSnapTurn = false;   // true = snap turn, false = continuous turn
+
 
 void joy_for_vr(void) {
     XrVector2f rightThumbstick;
@@ -228,6 +232,7 @@ void vr_player_pos(void) {
 }
 
 
+
 void vr_player_rot(void) {
 
 
@@ -277,60 +282,132 @@ void vr_player_rot(void) {
     }
 }
 
+void vr_special_rot_mode(void)
+{
+    /* Hoverbike */
+    is_hoverbike_mode = g_Vars.currentplayer->bondmovemode == MOVEMODE_BIKE;
 
-void vr_special_rot_mode(void) {
-    // Hoverbike
-    is_hoverbike_mode =
-            (g_Vars.currentplayer->bondmovemode == MOVEMODE_BIKE);
-    // Flying crate / stretcher...
-    is_grabbing_mode =
-            (g_Vars.currentplayer->bondmovemode == MOVEMODE_GRAB);
+    /* Flying crate / stretcher */
+    is_grabbing_mode = g_Vars.currentplayer->bondmovemode == MOVEMODE_GRAB;
 
-    if(!is_hoverbike_mode && !is_grabbing_mode) return;
+    if (!is_hoverbike_mode && !is_grabbing_mode) {
+        return;
+    }
 
+    /*
+     * On entering the hoverbike, realign the VR reference frame once.
+     * Do not do this for MOVEMODE_GRAB.
+     */
     if (is_hoverbike_mode && vr_hoverbike_can_mount) {
         vr_align_with_game_angle(0.0f);
         vr_hoverbike_can_mount = false;
     }
-    else if (is_hoverbike_mode || is_grabbing_mode) {
+
+    /*
+     * MOVEMODE_GRAB:
+     *
+     * bond2.unk00 must NOT be used as a yaw reference here.
+     * The rotation of the crate/stretcher is computed by bondgrab.c
+     * around g_Vars.currentplayer->vvtheta.
+     *
+     * We therefore fall back to the normal vr_player_rot() pipeline,
+     * which keeps a stable HMD view + joystick rotation.
+     */
+    if (is_grabbing_mode) {
+        struct coord look = original_look;
+        struct coord up = original_up;
+        float horiz;
+        float pitchRad;
 
         joy_for_vr();
 
-        // Build the quaternion that represents the vehicle's orientation (yaw only)
-        // bond2.unk00 = vehicle forward horizontal, e.g. {-sin(angle), 0, cos(angle)}
-        float veh_yaw = atan2f(g_Vars.currentplayer->bond2.unk00.x,
-                               g_Vars.currentplayer->bond2.unk00.z);
+        vr_rotate_vector_by_quaternion(&look, &vr_HMD_rot_Q);
+        vr_rotate_vector_by_quaternion(&up, &vr_HMD_rot_Q);
 
+        vr_rotate_vector_by_quaternion(&look, &vr_joy_rot_Q);
+        vr_rotate_vector_by_quaternion(&up, &vr_joy_rot_Q);
+
+        g_Vars.currentplayer->bond2.unk1c.x = look.x;
+        g_Vars.currentplayer->bond2.unk1c.y = -look.y;
+        g_Vars.currentplayer->bond2.unk1c.z = look.z;
+
+        g_Vars.currentplayer->bond2.unk28.x = up.x;
+        g_Vars.currentplayer->bond2.unk28.y = -up.y;
+        g_Vars.currentplayer->bond2.unk28.z = up.z;
+
+        VrYawRot = atan2f(
+                g_Vars.currentplayer->bond2.unk1c.x,
+                g_Vars.currentplayer->bond2.unk1c.z);
+
+        g_Vars.currentplayer->vv_theta = -VrYawRot * 180.0f / M_PI;
+
+        horiz = sqrtf(
+                g_Vars.currentplayer->bond2.unk1c.x
+                * g_Vars.currentplayer->bond2.unk1c.x
+                + g_Vars.currentplayer->bond2.unk1c.z
+                  * g_Vars.currentplayer->bond2.unk1c.z);
+
+        pitchRad = atan2f(-g_Vars.currentplayer->bond2.unk1c.y, horiz);
+
+        g_Vars.currentplayer->vv_verta = pitchRad * 180.0f / M_PI;
+
+        return;
+    }
+
+    /*
+     * MOVEMODE_BIKE:
+     * Preserve the special behavior based on the vehicle's orientation.
+     */
+    if (is_hoverbike_mode) {
+        struct coord look = original_look;
+        struct coord up = original_up;
+        float forwardlen2;
+        float vehyaw;
         XrQuaternionf vehQuat;
-        vehQuat.x = 0.0f;
-        vehQuat.y = sinf(veh_yaw * 0.5f);
-        vehQuat.z = 0.0f;
-        vehQuat.w = cosf(veh_yaw * 0.5f);
 
-        // Exact same pipeline as vr_player_rot, but with vehQuat instead of vr_joy_rot_Q
-        struct coord look = original_look;  // {0, 0, 1}
-        struct coord up   = original_up;    // {0, -1, 0}
+        joy_for_vr();
+
+        /*
+         * Avoids atan2f(0, 0) and an indeterminate orientation if the
+         * hoverbike temporarily has no valid horizontal forward vector.
+         */
+        forwardlen2 =
+                g_Vars.currentplayer->bond2.unk00.x
+                * g_Vars.currentplayer->bond2.unk00.x
+                + g_Vars.currentplayer->bond2.unk00.z
+                  * g_Vars.currentplayer->bond2.unk00.z;
+
+        if (forwardlen2 <= 0.0001f) {
+            return;
+        }
+
+        vehyaw = atan2f(
+                g_Vars.currentplayer->bond2.unk00.x,
+                g_Vars.currentplayer->bond2.unk00.z);
+
+        vehQuat.x = 0.0f;
+        vehQuat.y = sinf(vehyaw * 0.5f);
+        vehQuat.z = 0.0f;
+        vehQuat.w = cosf(vehyaw * 0.5f);
 
         vr_rotate_vector_by_quaternion(&look, &vr_HMD_rot_Q);
-        vr_rotate_vector_by_quaternion(&up,   &vr_HMD_rot_Q);
+        vr_rotate_vector_by_quaternion(&up, &vr_HMD_rot_Q);
 
         vr_rotate_vector_by_quaternion(&look, &vehQuat);
-        vr_rotate_vector_by_quaternion(&up,   &vehQuat);
+        vr_rotate_vector_by_quaternion(&up, &vehQuat);
 
-        g_Vars.currentplayer->bond2.unk1c.x =  look.x;
+        g_Vars.currentplayer->bond2.unk1c.x = look.x;
         g_Vars.currentplayer->bond2.unk1c.y = -look.y;
-        g_Vars.currentplayer->bond2.unk1c.z =  look.z;
+        g_Vars.currentplayer->bond2.unk1c.z = look.z;
 
-        g_Vars.currentplayer->bond2.unk28.x =  up.x;
+        g_Vars.currentplayer->bond2.unk28.x = up.x;
         g_Vars.currentplayer->bond2.unk28.y = -up.y;
-        g_Vars.currentplayer->bond2.unk28.z =  up.z;
-
-    }else if (!is_hoverbike_mode) {
+        g_Vars.currentplayer->bond2.unk28.z = up.z;
+    }
+    else {
         vr_hoverbike_can_mount = true;
     }
-    
 }
-
 //------------------------------------------------------------------------------------------
 
 
@@ -1518,7 +1595,7 @@ void bwalkUpdateVertical(void)
 
             static bool sPrevThumbstickClick = false;
 
-            bool curThumbstickClick = get_button_state(0, "thumbstick_click");
+            bool curThumbstickClick = VrStickClickToCrouch && get_button_state(0, "thumbstick_click");
 
             // Rising edge detection: only switch when the button is pressed
             if (curThumbstickClick && !sPrevThumbstickClick) {

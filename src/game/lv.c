@@ -109,7 +109,7 @@
 
 extern int vr_get_internal_render_width();
 extern int vr_get_internal_render_height();
-
+s32 g_LookingAtPropHandMask; // VR
 
 struct sndstate *g_MiscSfxAudioHandles[3];
 u32 var800aa5bc;
@@ -968,6 +968,7 @@ void lvFindThreats(void)
 #ifndef PLATFORM_N64
 Gfx *lvRenderFPS(Gfx *gdl)
 {
+
     const f32 fps = videoGetAverageFPS();
     const u8 a = 160;
     s32 x = 200 , y = 150 ; // VR
@@ -987,7 +988,7 @@ Gfx *lvRenderFPS(Gfx *gdl)
         // cyan
         color = 0x00ffff00 | a;
     }
-
+    gDPNoOpTag(gdl++, VR_HUD_CAPTURE_BEGIN_H);
     if (g_CharsNumeric && g_FontNumeric) {
         snprintf(buffer, sizeof buffer, "%.2f", fps);
 
@@ -999,7 +1000,7 @@ Gfx *lvRenderFPS(Gfx *gdl)
 
         gSPClearExtraGeometryModeEXT(gdl++, g_HudAlignModeL);
     }
-
+    gDPNoOpTag(gdl++, VR_HUD_CAPTURE_END_H);
     return gdl;
 }
 #endif
@@ -1273,54 +1274,57 @@ Gfx *lvRender(Gfx *gdl)
                 // glares calculated earlier on PC, before prop matrices turn into garbage
                 bgCalculateGlaresForVisibleRooms();
 #endif
+
                 struct hand *hand;
                 s32 h;
+                struct prop *lookingatprop_result = NULL;
+                g_LookingAtPropHandMask = 0; // VR - one bit per hand (bit 0 = right hand, bit 1 = left hand)
+
                 for (h = 0; h < 2; h++) { // VR
                     hand = &player->hands[h];
+                    struct prop *tempprop = NULL;
 
-                    // Calculate lookingatprop
                     if (PLAYERCOUNT() == 1
                         || g_Vars.coopplayernum >= 0
                         || g_Vars.antiplayernum >= 0
                         || (weaponHasFlag(bgunGetWeaponNum(h), WEAPONFLAG_AIMTRACK) &&
-                            bmoveIsInSightAimMode())) { // VR
-                        g_Vars.currentplayer->lookingatprop.prop = propFindAimingAt(h, false,
-                                                                                    FINDPROPCONTEXT_QUERY);  // VR
+                            bmoveIsInSightAimMode())) {
+                        tempprop = propFindAimingAt(h, false, FINDPROPCONTEXT_QUERY);
 
-                        if (g_Vars.currentplayer->lookingatprop.prop) {
-                            if (g_Vars.currentplayer->lookingatprop.prop->type == PROPTYPE_CHR
-                                ||
-                                g_Vars.currentplayer->lookingatprop.prop->type == PROPTYPE_PLAYER) {
-                                chr = g_Vars.currentplayer->lookingatprop.prop->chr;
-
-                                if ((chr->hidden & CHRHFLAG_CLOAKED) &&
-                                    !USINGDEVICE(DEVICE_IRSCANNER)) {
-                                    g_Vars.currentplayer->lookingatprop.prop = NULL;
+                        if (tempprop) {
+                            if (tempprop->type == PROPTYPE_CHR || tempprop->type == PROPTYPE_PLAYER) {
+                                chr = tempprop->chr;
+                                if ((chr->hidden & CHRHFLAG_CLOAKED) && !USINGDEVICE(DEVICE_IRSCANNER)) {
+                                    tempprop = NULL;
                                 }
-                            } else if (
-                                    g_Vars.currentplayer->lookingatprop.prop->type == PROPTYPE_OBJ
-                                    || g_Vars.currentplayer->lookingatprop.prop->type ==
-                                       PROPTYPE_WEAPON
-                                    || g_Vars.currentplayer->lookingatprop.prop->type ==
-                                       PROPTYPE_DOOR) {
-                                struct defaultobj *obj = g_Vars.currentplayer->lookingatprop.prop->obj;
-
+                            } else if (tempprop->type == PROPTYPE_OBJ
+                                       || tempprop->type == PROPTYPE_WEAPON
+                                       || tempprop->type == PROPTYPE_DOOR) {
+                                struct defaultobj *obj = tempprop->obj;
                                 if ((obj->flags3 & OBJFLAG3_REACTTOSIGHT) == 0) {
                                     if (g_Vars.stagenum != STAGE_CITRAINING
                                         || (obj->modelnum != MODEL_TARGET
                                             && obj->modelnum != MODEL_CIHUB
                                             && obj->modelnum != MODEL_COMHUB)) {
-                                        g_Vars.currentplayer->lookingatprop.prop = NULL;
+                                        tempprop = NULL;
                                     }
                                 }
                             } else {
-                                g_Vars.currentplayer->lookingatprop.prop = NULL;
+                                tempprop = NULL;
                             }
                         }
-                    } else {
-                        g_Vars.currentplayer->lookingatprop.prop = NULL;
+                    }
+
+                    if (tempprop) {
+                        lookingatprop_result = tempprop;
+                        g_LookingAtPropHandMask |= (1 << h); // VR - set the bit without overwriting the other hand
                     }
                 }
+
+                g_Vars.currentplayer->lookingatprop.prop = lookingatprop_result;
+                //---
+
+
 
                 if (gsetHasFunctionFlags(&g_Vars.currentplayer->hands[0].gset, FUNCFLAG_THREATDETECTOR)) {
                     lvFindThreats();
@@ -1426,7 +1430,6 @@ Gfx *lvRender(Gfx *gdl)
                 if (var80075d60 == 2) {
                     gSPClipRatio(gdl, FRUSTRATIO_6); // VR
                     gdl = playerRenderHud(gdl);
-
 
 #ifdef DEBUG
                     gdl = lvRenderManPosIfEnabled(gdl);

@@ -189,6 +189,7 @@ extern "C" void vrShowWaitingWindow(const char *bmpPath) {
         SDL_FreeSurface(surf);
     }
 
+
     // loop until runtime is ready
     bool runtimeReady = false;
     while (!runtimeReady) {

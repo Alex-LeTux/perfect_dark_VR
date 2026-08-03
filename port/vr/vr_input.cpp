@@ -41,6 +41,7 @@ extern bool VrMotionThrowing;
 bool WepCanZoom = false;
 bool VrWeaponRecoil = true;
 extern "C" bool VrTwoHandsGun(int weaponnum);
+bool gripPressed = false;
 
 // ===== VR CODE EXTENSION WITH FULL CONTROLLER SUPPORT =====
 
@@ -109,7 +110,7 @@ XrSpace gControllerSpace[2] = {XR_NULL_HANDLE, XR_NULL_HANDLE}; // Left/Right co
 // Controller positions and orientations
 float gCtrlPos[2][3] = { {0,0,0}, {0,0,0} };
 float gCtrlQuat[2][4] = { {0,0,0,1}, {0,0,0,1} };
-
+float gCtrlQuatRaw[2][4] = {{0,0,0,1}, {0,0,0,1}};
 
 ControllerInputState gControllerStates[2]; // [0] = left, [1] = right
 XrPath gHandPaths[2] = { XR_NULL_PATH, XR_NULL_PATH };
@@ -945,6 +946,12 @@ static WeaponRecoilProfile GetRecoilProfileForWeapon(int wnum)
 
         case WEAPON_AR34:
         case WEAPON_K7AVENGER:
+            if (isTwoHandsGrip) {
+                return { 0.003f, 0.001f, -0.350f, 140.0f, 20.0f };
+            } else {
+                return { 0.030f, 0.015f, -1.000f, 95.0f, 13.0f };
+            }
+
         case WEAPON_SUPERDRAGON:
             if(VR_FUNC_SECONDARY && !isTwoHandsGrip){
                 return { 0.140f, 0.020f, -7.000f, 33.0f, 6.0f };
@@ -989,7 +996,7 @@ static WeaponRecoilProfile GetRecoilProfileForWeapon(int wnum)
         case WEAPON_ROCKETLAUNCHER:
         case WEAPON_SLAYER:
             if (isTwoHandsGrip) {
-                return { 0.050f, 0.030f, -5.000f, 35.0f, 5.5f };
+                return { 0.050f, 0.0f, -5.000f, 35.0f, 5.5f };
             } else {
                 return { 0.190f, 0.180f, -7.000f, 25.0f, 3.0f };
             }
@@ -1133,11 +1140,10 @@ static void RecoilApplyToControllerPose(int handIndex, float outQuat[4], float o
 }
 
 
-
-
-
-
-
+extern XrQuaternionf YawToQuaternion(float angleDegrees);
+extern XrVector3f RotateVectorY(XrVector3f v, float angleDegrees);
+extern XrQuaternionf MultiplyQuaternions(XrQuaternionf q1, XrQuaternionf q2);
+extern float g_yawOffsetDegrees;
 
 
 
@@ -1168,6 +1174,7 @@ void controller_pose() {
         float rawY = state.controller_pose.position.y * 100.0f;
         float rawZ = state.controller_pose.position.z * 100.0f;
 
+
         // --- Raw OpenXR quaternion (internal format: w, -x, y, -z) ---
         float rawQuat[4] = {
                 state.controller_pose.orientation.w,
@@ -1176,8 +1183,15 @@ void controller_pose() {
                 -state.controller_pose.orientation.z
         };
 
+        // Save the raw version, before any SLERP, for uses
+        // that must follow the controller with no delay (e.g. left-hand HUD layer)
+        gCtrlQuatRaw[i][0] = rawQuat[0];
+        gCtrlQuatRaw[i][1] = rawQuat[1];
+        gCtrlQuatRaw[i][2] = rawQuat[2];
+        gCtrlQuatRaw[i][3] = rawQuat[3];
+
         // --- Determine whether grip is pressed for THIS controller ---
-        bool gripPressed = (i == 1) ? (vr_button_R_grip != 0) : (vr_button_L_grip != 0);
+        gripPressed = (i == 1) ? (vr_button_R_grip != 0) : (vr_button_L_grip != 0);
         WepCanZoom = weaponnum == WEAPON_SNIPERRIFLE
                      || weaponnum == WEAPON_MAGSEC4
                      || weaponnum == WEAPON_LAPTOPGUN
@@ -1271,21 +1285,15 @@ void controller_pose() {
         gCtrlQuat[i][2] = w1*y2 - x1*z2 + y1*w2 + z1*x2;
         gCtrlQuat[i][3] = w1*z2 + x1*y2 - y1*x2 + z1*w2;
 
-        // --- Conditional Z roll (WEAPONUNARMED, LASER, CROSSBOW) ---
-        if (VrMotionThrowing && weaponnum == WEAPON_UNARMED) {
-            if (!gripPressed) {
-                float angle = (i == 1) ? 1.0f : -1.0f;
-                applyCtrlRotation(i, 2, angle);
-            }
-        }
-        if (weaponnum == WEAPON_LASER) {
-            float angle = (i == 1) ? 1.1f : -1.1f;
-            applyCtrlRotation(i, 2, angle);
-        }
-        if (weaponnum == WEAPON_CROSSBOW) {
-            float angle = (i == 1) ? 1.1f : -1.1f;
-            applyCtrlRotation(i, 2, angle);
-        }
+
+// Apply the same 90° X offset to the raw version
+// to stay consistent with gCtrlQuat; otherwise the unsmoothed HUD
+// ends up incorrectly oriented relative to the rest (weapon, recoil, etc.)
+        float rw1 = gCtrlQuatRaw[i][0], rx1 = gCtrlQuatRaw[i][1], ry1 = gCtrlQuatRaw[i][2], rz1 = gCtrlQuatRaw[i][3];
+        gCtrlQuatRaw[i][0] = rw1*w2 - rx1*x2 - ry1*y2 - rz1*z2;
+        gCtrlQuatRaw[i][1] = rw1*x2 + rx1*w2 + ry1*z2 - rz1*y2;
+        gCtrlQuatRaw[i][2] = rw1*y2 - rx1*z2 + ry1*w2 + rz1*x2;
+        gCtrlQuatRaw[i][3] = rw1*z2 + rx1*y2 - ry1*x2 + rz1*w2;
 
 
         // VR Recoil
@@ -1295,6 +1303,7 @@ void controller_pose() {
             RecoilUpdate(i, dt, GetRecoilProfileForWeapon(weaponnum));
             RecoilApplyToControllerPose(i, gCtrlQuat[i], gCtrlPos[i]);
         }
+
 
         // --- Velocities ---
         if (gCachedVelocity[i].velocityFlags & XR_SPACE_VELOCITY_LINEAR_VALID_BIT) {

@@ -98,6 +98,7 @@ int weaponnum = 0;
 int handnum = 0;
 struct coord velocity = { 0, 0, 0 };
 
+
 // VR Left crosshair HUD -------------------------
 float vr_LeftCrossX = 0.0f;
 float vr_LeftCrossY = 0.0f;
@@ -142,6 +143,7 @@ bool vr_L_trigger = false;
 typedef struct {
     float vx, vy, vz;
     float vr_magnitude;
+    XrQuaternionf orientQ;
     uint32_t frame60;
 } vr_ThrowSample;
 
@@ -196,12 +198,14 @@ static float sSnapRotOffsetX = 0.0f;  // pitch correction
 static float sSnapRotOffsetY = 0.0f;  // yaw correction
 static float sSnapRotOffsetZ = 0.0f;  // roll correction
 static int   sSnapRotAxis    = 0;
-//-------------------------------------------------------------------
+//Vr Recoil -----------------------------------------------------------
 void vrRecoilNotifyShotFired(int handnum);
 extern bool VrWeaponRecoil;
 bool VR_FUNC_SECONDARY = false; // For vr_input.cpp / recoil
-//-----------
-
+//---
+float zRollAngle = 0.0f;
+extern bool gripPressed;
+//----
 
 #define GUNLOADSTATE_FLUX     0
 #define GUNLOADSTATE_MODEL    1
@@ -2679,22 +2683,22 @@ void vrCopyWepLoad(s32 handnum)
 
 
 
-void vr_record_throw_sample(int ctrlIdx, float vx, float vy, float vz) // VR
-{
-    vr_ThrowSample *s = &gThrowHistory[ctrlIdx][vr_ThrowHistoryIdx[ctrlIdx]];
-    s->vx = vx;
-    s->vy = vy;
-    s->vz = vz;
-    s->vr_magnitude = sqrtf(vx*vx + vy*vy + vz*vz);
-    s->frame60 = g_Vars.lvframe60;
+//void vr_record_throw_sample(int ctrlIdx, float vx, float vy, float vz) // VR
+//{
+//    vr_ThrowSample *s = &gThrowHistory[ctrlIdx][vr_ThrowHistoryIdx[ctrlIdx]];
+//    s->vx = vx;
+//    s->vy = vy;
+//    s->vz = vz;
+//    s->vr_magnitude = sqrtf(vx*vx + vy*vy + vz*vz);
+//    s->frame60 = g_Vars.lvframe60;
+//
+//    vr_ThrowHistoryIdx[ctrlIdx] = (vr_ThrowHistoryIdx[ctrlIdx] + 1) % VR_THROW_HISTORY_MAX;
+//    if (vr_ThrowHistoryCount[ctrlIdx] < VR_THROW_HISTORY_MAX) {
+//        vr_ThrowHistoryCount[ctrlIdx]++;
+//    }
+//}
 
-    vr_ThrowHistoryIdx[ctrlIdx] = (vr_ThrowHistoryIdx[ctrlIdx] + 1) % VR_THROW_HISTORY_MAX;
-    if (vr_ThrowHistoryCount[ctrlIdx] < VR_THROW_HISTORY_MAX) {
-        vr_ThrowHistoryCount[ctrlIdx]++;
-    }
-}
-
-
+/*
 struct coord vr_throw(s32 handnum) {
     int ctrlIdx = (!vr_invert_hands) ? (handnum == HAND_RIGHT ? 1 : 0)
                                      : (handnum == HAND_RIGHT ? 0 : 1);
@@ -2769,6 +2773,89 @@ struct coord vr_throw(s32 handnum) {
         vr_throw_cancelled = true;
     }
 
+    return velocity;
+}*/
+
+
+
+// 1. Capture the orientation at the time of recording
+void vr_record_throw_sample(int ctrlIdx, float vx, float vy, float vz) {
+    vr_ThrowSample *s = &gThrowHistory[ctrlIdx][vr_ThrowHistoryIdx[ctrlIdx]];
+    s->vx = vx;
+    s->vy = vy;
+    s->vz = vz;
+    s->vr_magnitude = sqrtf(vx*vx + vy*vy + vz*vz);
+
+    // freeze the head/joystick orientation at THIS exact frame
+    quaternionMul_XR(&vr_joy_rot_Q, &vr_HMD_rot_Q, &s->orientQ);
+
+    s->frame60 = g_Vars.lvframe60;
+    vr_ThrowHistoryIdx[ctrlIdx] = (vr_ThrowHistoryIdx[ctrlIdx] + 1) % VR_THROW_HISTORY_MAX;
+    if (vr_ThrowHistoryCount[ctrlIdx] < VR_THROW_HISTORY_MAX)
+        vr_ThrowHistoryCount[ctrlIdx]++;
+}
+
+// 2. Use the frozen orientation from the BEST sample, not the current frame's
+struct coord vr_throw(s32 handnum) {
+    int ctrlIdx = !vr_invert_hands ? (handnum == HAND_RIGHT ? 1 : 0)
+                                 : (handnum == HAND_RIGHT ? 0 : 1);
+    uint32_t frameNow = g_Vars.lvframe60;
+
+    float bestvx = vr_ctrl_velocity[ctrlIdx][0];
+    float bestvy = vr_ctrl_velocity[ctrlIdx][1];
+    float bestvz = vr_ctrl_velocity[ctrlIdx][2];
+    float bestmag = sqrtf(bestvx*bestvx + bestvy*bestvy + bestvz*bestvz);
+
+    // Default orientation = the current one, in case
+    // the "live" (current) sample wins
+    XrQuaternionf bestOrientQ;
+    quaternionMul_XR(&vr_joy_rot_Q, &vr_HMD_rot_Q, &bestOrientQ);
+
+    int count = vr_ThrowHistoryCount[ctrlIdx];
+    int cur   = vr_ThrowHistoryIdx[ctrlIdx];
+    for (int i = 0; i < count; i++) {
+        int idx = cur - 1 - i;
+        if (idx < 0) idx += VR_THROW_HISTORY_MAX;
+        vr_ThrowSample *s = &gThrowHistory[ctrlIdx][idx];
+        if (frameNow - s->frame60 > VR_THROW_HISTORY_FRAMES) break;
+        if (s->vr_magnitude > bestmag) {
+            bestmag    = s->vr_magnitude;
+            bestvx     = s->vx;
+            bestvy     = s->vy;
+            bestvz     = s->vz;
+            bestOrientQ = s->orientQ;
+        }
+    }
+
+    float vx = bestvx, vy = bestvy, vz = bestvz;
+    float vrmagnitude = bestmag;
+    struct coord throwdir;
+
+    if (vrmagnitude > 0.5f) {
+        throwdir.x = -vx / vrmagnitude;
+        throwdir.y = -vy / vrmagnitude;
+        throwdir.z = -vz / vrmagnitude;
+
+        vr_rotate_vector_by_quaternion(&throwdir, &bestOrientQ);
+        throwdir.y = -throwdir.y;
+
+        float minSpeed = 1.0f, maxSpeed = 1000.0f;
+        float throwSpeed = vrmagnitude * 10.0f;
+        if (throwSpeed < minSpeed) throwSpeed = minSpeed;
+        if (throwSpeed > maxSpeed) throwSpeed = maxSpeed;
+
+        velocity.x = throwdir.x * throwSpeed;
+        velocity.y = throwdir.y * throwSpeed;
+        velocity.z = throwdir.z * throwSpeed;
+
+        vr_ThrowHistoryCount[ctrlIdx] = 0;
+        vr_ThrowHistoryIdx[ctrlIdx]   = 0;
+        vr_throw_cancelled = false;
+    } else {
+        vr_ThrowHistoryCount[ctrlIdx] = 0;
+        vr_ThrowHistoryIdx[ctrlIdx]   = 0;
+        vr_throw_cancelled = true;
+    }
     return velocity;
 }
 
@@ -4848,11 +4935,9 @@ bool bgun0f09aba4(struct hand* hand, struct handweaponinfo* info, s32 handnum, s
             hand->posstart.z = hand->posoffset.z;
         }
 
-        int ctrlIndex = 0; // VR
-        if (!vr_invert_hands) {
-            ctrlIndex = (handnum == HAND_RIGHT) ? 1 : 0;
-        }else{
-            ctrlIndex = (handnum == HAND_RIGHT) ? 0 : 1; // Swap the hands/controllers for the laser
+        int ctrlIndex = (handnum == HAND_RIGHT ? 1 : 0);
+        if (g_Vars.currentplayer->hands[HAND_RIGHT].gset.weaponnum == WEAPON_LASER) {
+            ctrlIndex = (handnum == HAND_RIGHT ? 0 : 1);
         }
 
         if (hand->stateflags & HANDSTATEFLAG_00000040) {
@@ -4893,7 +4978,21 @@ bool bgun0f09aba4(struct hand* hand, struct handweaponinfo* info, s32 handnum, s
                     qTmp[0] *= invLen; qTmp[1] *= invLen; qTmp[2] *= invLen; qTmp[3] *= invLen;
                 }
 
+
+
                 vrBuildGunRotation(handnum, hand, qTmp, &hand->posrotmtx);
+
+                // VR Apply per-weapon Z roll correction
+                if (zRollAngle != 0.0f) {
+                    struct coord rot = { 0.0f, 0.0f, zRollAngle };
+                    Mtxf rotZ;
+                    Mtxf tmp;
+                    mtx4LoadIdentity(&rotZ);
+                    mtx4LoadRotation(&rot, &rotZ);
+                    mtx4MultMtx4(&hand->posrotmtx, &rotZ, &tmp);
+                    hand->posrotmtx = tmp;
+                }
+
                 hand->posrotmtx.m[3][0] = hand->posoffset.x;
                 hand->posrotmtx.m[3][1] = hand->posoffset.y;
                 hand->posrotmtx.m[3][2] = hand->posoffset.z;
@@ -4952,6 +5051,18 @@ bool bgun0f09aba4(struct hand* hand, struct handweaponinfo* info, s32 handnum, s
             }
 
             vrBuildGunRotation(handnum, hand, qTmp, &hand->posrotmtx);
+
+            // VR Apply per-weapon Z roll correction
+            if (zRollAngle != 0.0f) {
+                struct coord rot = { 0.0f, 0.0f, zRollAngle };
+                Mtxf rotZ;
+                Mtxf tmp;
+                mtx4LoadIdentity(&rotZ);
+                mtx4LoadRotation(&rot, &rotZ);
+                mtx4MultMtx4(&hand->posrotmtx, &rotZ, &tmp);
+                hand->posrotmtx = tmp;
+            }
+
             hand->posrotmtx.m[3][0] = hand->posoffset.x;
             hand->posrotmtx.m[3][1] = hand->posoffset.y;
             hand->posrotmtx.m[3][2] = hand->posoffset.z;
@@ -6146,9 +6257,11 @@ struct coord gVrGunFwd[2]   = { {0,0,1}, {0,0,1} };
 struct coord gVrGunOff[2]   = { {0,0,0}, {0,0,0} };
 
 void vr_gun_pos_rot(int handnum, struct hand* hand) {
-    int ctrlIndex = (!vr_invert_hands)
-                    ? (handnum == HAND_RIGHT ? 1 : 0)
-                    : (handnum == HAND_RIGHT ? 0 : 1);
+
+    int ctrlIndex = (handnum == HAND_RIGHT ? 1 : 0);
+    if (g_Vars.currentplayer->hands[HAND_RIGHT].gset.weaponnum == WEAPON_LASER) {
+        ctrlIndex = (handnum == HAND_RIGHT ? 0 : 1);
+    }
 
     // Per-weapon grip offset (delta from the tracked controller point to the gun model origin).
     //
@@ -6188,6 +6301,28 @@ void vr_gun_pos_rot(int handnum, struct hand* hand) {
             off.x = 0.0f;  off.y = 16.0f; off.z = -4.0f; break;
     }
 
+
+    // Z rotation correction
+    switch (g_Vars.currentplayer->gunctrl.weaponnum) {
+        case WEAPON_LASER:
+            zRollAngle = ctrlIndex ? 0.0f : -1.1f;
+            break;
+        case WEAPON_CROSSBOW:
+            zRollAngle = ctrlIndex ? 1.1f : -0.0f;
+            break;
+        case WEAPON_UNARMED:
+            if (VrMotionThrowing) {
+                if (!gripPressed)
+                    zRollAngle = ctrlIndex ? 1.0f : -1.0f;
+            }
+            break;
+        default:
+            zRollAngle = 0.0f;
+            break;
+    }
+
+
+
     // Per-player grip fit trim (pd-vr.ini), so the gun can be nudged onto the controller.
     off.x += VrGunOffX;
     off.y += VrGunOffY;
@@ -6204,6 +6339,17 @@ void vr_gun_pos_rot(int handnum, struct hand* hand) {
         f32 qf[4] = { gCtrlQuat[ctrlIndex][0], gCtrlQuat[ctrlIndex][1],
                       gCtrlQuat[ctrlIndex][2], gCtrlQuat[ctrlIndex][3] };
         vrBuildGunRotation(handnum, hand, qf, &hand->posrotmtx);
+    }
+
+    // Apply per-weapon Z roll correction
+    if (zRollAngle != 0.0f) {
+        struct coord rot = { 0.0f, 0.0f, zRollAngle };
+        Mtxf rotZ;
+        Mtxf tmp;
+        mtx4LoadIdentity(&rotZ);
+        mtx4LoadRotation(&rot, &rotZ);
+        mtx4MultMtx4(&hand->posrotmtx, &rotZ, &tmp);
+        hand->posrotmtx = tmp;
     }
 
     // The offset is applied properly at RENDER (bgun0f0a5550), which has the gun's world
@@ -6834,14 +6980,6 @@ void bgunTickGunLoad(void)
 #if VERSION >= VERSION_NTSC_1_0
     u32 stack2;
 #endif
-
-    // VR WEAPON_LASER
-    if (player->hands[HAND_RIGHT].gset.weaponnum == WEAPON_LASER) {
-        vr_invert_hands = true;
-    }else{
-        vr_invert_hands = false;
-    }
-
 
     if (player->gunctrl.gunloadstate == GUNLOADSTATE_MODEL) {
         osSyncPrintf("BriGun:  BriGunLoadTick process GUN_LOADSTATE_LOAD_OBJ\n");
@@ -15924,7 +16062,10 @@ void bgunTickGameplay(bool triggeron) {
         handnum = handnums[i];
         hand = &player->hands[handnum];
         weaponnum = player->hands[handnum].gset.weaponnum;
-        ctrlIndex = (handnum == HAND_RIGHT) ? 1 : 0;
+        ctrlIndex = (handnum == HAND_RIGHT ? 1 : 0);
+        if (g_Vars.currentplayer->hands[HAND_RIGHT].gset.weaponnum == WEAPON_LASER) {
+            ctrlIndex = (handnum == HAND_RIGHT ? 0 : 1);
+        }
 
         float localVel[3];
         worldToLocal(gCtrlQuat[ctrlIndex], vr_ctrl_velocity[ctrlIndex], localVel);
@@ -16949,8 +17090,9 @@ Gfx *bgunDrawHudGauge(Gfx *gdl, s32 x1, s32 y1, s32 x2, s32 y2, struct abmag *ab
 
 Gfx *bgunDrawHud(Gfx *gdl)
 {
+
     struct player *player = g_Vars.currentplayer;
-    s32 bottom = viGetViewTop() + viGetViewHeight() - 113; //// VR
+    s32 bottom = viGetViewTop() + viGetViewHeight()  -200; // VR
     s32 playercount = PLAYERCOUNT();
     s32 playernum = g_Vars.currentplayernum;
     struct gunctrl *ctrl;
@@ -16981,60 +17123,27 @@ Gfx *bgunDrawHud(Gfx *gdl)
     u16 nameid;
     struct hand *lefthand = &player->hands[HAND_LEFT];
 
-
-
     ctrl = &player->gunctrl;
 
+    gDPNoOpTag(gdl++, VR_WEP_HUD_CAPTURE_BEGIN_R);
+
     if (player->isdead) {
+        gDPNoOpTag(gdl++, VR_WEP_HUD_CAPTURE_END_L);
+        gDPNoOpTag(gdl++, VR_WEP_HUD_CAPTURE_END_R);
         return gdl;
     }
 
     if (g_Vars.currentplayer->gunctrl.passivemode) {
+        gDPNoOpTag(gdl++, VR_WEP_HUD_CAPTURE_END_L);
+        gDPNoOpTag(gdl++, VR_WEP_HUD_CAPTURE_END_R);
         return gdl;
     }
 
     if (g_Vars.lvframenum < 5) {
+        gDPNoOpTag(gdl++, VR_WEP_HUD_CAPTURE_END_L);
+        gDPNoOpTag(gdl++, VR_WEP_HUD_CAPTURE_END_R);
         return gdl;
     }
-
-
-
-
-    // --- VR : HUD visible si contrôleur vers le haut OU récent changement de fonction ---
-    static s32 sFuncChangeFrame = -1000; // frame du dernier changement de fonction
-
-    int ctrlIndex = !vr_invert_hands ? 1 : 0;
-
-    const float qw = gCtrlQuat[ctrlIndex][0];
-    const float qx = gCtrlQuat[ctrlIndex][1];
-    const float qy = gCtrlQuat[ctrlIndex][2];
-    const float qz = gCtrlQuat[ctrlIndex][3];
-// Vecteur "up" local du contrôleur en espace monde
-// up_world_x < 0 → le dessus de l'arme penche vers la gauche monde
-    float up_world_x = 2.0f * (qx * qy - qz * qw);
-    float up_world_y = 1.0f - 2.0f * (qx * qx + qz * qz); // gardé pour référence
-
-// Roulis vers la gauche : up_world_x négatif ET arme pas trop verticale
-// up_world_y > 0 assure que l'arme pointe globalement vers le haut (pas retournée)
-    bool tiltedLeft = (up_world_x < -0.5f);
-
-// Détecter un changement de funcnum
-    static s32 sPrevFuncNum = -1;
-    s32 curFuncNum = g_Vars.currentplayer->hands[HAND_RIGHT].gset.weaponfunc;
-
-    if (sPrevFuncNum != curFuncNum) {
-        sPrevFuncNum = curFuncNum;
-        sFuncChangeFrame = g_Vars.lvframe60;
-    }
-
-    bool funcChangedRecently = (g_Vars.lvframe60 - sFuncChangeFrame) < TICKS(60) + TICKS(60);
-
-// HUD visible SEULEMENT si arme penchée vers la gauche, ou changement récent de fonction
-    if (!tiltedLeft && !funcChangedRecently) {
-        return gdl;
-    }
-    // --- Fin condition HUD VR ---
-
 
 
 #if PAL
@@ -17086,7 +17195,7 @@ Gfx *bgunDrawHud(Gfx *gdl)
     }
 #endif
 
-    xpos = (viGetViewLeft() + viGetViewWidth()) / g_ScaleX - barwidth - 100;  // VR
+    xpos = (viGetViewLeft() + viGetViewWidth()) / g_ScaleX - barwidth - 230;  // VR
 
     if (playercount == 2 && (optionsGetScreenSplit() == SCREENSPLIT_VERTICAL || IS4MB()) && playernum == 0) {
         xpos += 15;
@@ -17119,9 +17228,14 @@ Gfx *bgunDrawHud(Gfx *gdl)
         fncolour = ((ctrl->fnfader * 2) - 256) << 16 | 0xff000040;
     }
 
-    gdl = textSetPrimColour(gdl, fncolour);
+
+    gDPPipeSync(gdl++);
+    gDPSetRenderMode(gdl++, G_RM_XLU_SURF, G_RM_XLU_SURF2);
+    gDPSetCombineMode(gdl++, G_CC_PRIMITIVE, G_CC_PRIMITIVE);
+    gDPSetPrimColorViaWord(gdl++, 0, 0, fncolour);
 
     gDPFillRectangleScaled(gdl++, xpos - 13, bottom - 11, xpos - 2, bottom);
+
 
     gdl = text0f153838(gdl);
 
@@ -17183,6 +17297,7 @@ Gfx *bgunDrawHud(Gfx *gdl)
             gdl = text0f153838(gdl);
             textSetWaveBlend(g_20SecIntervalFrac * 50.0f, 0, 50);
             textSetWaveColours(0xffffffff, 0xffffffff);
+
             gdl = textRenderProjected(gdl, &x, &y, str, g_CharsHandelGothicXs, g_FontHandelGothicXs, colour, textwidth, 1000, 0, 0);
             textResetBlends();
         }
@@ -17246,7 +17361,6 @@ Gfx *bgunDrawHud(Gfx *gdl)
                 gdl = textSetPrimColour(gdl, 0);
 
                 gDPFillRectangleScaled(gdl++, x - 1, y - 1, xpos - 11, bottom + 3);
-
                 gdl = text0f153838(gdl);
 
                 textSetWaveBlend(g_20SecIntervalFrac * 50.0f, 0, 50);
@@ -17276,6 +17390,7 @@ Gfx *bgunDrawHud(Gfx *gdl)
 #endif
             gdl = text0f153780(gdl);
             g_ScaleX = 1;
+            gDPNoOpTag(gdl++, VR_WEP_HUD_CAPTURE_END_R); // VR
             return gdl;
         }
     }
@@ -17287,11 +17402,15 @@ Gfx *bgunDrawHud(Gfx *gdl)
         ctrl->lastmag = ammoindex;
     }
 
+
+    gDPNoOpTag(gdl++, VR_WEP_HUD_CAPTURE_BEGIN_L);
+
     // Left hand - mag
     if (lefthand->inuse
         && weapon->ammos[ammoindex] != NULL
         && lefthand->gset.weaponnum != WEAPON_REMOTEMINE) {
-        xpos = viGetViewLeft() / g_ScaleX + 100;
+
+        xpos = viGetViewLeft() / g_ScaleX + 210;
 
         if (playercount == 2 && (optionsGetScreenSplit() == SCREENSPLIT_VERTICAL || IS4MB()) && playernum == 1) {
             xpos -= 14;
@@ -17315,6 +17434,8 @@ Gfx *bgunDrawHud(Gfx *gdl)
         }
     }
 
+    gDPNoOpTag(gdl++, VR_WEP_HUD_CAPTURE_END_L);
+
     // Right hand - mag, reserve and combat boost timer
     if (hand->inuse && ctrl->ammotypes[ammoindex] >= 0) {
         s32 ammotype;
@@ -17324,7 +17445,7 @@ Gfx *bgunDrawHud(Gfx *gdl)
         ammotype = player->gunctrl.ammotypes[ammoindex];
 
 #if VERSION >= VERSION_NTSC_1_0
-        xpos = (viGetViewLeft() + viGetViewWidth()) / g_ScaleX - barwidth - 100; // VR
+        xpos = (viGetViewLeft() + viGetViewWidth()) / g_ScaleX - barwidth - 230; // VR
 #else
         // NTSC Beta omits the brackets here. This would normally cause the
 		// ammo info to be misaligned for players on the right side of the
@@ -17403,9 +17524,8 @@ Gfx *bgunDrawHud(Gfx *gdl)
 #endif
 
     gdl = text0f153780(gdl);
-
     g_ScaleX = 1;
-
+    gDPNoOpTag(gdl++, VR_WEP_HUD_CAPTURE_END_R); // VR
     return gdl;
 }
 

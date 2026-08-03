@@ -51,8 +51,7 @@ extern int vr_button_L_grip;
 extern void gfxSetCrosshairParallaxRight(float correction);
 extern void gfxSetCrosshairParallaxLeft(float correction);
 extern float vrComputeCrosshairParallax(float distanceGameUnits);
-
-
+extern s32 g_LookingAtPropHandMask;
 
 
 // =============================================================================
@@ -913,7 +912,8 @@ Gfx *sightDrawDefault(Gfx *gdl, bool sighton, f32 crossx, f32 crossy)
 
         case SIGHTTRACKTYPE_DEFAULT:
             if (sighton) {
-                if (g_Vars.currentplayer->lookingatprop.prop == NULL) {
+                if (g_Vars.currentplayer->lookingatprop.prop == NULL
+                    || (g_LookingAtPropHandMask & (1 << g_currentCrosshairHand)) == 0) {
                     colour    = SIGHT_COLOUR;
                     radius    = 8;
                     cornergap = 5;
@@ -942,7 +942,8 @@ Gfx *sightDrawDefault(Gfx *gdl, bool sighton, f32 crossx, f32 crossy)
                 s32 textx;
                 s32 texty;
 
-                if (g_Vars.currentplayer->lookingatprop.prop == NULL) {
+                if (g_Vars.currentplayer->lookingatprop.prop == NULL
+                    || (g_LookingAtPropHandMask & (1 << g_currentCrosshairHand)) == 0) {
                     colour    = SIGHT_COLOUR;
                     radius    = 8;
                     cornergap = 5;
@@ -984,7 +985,8 @@ Gfx *sightDrawDefault(Gfx *gdl, bool sighton, f32 crossx, f32 crossy)
             }
 
             if (sighton) {
-                if (g_Vars.currentplayer->lookingatprop.prop == NULL) {
+                if (g_Vars.currentplayer->lookingatprop.prop == NULL
+                    || (g_LookingAtPropHandMask & (1 << g_currentCrosshairHand)) == 0) {
                     colour    = SIGHT_COLOUR;
                     radius    = 8;
                     cornergap = 5;
@@ -1053,7 +1055,8 @@ Gfx *sightDrawDefault(Gfx *gdl, bool sighton, f32 crossx, f32 crossy)
             }
 
             if (sighton) {
-                if (g_Vars.currentplayer->lookingatprop.prop == NULL) {
+                if (g_Vars.currentplayer->lookingatprop.prop == NULL
+                    || (g_LookingAtPropHandMask & (1 << g_currentCrosshairHand)) == 0) {
                     colour    = SIGHT_COLOUR;
                     radius    = 8;
                     cornergap = 5;
@@ -1362,7 +1365,8 @@ Gfx *sightDrawSkedar(Gfx *gdl, bool sighton, f32 crossx, f32 crossy)
     f32 trix1, trix2, triy1, triy2;
     u32 colour;
     u8 dir;
-    bool hasprop = g_Vars.currentplayer->lookingatprop.prop != NULL;
+    bool hasprop = g_Vars.currentplayer->lookingatprop.prop != NULL
+                   && (g_LookingAtPropHandMask & (1 << g_currentCrosshairHand)) != 0;
     f32 frac;
 
     if (!sighton) {
@@ -1694,7 +1698,8 @@ Gfx *sightDrawMaian(Gfx *gdl, bool sighton, f32 crossx, f32 crossy)
 
     Vtx *vertices;
     Col *colours;
-    bool hasprop = g_Vars.currentplayer->lookingatprop.prop != NULL;
+    bool hasprop = g_Vars.currentplayer->lookingatprop.prop != NULL
+                   && (g_LookingAtPropHandMask & (1 << g_currentCrosshairHand)) != 0;
     u32 colour = 0xff000060;
 
     if (!sighton) {

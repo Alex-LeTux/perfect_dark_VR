@@ -21,6 +21,9 @@
 #include "types.h"
 
 
+#include "../../port/vr/vr_openxr.h"
+#include "../../port/vr/vr_log.h"
+
 struct prop *var8009de70;
 u32 var8009de74;
 struct coord var8009de78;
@@ -29,6 +32,50 @@ u32 var8009de88;
 u32 var8009de8c;
 
 bool var80070e80 = false;
+
+
+extern XrQuaternionf vr_joy_rot_Q;
+
+void vr_rotate_vector_by_quaternion(struct coord *v, const XrQuaternionf q);
+
+static struct coord sVrGrabLastHeadPos = { 0.0f, 0.0f, 0.0f };
+static bool sVrGrabHeadPosValid = false;
+
+static void bgrabAddVrHeadMovement(struct coord *delta) // VR
+{
+    struct coord vrdelta;
+
+    /*
+     * Never apply the first sample: gHeadPos may be
+     * far from zero when entering MOVEMODEGRAB.
+     */
+    if (!sVrGrabHeadPosValid) {
+        sVrGrabLastHeadPos.x = gHeadPos.x;
+        sVrGrabLastHeadPos.y = gHeadPos.y;
+        sVrGrabLastHeadPos.z = gHeadPos.z;
+        sVrGrabHeadPosValid = true;
+        return;
+    }
+
+    vrdelta.x = gHeadPos.x - sVrGrabLastHeadPos.x;
+    vrdelta.y = 0.0f;
+    vrdelta.z = gHeadPos.z - sVrGrabLastHeadPos.z;
+
+    /*
+     * The headset provides movement in local VR space.
+     * vrjoyrotQ converts it into the game's world space, exactly
+     * as vrplayerpos() did outside of grab mode.
+     */
+    vr_rotate_vector_by_quaternion(&vrdelta, vr_joy_rot_Q);
+
+    delta->x += vrdelta.x;
+    delta->z += vrdelta.z;
+
+    sVrGrabLastHeadPos.x = gHeadPos.x;
+    sVrGrabLastHeadPos.y = gHeadPos.y;
+    sVrGrabLastHeadPos.z = gHeadPos.z;
+}
+
 
 
 void bgrabInit(void)
@@ -138,6 +185,7 @@ void bgrabInit(void)
 	}
 
 	g_Vars.currentplayer->grabstarttime = g_Vars.lvframe60;
+    sVrGrabHeadPosValid = false;
 }
 
 void bgrabExit(void)
@@ -172,6 +220,7 @@ void bgrabExit(void)
 
 		g_Vars.currentplayer->grabbedprop = NULL;
 	}
+    sVrGrabHeadPosValid = false;
 }
 
 void bgrab0f0ccbf0(struct coord *delta, f32 angle, struct defaultobj *obj)
@@ -1105,6 +1154,14 @@ void bgrab0f0ce924(void)
 
 		bmoveUpdateMoveInitSpeed(&sp74);
 
+        /*
+         * Add room-scale movement to the same delta as the joystick.
+         * bgrab0f0ce0bc() will then test collisions for the player and
+         * the grabbed object together.
+         */
+        bgrabAddVrHeadMovement(&sp74);
+
+
 		if (debugIsTurboModeEnabled()) {
 			sp74.x += (g_Vars.currentplayer->bond2.unk00.f[0] * g_Vars.currentplayer->speedforwards - (g_Vars.currentplayer->bond2.unk00.f[2] * g_Vars.currentplayer->speedsideways)) * g_Vars.lvupdate60freal * 10.0f;
 			sp74.z += (g_Vars.currentplayer->bond2.unk00.f[2] * g_Vars.currentplayer->speedforwards + (g_Vars.currentplayer->bond2.unk00.f[0] * g_Vars.currentplayer->speedsideways)) * g_Vars.lvupdate60freal * 10.0f;
@@ -1165,16 +1222,15 @@ void bgrab0f0ce924(void)
 	}
 }
 
+
 void bgrabTick(void)
 {
-
-
 
 	bgrabUpdatePrevPos();
 	bgrab0f0cdef0();
 	bmoveUpdateVerta();
 	bgrab0f0ce924();
-	bgrab0f0ce178();
+    bgrab0f0ce178();
 	bgrabUpdateVertical();
 
 

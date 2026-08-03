@@ -14,8 +14,13 @@ extern bool VrWeaponRecoil;
 #define WORLDSCALE_MIN    0.50f
 #define WORLDSCALE_MAX    1.50f
 extern float VrSetWorldScale;
-extern bool VrUseSnapTurn;
+extern int VrUseSnapTurn;
 extern bool VrTwoHandAim;       // two-handed weapons aim along the line between both controllers
+extern int VrStickClickToCrouch;
+
+extern float VrHudDistance;
+#define HUD_DISTANCE_MIN 0.30f
+#define HUD_DISTANCE_MAX 2.0f
 
 // VR hand/gun placement. Defined in bondgun.c. These are the only values still worth varying per
 // player -- everything else about the placement is measured and baked. There is deliberately no

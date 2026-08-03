@@ -26,6 +26,10 @@
 
 #include "../port/vr/vr_log.h"
 
+#include "../../port/vr/vr_openxr.h"
+#include "../../port/vr/vr_log.h"
+
+
 u32 g_NextHudMessageId;
 
 u8 g_HudmsgsActive = 0;
@@ -128,6 +132,8 @@ Gfx *hudmsgRenderMissionTimer(Gfx *gdl, u32 alpha)
 	s16 viewtop;
 	s16 viewheight;
 
+    gDPNoOpTag(gdl++, VR_HUD_CAPTURE_BEGIN_H);
+
 	textcolour = alpha;
 
 	viewleft = viGetViewLeft() / g_ScaleX;
@@ -200,7 +206,7 @@ Gfx *hudmsgRenderMissionTimer(Gfx *gdl, u32 alpha)
 
     // VR
     x = viewleft + g_HudPaddingX + 3 + 105;
-    y = timery - 84;
+    y = timery - 10;
 
 	gdl = textRender(gdl, &x, &y, buffer, g_CharsNumeric, g_FontNumeric, textcolour, 0x000000a0, viGetWidth(), viGetHeight_hack(), 0, 0);
 
@@ -208,6 +214,7 @@ Gfx *hudmsgRenderMissionTimer(Gfx *gdl, u32 alpha)
 	gSPClearExtraGeometryModeEXT(gdl++, G_ASPECT_MODE_EXT);
 #endif
 
+    gDPNoOpTag(gdl++, VR_HUD_CAPTURE_END_H);
 	return gdl;
 }
 
@@ -232,6 +239,8 @@ Gfx *hudmsgRenderZoomRange(Gfx *gdl, u32 alpha)
 	s32 x2;
 	s32 y2;
 	u32 colour;
+
+    gDPNoOpTag(gdl++, VR_HUD_CAPTURE_BEGIN_H);
 
 	colour = (alpha * 0xa0 / 255) | 0x00ff0000;
 	viewtop = viGetViewTop();
@@ -267,9 +276,16 @@ Gfx *hudmsgRenderZoomRange(Gfx *gdl, u32 alpha)
 
 
 
-    texty -= 84; // VR
+//    texty -= 84; // VR
+//    // VR
+//    if ((IS4MB() || optionsGetScreenSplit() == SCREENSPLIT_VERTICAL || playercount >= 3) && !g_CountdownTimerOff) {
+//        texty += 10;
+//    }
+
+
+    texty -= 10; // VR
     // VR
-    if ((IS4MB() || optionsGetScreenSplit() == SCREENSPLIT_VERTICAL || playercount >= 3) && !g_CountdownTimerOff) {
+    if (!g_CountdownTimerOff) {
         texty += 10;
     }
 
@@ -281,6 +297,7 @@ Gfx *hudmsgRenderZoomRange(Gfx *gdl, u32 alpha)
 		if (weaponnum == WEAPON_SNIPERRIFLE) {
 			curzoom = 1.0f;
 		} else {
+            gDPNoOpTag(gdl++, VR_HUD_CAPTURE_END_H);
 			return gdl;
 		}
 	} else {
@@ -333,6 +350,7 @@ Gfx *hudmsgRenderZoomRange(Gfx *gdl, u32 alpha)
 	gSPClearExtraGeometryModeEXT(gdl++, G_ASPECT_CENTER_EXT);
 #endif
 
+    gDPNoOpTag(gdl++, VR_HUD_CAPTURE_END_H);
 	return gdl;
 }
 
@@ -341,6 +359,8 @@ Gfx *hudmsgRenderBox(Gfx *gdl, s32 x1, s32 y1, s32 x2, s32 y2, f32 bgopacity, u3
 	f32 f0;
 	f32 f20;
 	f32 f22;
+
+    gDPNoOpTag(gdl++, VR_HUD_CAPTURE_BEGIN_H);
 
 	if (x1);
 
@@ -378,6 +398,7 @@ Gfx *hudmsgRenderBox(Gfx *gdl, s32 x1, s32 y1, s32 x2, s32 y2, f32 bgopacity, u3
 				128.0f * textopacity);
 	}
 
+    gDPNoOpTag(gdl++, VR_HUD_CAPTURE_END_H);
 	return gdl;
 }
 
@@ -951,7 +972,7 @@ void hudmsgCalculatePosition(struct hudmessage *msg)
 		y = msg->ymargin;
 		break;
 	case HUDMSGALIGN_TOP:
-        y = viewtop + msg->ymargin + 150; // VR Top Subtitle // y = viewtop + msg->ymargin + 13;
+        y = viewtop + msg->ymargin + 50; // VR Top Subtitle // y = viewtop + msg->ymargin + 13;
 		break;
 	case HUDMSGALIGN_BOTTOM:
 		y = viewtop + viewheight - msg->height - msg->ymargin - 14;
@@ -978,7 +999,7 @@ void hudmsgCalculatePosition(struct hudmessage *msg)
 		y = (viewheight - msg->height) / 2 + viewtop + msg->ymargin;
 		break;
 	case HUDMSGALIGN_BELOWVIEWPORT:
-		y = viewtop + viewheight - (msg->height / 2) - 150; // VR Down Subtitle // y = viewtop + viewheight - (msg->height / 2) + 18;
+		y = viewtop + viewheight - (msg->height / 2) - 100; // VR Down Subtitle // y = viewtop + viewheight - (msg->height / 2) + 18;
 		break;
 	default:
 		y = msg->ymargin;
@@ -1405,6 +1426,9 @@ Gfx *hudmsgsRender(Gfx *gdl)
 	s32 y;
 	s32 timerthing = 255;
 	s32 spdc = true;
+
+    gDPNoOpTag(gdl++, VR_HUD_CAPTURE_BEGIN_H);
+
 #ifndef PLATFORM_N64
 	const s32 playercount = PLAYERCOUNT();
 #endif
@@ -1685,6 +1709,7 @@ Gfx *hudmsgsRender(Gfx *gdl)
 
 	g_ScaleX = 1;
 
+    gDPNoOpTag(gdl++, VR_HUD_CAPTURE_END_H);
 	return gdl;
 }
 

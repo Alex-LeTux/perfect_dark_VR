@@ -118,6 +118,14 @@ extern float XrAspect;
 float VrSetWorldScale = 1.0f;
 //---
 
+//VR Slayer HMD rotation
+static XrQuaternionf sPrevHMDQuat = { 0.0f, 0.0f, 0.0f, 1.0f };
+static struct weaponobj* sLastTrackedRocket = NULL;
+extern XrQuaternionf vr_joy_rot_Q;
+extern void vr_rotate_vector_by_quaternion(struct coord* v, const XrQuaternionf* q);
+//---
+
+
 s32 g_DefaultWeapons[2];
 f32 g_MpSwirlRotateSpeed;
 f32 g_MpSwirlAngleDegrees;
@@ -188,12 +196,12 @@ struct vimode g_ViModes[] = {
 //        { 400,             300,              400,             1,                VIMODE_HI, 300,              0,  300, 0,  300, 0   }, // unused
 
 // VR
-{SCREEN_WIDTH_LO, SCREEN_HEIGHT_LO, SCREEN_WIDTH_LO, 1, VIMODE_LO, SCREEN_HEIGHT_LO, 0, 360, 40, 272, 84  }, // default VR
-{ SCREEN_WIDTH_HI, SCREEN_HEIGHT_HI, SCREEN_WIDTH_HI, 1,              VIMODE_LO, SCREEN_HEIGHT_HI, 0,  360, 40, 272, 84  }, // hi-res VR
-{ 640,             960,              640,             2,                VIMODE_HI, 880,              20, 720, 120, 544, 208 }, // unused
-{ 880,             660,              880,             1,                VIMODE_LO, 660,              0,  660, 0,  660, 0   }, // unused
-{ 880,             480,              880,             (1.0f / 1.375f),  VIMODE_LO, 440,              0,  360, 0,  272, 0   }, // unused
-{ 800,             600,              800,             1,                VIMODE_HI, 600,              0,  600, 0,  600, 0   }, // unused
+        {SCREEN_WIDTH_LO, SCREEN_HEIGHT_LO, SCREEN_WIDTH_LO, 1, VIMODE_LO, SCREEN_HEIGHT_LO, 0, 360, 40, 272, 84  }, // default VR
+        { SCREEN_WIDTH_HI, SCREEN_HEIGHT_HI, SCREEN_WIDTH_HI, 1,              VIMODE_LO, SCREEN_HEIGHT_HI, 0,  360, 40, 272, 84  }, // hi-res VR
+        { 640,             960,              640,             2,                VIMODE_HI, 880,              20, 720, 120, 544, 208 }, // unused
+        { 880,             660,              880,             1,                VIMODE_LO, 660,              0,  660, 0,  660, 0   }, // unused
+        { 880,             480,              880,             (1.0f / 1.375f),  VIMODE_LO, 440,              0,  360, 0,  272, 0   }, // unused
+        { 800,             600,              800,             1,                VIMODE_HI, 600,              0,  600, 0,  600, 0   }, // unused
 
 
 
@@ -2216,9 +2224,9 @@ void playerTickCutscene(bool arg0)
         case STAGE_DEFECTION:
             // Hack for STAGE_DEFECTION, so building looks bigger and better
             if(g_CutsceneAnimNum == 252 || g_CutsceneAnimNum == 255 || g_CutsceneAnimNum == 238
-            || g_CutsceneAnimNum == 302 || g_CutsceneAnimNum == 261 || g_CutsceneAnimNum == 307
-            || g_CutsceneAnimNum == 263 || g_CutsceneAnimNum == 267 || g_CutsceneAnimNum == 341
-            || g_CutsceneAnimNum == 242) {
+               || g_CutsceneAnimNum == 302 || g_CutsceneAnimNum == 261 || g_CutsceneAnimNum == 307
+               || g_CutsceneAnimNum == 263 || g_CutsceneAnimNum == 267 || g_CutsceneAnimNum == 341
+               || g_CutsceneAnimNum == 242) {
                 vr_world_scale = -11.0f / 14.0f * fovy + 745.0f / 7.0f;
             } else {
                 vr_world_scale = (-11.0f / 14.0f * fovy + 745.0f / 7.0f) * 0.13f;
@@ -3433,6 +3441,7 @@ void playerLaunchSlayerRocket(struct weaponobj* rocket)
             DEVICE_IRSCANNER);
 
     g_Vars.currentplayer->badrockettime = 0;
+    sLastTrackedRocket = NULL; // VR - force resynchronization on the next shot
 }
 
 void playerTickTeleport(f32* aspectratio)
@@ -3977,32 +3986,34 @@ void playerTick(bool arg0)
                 sp2ac.x = sp2b8[0][0];
                 sp2ac.z = sp2b8[0][2];
 
-                sp178 = sticky * LVUPDATE60FREAL() * 0.00025f;
+                sp178 = -sticky * LVUPDATE60FREAL() * 0.00025f;
                 sp174 = -stickx * LVUPDATE60FREAL() * 0.00025f;
 
-#ifndef PLATFORM_N64
-                // respect the invert pitch setting
-                if (optionsGetForwardPitch(g_Vars.currentplayerstats->mpindex)) {
-                    sp178 = -sp178;
-                }
-                // mouse control
-                if (g_Vars.currentplayernum == 0) {
-                    f32 mdx, mdy;
-                    inputMouseGetScaledDelta(&mdx, &mdy);
-                    if (mdx || mdy) {
-                        mdx *= 0.022f;
-                        mdy *= 0.022f;
-                        mdx = (mdx < -128.f) ? -128.f : (mdx > 127.f) ? 127.f : mdx;
-                        mdy = (mdy < -128.f) ? -128.f : (mdy > 127.f) ? 127.f : mdy;
-                        if (g_Vars.currentplayerstats && !optionsGetForwardPitch(g_Vars.currentplayerstats->mpindex)) {
-                            mdy = -mdy;
-                        }
-                        sp178 += mdy;
-                        sp174 -= mdx;
-                    }
-                }
 
-#endif
+// Removed for VR
+//#ifndef PLATFORM_N64
+                // respect the invert pitch setting
+//                if (optionsGetForwardPitch(g_Vars.currentplayerstats->mpindex)) {
+//                    sp178 = -sp178;
+//                }
+//                 mouse control
+//                if (g_Vars.currentplayernum == 0) {
+//                    f32 mdx, mdy;
+//                    inputMouseGetScaledDelta(&mdx, &mdy);
+//                    if (mdx || mdy) {
+//                        mdx *= 0.022f;
+//                        mdy *= 0.022f;
+//                        mdx = (mdx < -128.f) ? -128.f : (mdx > 127.f) ? 127.f : mdx;
+//                        mdy = (mdy < -128.f) ? -128.f : (mdy > 127.f) ? 127.f : mdy;
+//                        if (g_Vars.currentplayerstats && !optionsGetForwardPitch(g_Vars.currentplayerstats->mpindex)) {
+//                            mdy = -mdy;
+//                        }
+//                        sp178 += mdy;
+//                        sp174 -= mdx;
+//                    }
+//                }
+//
+//#endif
 
                 f20 = sqrtf(sp2ac.f[0] * sp2ac.f[0] + sp2ac.f[2] * sp2ac.f[2]);
 
@@ -4023,9 +4034,62 @@ void playerTick(bool arg0)
                 sp15c[2] = sp2b8[1][1] >= 0 ? f20 : -f20;
                 sp15c[3] = 0;
 
-                quaternionMultQuaternion(sp15c, sp14c, sp13c);
+
+
+                // VR Rotation using HMD
+                if (rocket != sLastTrackedRocket) {
+                    sPrevHMDQuat = vr_HMD_rot_Q;
+                    sLastTrackedRocket = rocket;
+                }
+
+                XrQuaternionf prevConjXR;
+                prevConjXR.x = -sPrevHMDQuat.x;
+                prevConjXR.y = -sPrevHMDQuat.y;
+                prevConjXR.z = -sPrevHMDQuat.z;
+                prevConjXR.w =  sPrevHMDQuat.w;
+
+                XrQuaternionf hmdDeltaXR;
+                hmdDeltaXR.x = prevConjXR.w * vr_HMD_rot_Q.x + prevConjXR.x * vr_HMD_rot_Q.w + prevConjXR.y * vr_HMD_rot_Q.z - prevConjXR.z * vr_HMD_rot_Q.y;
+                hmdDeltaXR.y = prevConjXR.w * vr_HMD_rot_Q.y - prevConjXR.x * vr_HMD_rot_Q.z + prevConjXR.y * vr_HMD_rot_Q.w + prevConjXR.z * vr_HMD_rot_Q.x;
+                hmdDeltaXR.z = prevConjXR.w * vr_HMD_rot_Q.z + prevConjXR.x * vr_HMD_rot_Q.y - prevConjXR.y * vr_HMD_rot_Q.x + prevConjXR.z * vr_HMD_rot_Q.w;
+                hmdDeltaXR.w = prevConjXR.w * vr_HMD_rot_Q.w - prevConjXR.x * vr_HMD_rot_Q.x - prevConjXR.y * vr_HMD_rot_Q.y - prevConjXR.z * vr_HMD_rot_Q.z;
+
+                sPrevHMDQuat = vr_HMD_rot_Q;
+
+// --- Yaw: rotation around world Y-axis ---
+                struct coord fwd = { 0.0f, 0.0f, 1.0f };
+                vr_rotate_vector_by_quaternion(&fwd, &hmdDeltaXR);
+                f32 hmdYaw = atan2f(fwd.x, fwd.z);
+
+                f32 hmdYawOnly[4];
+                hmdYawOnly[0] = cosf(hmdYaw);
+                hmdYawOnly[1] = 0.0f;
+                hmdYawOnly[2] = sinf(hmdYaw);
+                hmdYawOnly[3] = 0.0f;
+
+// --- Pitch: rotation around world X-axis (head up/down) ---
+                struct coord fwdForPitch = { 0.0f, 0.0f, 1.0f };
+                vr_rotate_vector_by_quaternion(&fwdForPitch, &hmdDeltaXR);
+                f32 hmdPitch = atan2f(fwdForPitch.y, sqrtf(fwdForPitch.x * fwdForPitch.x + fwdForPitch.z * fwdForPitch.z));
+
+                f32 hmdPitchOnly[4];
+                hmdPitchOnly[0] = cosf(hmdPitch);
+                hmdPitchOnly[1] = sp2ac.x * sinf(hmdPitch);
+                hmdPitchOnly[2] = 0.0f;
+                hmdPitchOnly[3] = sp2ac.z * sinf(hmdPitch);
+
+// --- Combination: HMD yaw + pitch, applied separately to each existing axis ---
+                f32 sp15cWithHMD[4];
+                quaternionMultQuaternion(hmdYawOnly, sp15c, sp15cWithHMD);
+
+                f32 sp14cWithHMD[4];
+                quaternionMultQuaternion(hmdPitchOnly, sp14c, sp14cWithHMD);
+
+                quaternionMultQuaternion(sp15cWithHMD, sp14cWithHMD, sp13c);
                 quaternionToMtx(sp13c, &sp1fc);
                 mtx4RotateVecInPlace(&sp1fc, &projectile->speed);
+                //---
+
 
                 projectile->powerlimit240 = -1;
                 projectile->flags |= PROJECTILEFLAG_NOTIMELIMIT;
@@ -4109,6 +4173,9 @@ void playerTick(bool arg0)
 #else
             g_Vars.currentplayer->visionmode = VISIONMODE_NORMAL;
 #endif
+
+            sLastTrackedRocket = NULL; // VR - force resynchronization on the next shot
+
         }
 
 
@@ -6370,4 +6437,3 @@ void player0f0c3320(Mtxf* matrices, s32 count)
         mtxF2L(&sp40, matrices + i);
     }
 }
-

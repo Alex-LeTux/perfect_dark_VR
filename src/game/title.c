@@ -2890,7 +2890,9 @@ Gfx* titleRender(Gfx* gdl)
     if (g_TitleDelayedTimer == 0) {
         switch (g_TitleMode) {
             case TITLEMODE_LEGAL:
+            gDPNoOpTag(gdl++, VR_HUD_CAPTURE_BEGIN_H);
                 gdl = titleRenderLegal(gdl);
+                gDPNoOpTag(gdl++, VR_HUD_CAPTURE_END_H);
                 break;
             case TITLEMODE_CHECKCONTROLLERS:
                 gdl = titleRenderCheckControllers(gdl);

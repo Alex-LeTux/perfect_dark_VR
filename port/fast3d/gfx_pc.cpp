@@ -87,7 +87,7 @@ void   vr_end_eye_render();
 float* vr_get_eye_proj_mtx(int eye);
 void   vr_get_eye_view_offset(int eye, float* out_tx, float* out_ty, float* out_tz, float *out_tx_HUD);
 bool vr_dl_is_pause_or_menu = false;
-int vr_MpPause = 0;
+int VrIsPaused = 0;
 static float s_vr_proj_col_major[16] = {};
 extern "C" int vr_get_internal_render_width();
 extern "C" int vr_get_internal_render_height();
@@ -95,6 +95,9 @@ extern "C" bool vr_end_frame_and_submit();
 //static int s_debug_fb_shader = -1;
 extern float vr_get_horizontal_fov_offset_ratio(int eye);
 static float g_vr_internal_scale = 1.0f;
+bool is_weapon_hud = false;
+extern "C" void gfxSetCrosshairParallaxRight(float correction);
+extern "C" void gfxSetCrosshairParallaxLeft(float correction);
 
 //------------------------------------------------------------------------------
 
@@ -284,7 +287,7 @@ static constexpr float clampf(const float x, const float min, const float max) {
     return (x < min) ? min : (x > max) ? max : x;
 }
 
-static void gfx_flush(void) {
+void gfx_flush(void) {
     if (buf_vbo_len > 0) {
         gfx_rapi->draw_triangles(buf_vbo, buf_vbo_len, buf_vbo_num_tris);
         buf_vbo_len = 0;
@@ -2352,7 +2355,6 @@ static inline void *seg_addr(uintptr_t w1) {
 
 uintptr_t clearMtx;
 
-
 static void gfx_run_dl(Gfx* cmd) {
     // puts("dl");
     int dummy = 0;
@@ -2369,9 +2371,54 @@ static void gfx_run_dl(Gfx* cmd) {
             // RSP commands:
             case G_NOOP: {
                 uint32_t tag_w1 = cmd->words.w1;
-                if ((tag_w1 >> 16) == 0x5652) {
-                    // Met à jour la variable globale instantanément
-                    vr_dl_is_pause_or_menu = (tag_w1 & 0xFFFF) != 0; // VR
+                switch (tag_w1) {
+                    case 0x56520001: // Menu is open
+                        vr_dl_is_pause_or_menu = (tag_w1 & 0xFFFF) != 0; // VR
+                        break;
+
+                    case VR_MENU_HUD_CAPTURE_BEGIN_L:
+                        is_weapon_hud = false;
+                        gfx_vr_hud_capture_begin_L();
+                        break;
+
+                    case VR_MENU_HUD_CAPTURE_END_L:
+                        is_weapon_hud = false;
+                        gfx_vr_hud_capture_end_L();
+                        break;
+
+                    case VR_WEP_HUD_CAPTURE_BEGIN_R:
+                        is_weapon_hud = true;
+                        gfx_vr_hud_capture_begin_R();
+                        break;
+
+                    case VR_WEP_HUD_CAPTURE_END_R:
+                        is_weapon_hud = true;
+                        gfx_vr_hud_capture_end_R();
+                        break;
+
+                    case VR_WEP_HUD_CAPTURE_BEGIN_L:
+                        is_weapon_hud = true;
+                        gfx_vr_hud_capture_begin_L();
+                        break;
+
+                    case VR_WEP_HUD_CAPTURE_END_L:
+                        is_weapon_hud = true;
+                        gfx_vr_hud_capture_end_L();
+                        break;
+
+                    case VR_HUD_CAPTURE_BEGIN_H:
+                        gfxSetCrosshairParallaxRight(0.0f);
+                        gfxSetCrosshairParallaxLeft(0.0f);
+                        gfx_vr_hud_capture_begin_H();
+                        break;
+
+                    case VR_HUD_CAPTURE_END_H:
+                        gfxSetCrosshairParallaxRight(0.0f);
+                        gfxSetCrosshairParallaxLeft(0.0f);
+                        gfx_vr_hud_capture_end_H();
+                        break;
+                    default:
+                        break;
                 }
                 break;
             }

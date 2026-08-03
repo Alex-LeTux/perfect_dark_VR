@@ -41,7 +41,10 @@ extern float vr_world_scale;
 extern bool is_meta_runtime;
 bool copy_fbo_menu = false;
 bool VrIsTitleLegal = true;
-
+//bool capture_begin = false;
+static bool hud_L_was_drawn = false;
+static bool hud_R_was_drawn = false;
+static bool hud_H_was_drawn = false;
 // ============================================================================
 // GLOBAL STATE - MSAA
 // ============================================================================
@@ -69,6 +72,50 @@ static GLuint mv_blit_prog = 0;
 static GLint mv_blit_uTexLoc = -1;
 static GLint mv_blit_uFlipYLoc = -1;
 static GLint mv_blit_uRectLoc = -1;
+
+// ============================================================================
+// GLOBAL STATE - gVrMenuH Head XR layer
+// ============================================================================
+static bool gVrMenuLWasClearedThisFrame = false;
+static int gVrMenuLCaptureDepth = 0;
+
+static bool gVrMenuHWasClearedThisFrame = false;
+static int gVrMenuHCaptureDepth = 0;
+
+static GLint gCurEyeOffsetLeftLoc  = -1;
+static GLint gCurEyeOffsetRightLoc = -1;
+
+static int gMenuCaptureRefCount = 0;
+bool gForceFlatShaderForMenu = false;
+
+static inline void gfx_opengl_menu_capture_push(void) {
+    gMenuCaptureRefCount++;
+    gForceFlatShaderForMenu = true;
+}
+
+static inline void gfx_opengl_menu_capture_pop(void) {
+    if (gMenuCaptureRefCount > 0) gMenuCaptureRefCount--;
+    gForceFlatShaderForMenu = (gMenuCaptureRefCount > 0);
+}
+// ============================================================================
+// GLOBAL STATE - Mirror Layers
+// ============================================================================
+enum VrMirrorMenuSource {
+    VR_MIRROR_MENU_L = 0,
+    VR_MIRROR_MENU_R = 1,
+    VR_MIRROR_MENU_H = 2,
+};
+
+struct VrMirrorMenuEntry {
+    VrMirrorMenuSource source;
+    float mvp[16];
+};
+
+extern "C" int vrGetMenuMirrorMVPList(int eyeIndex, VrMirrorMenuEntry* outEntries);
+extern GLuint gfx_opengl_get_vr_menu_texture(void);
+extern GLuint gfx_opengl_get_vr_menu_texture_R(void);
+extern GLuint gfx_opengl_get_vr_menu_texture_H(void);
+//---
 
 // Fullscreen tri, VS without attributes (uses gl_VertexID)
 //#version 300 es if gles, otherwise 330 core
@@ -427,6 +474,107 @@ static void mv_blit_init() {
 }
 
 
+// VR layers mirror
+#ifndef ANDROID // if PC
+
+static GLuint menuOverlayProg = 0;
+static GLint  menuOverlayMvpLoc = -1;
+static GLint  menuOverlayTexLoc = -1;
+static GLuint menuOverlayVao = 0, menuOverlayVbo = 0;
+
+static const char* menuOverlayVsSrc =
+        "#version 330 core\n"
+        "layout(location=0) in vec3 aPos;\n"
+        "layout(location=1) in vec2 aUV;\n"
+        "uniform mat4 uMVP;\n"
+        "out vec2 vUV;\n"
+        "void main() {\n"
+        "    gl_Position = uMVP * vec4(aPos, 1.0);\n"
+        "    vUV = aUV;\n"
+        "}\n";
+
+static const char* menuOverlayFsSrc =
+        "#version 330 core\n"
+        "in vec2 vUV;\n"
+        "out vec4 outColor;\n"
+        "uniform sampler2D uTex;\n"
+        "void main() {\n"
+        "    outColor = texture(uTex, vUV);\n"
+        "}\n";
+
+static void menuOverlayInit() {
+    if (menuOverlayProg != 0) return;
+
+    GLuint vs = glCreateShader(GL_VERTEX_SHADER);
+    glShaderSource(vs, 1, &menuOverlayVsSrc, NULL);
+    glCompileShader(vs);
+
+    GLuint fs = glCreateShader(GL_FRAGMENT_SHADER);
+    glShaderSource(fs, 1, &menuOverlayFsSrc, NULL);
+    glCompileShader(fs);
+
+    menuOverlayProg = glCreateProgram();
+    glAttachShader(menuOverlayProg, vs);
+    glAttachShader(menuOverlayProg, fs);
+    glLinkProgram(menuOverlayProg);
+    glDeleteShader(vs);
+    glDeleteShader(fs);
+
+    menuOverlayMvpLoc = glGetUniformLocation(menuOverlayProg, "uMVP");
+    menuOverlayTexLoc = glGetUniformLocation(menuOverlayProg, "uTex");
+
+    float verts[] = {
+            // pos              // uv
+            -0.5f, -0.5f, 0.0f,  0.0f, 0.0f,
+            0.5f, -0.5f, 0.0f,  1.0f, 0.0f,
+            0.5f,  0.5f, 0.0f,  1.0f, 1.0f,
+            -0.5f, -0.5f, 0.0f,  0.0f, 0.0f,
+            0.5f,  0.5f, 0.0f,  1.0f, 1.0f,
+            -0.5f,  0.5f, 0.0f,  0.0f, 1.0f,
+    };
+
+    glGenVertexArrays(1, &menuOverlayVao);
+    glGenBuffers(1, &menuOverlayVbo);
+    glBindVertexArray(menuOverlayVao);
+    glBindBuffer(GL_ARRAY_BUFFER, menuOverlayVbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(verts), verts, GL_STATIC_DRAW);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)0);
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)(3 * sizeof(float)));
+    glBindVertexArray(0);
+}
+
+extern "C" void gfx_opengl_draw_mirror_menu_overlay(GLuint menuTex, const float* mvp,
+                                                    int vpX, int vpY, int vpW, int vpH) {
+    if (menuTex == 0 || mvp == NULL) return;
+    menuOverlayInit();
+
+    GLboolean depthWasEnabled = glIsEnabled(GL_DEPTH_TEST);
+    glDisable(GL_DEPTH_TEST);
+    glEnable(GL_BLEND);
+    glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+
+    glEnable(GL_SCISSOR_TEST);
+    glViewport(vpX, vpY, vpW, vpH);
+    glScissor(vpX, vpY, vpW, vpH);
+
+    glUseProgram(menuOverlayProg);
+    glUniformMatrix4fv(menuOverlayMvpLoc, 1, GL_FALSE, mvp);
+
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, menuTex);
+    glUniform1i(menuOverlayTexLoc, 0);
+
+    glBindVertexArray(menuOverlayVao);
+    glDrawArrays(GL_TRIANGLES, 0, 6);
+    glBindVertexArray(0);
+
+    glDisable(GL_SCISSOR_TEST);
+    if (depthWasEnabled) glEnable(GL_DEPTH_TEST);
+    glUseProgram(0);
+}
+#endif
 //---------------------------------------------------------------
 
 
@@ -503,6 +651,8 @@ static void gfx_opengl_set_uniforms(struct ShaderProgram* prg) {
 
         if (prg->TanHalfFovRight >= 0)
             glUniform1f(prg->TanHalfFovRight, g_eyeTanHalfFov[1]);
+
+
     }
 
 }
@@ -522,6 +672,9 @@ static void gfx_opengl_load_shader(struct ShaderProgram* new_prg) {
     glUseProgram(new_prg->opengl_program_id);
     gfx_opengl_vertex_array_set_attribs(new_prg);
     gfx_opengl_set_uniforms(new_prg);
+
+    gCurEyeOffsetLeftLoc  = new_prg->eyeOffsetLeftLocation;
+    gCurEyeOffsetRightLoc = new_prg->eyeOffsetRightLocation;
 }
 
 static void append_str(char* buf, size_t* len, const char* str) {
@@ -639,24 +792,17 @@ static void append_formula(char* buf, size_t* len, uint8_t c[2][4], bool do_sing
 }
 
 
+
 // OpenXR supplies asymmetric projection centres.  The original renderer only
 // accounted for the horizontal centre, so carry the vertical centre in the
 // fourth eye-offset component and apply it to clip-space Y below.
 const char* vr_shader = R"(
 vec4 mvPos = aVtxPos;
 
-//const float EPS = 0.001;
-//float vr_flag = abs(mvPos.w - 1.0);
-//bool vr_is_Menu_or_HUD          = (vr_flag < EPS);
-//bool vr_is_Menu_or_crosshair_right = (abs(vr_flag - 9.0) < EPS);
-//bool vr_is_crosshair_left       = (abs(vr_flag - 7.0) < EPS);
-//bool vr_is_Menu_blur            = (abs(vr_flag - 8.0) < EPS);
-
 bool vr_is_Menu_or_HUD = (abs(mvPos.w - 1.0) == 0.0);
 bool vr_is_Menu_or_crosshair_right = (abs(mvPos.w - 1.0) == 9.0);
 bool vr_is_crosshair_left = (abs(mvPos.w - 1.0) == 7.0);
 bool vr_is_Menu_blur = (abs(mvPos.w - 1.0) == 8.0);
-
 
 vec4 eyeOffset = (gl_ViewID_OVR == 0u) ? uEyeOffsetLeft : uEyeOffsetRight;
 
@@ -664,10 +810,10 @@ vec4 eyeOffset = (gl_ViewID_OVR == 0u) ? uEyeOffsetLeft : uEyeOffsetRight;
 // MENU / HUD IN PAUSE MODE (uIsMenu == 1)
 // --------------------
 if (uIsMenu == 1 && vr_is_Menu_or_HUD) {
-    mvPos.x -= eyeOffset.z * mvPos.w;
+//    mvPos.x -= eyeOffset.z * mvPos.w;
 }
 else if (uIsMenu == 1 && vr_is_Menu_or_crosshair_right) {
-    mvPos.x -= eyeOffset.z * mvPos.w;
+//    mvPos.x -= eyeOffset.z * mvPos.w;
 }
 else if (uIsMenu == 1 && vr_is_Menu_blur) {
     // Menu background (fullscreen blur)
@@ -678,18 +824,25 @@ else if (uIsMenu == 1 && !vr_is_Menu_blur) {
     mvPos.x -= eyeOffset.z * mvPos.w;
 }
 
+
 // --------------------
 // GAME (uIsMenu == 0): HUD + crosshair
 // --------------------
+// Right crosshair / reticle (parallax parameterized on C side via uCrosshairParallax*)
+float crosshairParallaxLocFinal =
+        (gl_ViewID_OVR == 0u) ? -uCrosshairParallaxLoc : uCrosshairParallaxLoc;
+
+float crosshairParallaxLeftLocFinal =
+        (gl_ViewID_OVR == 0u) ? -uCrosshairParallaxLeftLoc - 0.020f
+                              :  uCrosshairParallaxLeftLoc + 0.020f;
+
+
 if (uIsMenu == 0 && vr_is_Menu_or_HUD) {
-    // In-game HUD (health, ammo, etc.)
     mvPos.x -= eyeOffset.z * mvPos.w;
     mvPos.y -= eyeOffset.w * mvPos.w;
 }
+
 else if (uIsMenu == 0 && vr_is_Menu_or_crosshair_right) {
-    // Right crosshair / reticle (parallax parameterized on C side via uCrosshairParallax*)
-    float crosshairParallaxLocFinal =
-        (gl_ViewID_OVR == 0u) ? -uCrosshairParallaxLoc : uCrosshairParallaxLoc;
     mvPos.x -= (eyeOffset.z + crosshairParallaxLocFinal) * mvPos.w;
     mvPos.x += uCrosshairParallaxLoc * 2.0f;
     mvPos.y -= uCrosshairParallaxLoc * 2.0f;
@@ -697,20 +850,14 @@ else if (uIsMenu == 0 && vr_is_Menu_or_crosshair_right) {
 }
 
 else if (uIsMenu == 0 && vr_is_crosshair_left) {
-    float crosshairParallaxLeftLocFinal =
-        (gl_ViewID_OVR == 0u) ? -uCrosshairParallaxLeftLoc - 0.020f
-                              :  uCrosshairParallaxLeftLoc + 0.020f;
-
     mvPos.x -= (eyeOffset.z + crosshairParallaxLeftLocFinal) * mvPos.w;
     mvPos.x += uCrosshairParallaxLoc * 2.0f;
     mvPos.y -= uCrosshairParallaxLoc * 2.0f;
     mvPos.w += 2.0f; // distance correction for the left crosshair
     mvPos.y -= eyeOffset.w * mvPos.w;
 }
-else if (uIsMenu == 0 && !vr_is_Menu_blur) {
-    // "Normal" 3D world: IPD and asymmetric OpenXR projection. Menus and HUD
-    // are already authored in screen space, so applying the optical Y centre
-    // to them would shift and clip the interface vertically.
+
+else if (uIsMenu == 0) {
     mvPos.x -= eyeOffset.x + (eyeOffset.y * mvPos.w);
     mvPos.y -= eyeOffset.w * mvPos.w;
 }
@@ -719,13 +866,14 @@ else if (uIsMenu == 0 && !vr_is_Menu_blur) {
 // "Legal" title splash
 // --------------------
 if (uIsTitleLegal == 1 && vr_is_Menu_or_HUD) {
-    // Fixed distance (equivalent to ~85 units * scale) but HUD parallax
-    mvPos.w = 0.025f * 85.0f;
-    mvPos.x -= eyeOffset.z * mvPos.w;
+    mvPos.w = 1.5f;
 }
+
 
 gl_Position = mvPos;
 )";
+
+
 
 
 
@@ -765,6 +913,7 @@ static struct ShaderProgram* gfx_opengl_create_and_load_new_shader(uint64_t shad
         append_line(vs_buf, &vs_len, "uniform int uIsTitleLegal;");
         append_line(vs_buf, &vs_len, "uniform float uTanHalfFovLeft;");
         append_line(vs_buf, &vs_len, "uniform float uTanHalfFovRight;");
+
     }
 
 
@@ -846,6 +995,7 @@ static struct ShaderProgram* gfx_opengl_create_and_load_new_shader(uint64_t shad
     // VR
     if (use_multiview) {
         append_line(vs_buf, &vs_len, vr_shader);
+
     }
 
 
@@ -1233,6 +1383,7 @@ static struct ShaderProgram* gfx_opengl_create_and_load_new_shader(uint64_t shad
         prg->IsTitleLegal = glGetUniformLocation(shader_program, "uIsTitleLegal");
         prg->TanHalfFovRight = glGetUniformLocation(shader_program, "uTanHalfFovRight");
         prg->TanHalfFovLeft = glGetUniformLocation(shader_program, "uTanHalfFovLeft");
+
     }
 
     gfx_opengl_load_shader(prg);
@@ -1257,6 +1408,7 @@ static void gfx_opengl_clear_shaders(void) {
         glDeleteProgram(pair.second.opengl_program_id);
     }
     shader_program_pool.clear();
+
 }
 
 static GLuint gfx_opengl_new_texture(void) {
@@ -1365,29 +1517,33 @@ static void gfx_opengl_set_scissor(int x, int y, int width, int height) {
     glScissor(x, y, width, height);
 }
 
-static void gfx_opengl_set_use_alpha(bool use_alpha, bool modulate) {
-    if (use_alpha) {
-        glEnable(GL_BLEND);
-    }
-    else {
-        glDisable(GL_BLEND);
-    }
+static void gfx_opengl_set_use_alpha(bool use_alpha, bool modulate) { // VR
+    if (use_alpha) glEnable(GL_BLEND);
+    else glDisable(GL_BLEND);
+
     if (modulate) {
-        glBlendFunc(GL_DST_COLOR, GL_ZERO);
-    }
-    else {
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        glBlendFuncSeparate(GL_DST_COLOR, GL_ZERO, GL_DST_COLOR, GL_ZERO);
+    } else {
+        // RGB: standard straight-alpha blending
+        // Alpha: correct destination alpha accumulation (no src_alpha squared)
+        glBlendFuncSeparate(
+                GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA,   // RGB
+                GL_ONE,       GL_ONE_MINUS_SRC_ALPHA);  // Alpha
     }
 }
 
 
 static void gfx_opengl_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t buf_vbo_num_tris) {
 
-
     // printf("flushing %d tris\n", buf_vbo_num_tris);
     glBufferData(GL_ARRAY_BUFFER, sizeof(float) * buf_vbo_len, buf_vbo, GL_STREAM_DRAW);
-    glDrawArrays(GL_TRIANGLES, 0, 3 * buf_vbo_num_tris);
 
+    if (gForceFlatShaderForMenu) {
+        if (gCurEyeOffsetLeftLoc  >= 0) glUniform4f(gCurEyeOffsetLeftLoc,  0.0f, 0.0f, 0.0f, 0.0f);
+        if (gCurEyeOffsetRightLoc >= 0) glUniform4f(gCurEyeOffsetRightLoc, 0.0f, 0.0f, 0.0f, 1000.0f); // hide
+    }
+
+    glDrawArrays(GL_TRIANGLES, 0, 3 * buf_vbo_num_tris);
 
 }
 
@@ -1495,6 +1651,34 @@ static void* gl_load_proc(const char* name) {
     return NULL;
 }
 
+#ifndef __ANDROID__ // if PC
+// VR try to fix camspy bug on AMD graphic card
+typedef void (APIENTRY *PFNGLTEXTUREBARRIERPROC)(void);
+static PFNGLTEXTUREBARRIERPROC glTextureBarrier_ptr = nullptr;
+static bool gl_has_texture_barrier = false;
+
+static void gfx_opengl_init_texture_barrier(void) {
+    glTextureBarrier_ptr = (PFNGLTEXTUREBARRIERPROC)SDL_GL_GetProcAddress("glTextureBarrier");
+    if (!glTextureBarrier_ptr) {
+        glTextureBarrier_ptr = (PFNGLTEXTUREBARRIERPROC)SDL_GL_GetProcAddress("glTextureBarrierNV");
+    }
+    gl_has_texture_barrier = (glTextureBarrier_ptr != nullptr);
+
+    sysLogPrintf(LOG_NOTE, "GL texture_barrier: %s", gl_has_texture_barrier ? "yes" : "no");
+}
+
+static void gl_texture_barrier_safe(void) {
+    if (gl_has_texture_barrier && glTextureBarrier_ptr) {
+        glTextureBarrier_ptr();
+    }
+
+    else {
+        glFinish();
+    }
+}
+#endif
+//---
+
 static void gfx_opengl_init_extensions(void) {
     // patch some extension values and pointers
     if (!GLAD_GL_ARB_depth_clamp) {
@@ -1527,6 +1711,8 @@ static void gfx_opengl_init_extensions(void) {
             glad_glBlitFramebuffer = glad_glBlitFramebufferEXT;
         }
     }
+
+
 }
 
 
@@ -1542,6 +1728,10 @@ static void gfx_opengl_init(void) {
     gl_es = (val == SDL_GL_CONTEXT_PROFILE_ES);
 
     gfx_opengl_init_extensions();
+
+#ifndef ANDROID // if PC
+    gfx_opengl_init_texture_barrier(); // VR AMD fix
+#endif
 
     if (sysArgCheck("--debug-gl")) {
         gfx_opengl_enable_debug();
@@ -1619,7 +1809,7 @@ static void gfx_opengl_init(void) {
         glEnable(GL_DEPTH_CLAMP);
     }
     glDepthFunc(GL_LEQUAL);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
 
 #ifndef ANDROID // if PC
     mirror_apply_size(mirror_enabled); // VR
@@ -1635,6 +1825,12 @@ static void gfx_opengl_on_resize(void) {
 static void gfx_opengl_start_frame(void) {
     frame_count++;
 
+    gVrMenuLWasClearedThisFrame = false;
+    gVrMenuLCaptureDepth = 0;
+
+    gVrMenuHWasClearedThisFrame = false;
+    gVrMenuHCaptureDepth = 0;
+
 }
 
 static void gfx_opengl_end_frame(void) {
@@ -1643,6 +1839,7 @@ static void gfx_opengl_end_frame(void) {
 }
 
 static void gfx_opengl_finish_render(void) {
+
 }
 
 static int gfx_opengl_create_framebuffer() {
@@ -1772,6 +1969,308 @@ bool gfx_opengl_start_draw_to_framebuffer(int fbid, float noisescale) {
     }
     return false;
 }
+
+
+
+// ============================================================================
+// VR Layers HUD/MENU LEFT Hand
+// ============================================================================
+
+static int gVrMenuFb = -1;
+static int gVrMenuFbPrevious = -1;
+extern "C" int  vr_get_internal_render_width(void);
+extern "C" int  vr_get_internal_render_height(void);
+static GLint gVrMenuPrevViewport[4] = {0, 0, 0, 0 };
+static GLint gVrMenuCaptureViewport[4] = {0, 0, 0, 0 };
+extern void gfx_flush(void);
+
+static void gfx_opengl_vr_menu_fb_init(void) {
+    int w = vr_get_internal_render_width();
+    int h = vr_get_internal_render_height();
+
+    if (gVrMenuFb < 0) {
+        gVrMenuFb = gfx_opengl_create_framebuffer();
+    }
+
+    // Recreate/resize if the VR resolution has changed (e.g. on the first frame)
+    gfx_opengl_update_framebuffer_parameters(
+            gVrMenuFb,
+            (uint32_t)w, (uint32_t)h,
+            /*msaa_level=*/1,
+            /*opengl_invert_y=*/false,
+            /*render_target=*/true,
+            /*has_depth_buffer=*/true,
+            /*can_extract_depth=*/true
+    );
+}
+
+bool gfx_vr_menu_L_dirty_and_clear(void) {
+    bool v = hud_L_was_drawn;
+    hud_L_was_drawn = false;
+    return v;
+}
+
+void gfx_vr_hud_capture_begin_L(void)
+{
+    gfx_flush();
+    gfx_opengl_vr_menu_fb_init();
+
+    if (gVrMenuLCaptureDepth++ > 0) {
+        return;
+    }
+    gfx_opengl_menu_capture_push();
+
+    glGetIntegerv(GL_VIEWPORT, gVrMenuPrevViewport);
+    gVrMenuFbPrevious = (int)current_framebuffer;
+
+    gfx_opengl_start_draw_to_framebuffer(gVrMenuFb, 0.0f);
+
+    int w = vr_get_internal_render_width();
+    int h = vr_get_internal_render_height();
+
+    glViewport(0, 0, w, h);
+    glDisable(GL_SCISSOR_TEST);
+
+    if (!gVrMenuLWasClearedThisFrame) {
+        glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
+        gVrMenuLWasClearedThisFrame = true;
+    }
+
+    glEnable(GL_SCISSOR_TEST);
+    glScissor(0, 0, w, h);
+
+    gVrMenuCaptureViewport[0] = 0;
+    gVrMenuCaptureViewport[1] = 0;
+    gVrMenuCaptureViewport[2] = w;
+    gVrMenuCaptureViewport[3] = h;
+}
+
+
+void gfx_vr_hud_capture_end_L(void)
+{
+
+    gfx_flush();
+
+    if (gVrMenuLCaptureDepth <= 0) {
+        gVrMenuLCaptureDepth = 0;
+        return;
+    }
+
+    if (--gVrMenuLCaptureDepth > 0) {
+        return;
+    }
+
+    gfx_opengl_menu_capture_pop();
+    hud_L_was_drawn = true;
+
+
+    if (gVrMenuFbPrevious >= 0) {
+        gfx_opengl_start_draw_to_framebuffer(gVrMenuFbPrevious, 0.0f);
+    }
+
+    gVrMenuFbPrevious = -1;
+
+    glViewport(
+            gVrMenuPrevViewport[0],
+            gVrMenuPrevViewport[1],
+            gVrMenuPrevViewport[2],
+            gVrMenuPrevViewport[3]);
+
+    glScissor(
+            gVrMenuPrevViewport[0],
+            gVrMenuPrevViewport[1],
+            gVrMenuPrevViewport[2],
+            gVrMenuPrevViewport[3]);
+}
+
+GLuint gfx_opengl_get_vr_menu_texture(void) {
+    if (gVrMenuFb < 0) return 0;
+    return framebuffers[gVrMenuFb].clrbuf;
+}
+//---
+
+
+// ============================================================================
+// VR - Second menu/HUD quad: RIGHT hand
+// ============================================================================
+static int  gVrMenuRFb          = -1;
+static int  gVrMenuRFbPrevious  = -1;
+static GLint gVrMenuRPrevViewport[4]    = {0, 0, 0, 0};
+static GLint gVrMenuRCaptureViewport[4] = {0, 0, 0, 0};
+
+
+static void gfx_opengl_vr_menu_R_fb_init(void)
+{
+    int w = vr_get_internal_render_width();
+    int h = vr_get_internal_render_height();
+    if (gVrMenuRFb < 0)
+        gVrMenuRFb = gfx_opengl_create_framebuffer();
+    gfx_opengl_update_framebuffer_parameters(
+            gVrMenuRFb, (uint32_t)w, (uint32_t)h,
+            /*msaalevel*/1, /*inverty*/false,
+            /*rendertarget*/true, /*hasdepth*/true, /*canextractdepth*/true);
+}
+
+void gfx_vr_hud_capture_begin_R(void)
+{
+    gfx_flush();
+    gfx_opengl_vr_menu_R_fb_init();
+    gfx_opengl_menu_capture_push();
+
+    glGetIntegerv(GL_VIEWPORT, gVrMenuRPrevViewport);
+    gVrMenuRFbPrevious = (int)current_framebuffer;
+    gfx_opengl_start_draw_to_framebuffer(gVrMenuRFb, 0.0f);
+    int w = vr_get_internal_render_width();
+    int h = vr_get_internal_render_height();
+    glViewport(0, 0, w, h);
+    glDisable(GL_SCISSOR_TEST);
+    glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glEnable(GL_SCISSOR_TEST);
+    glScissor(0, 0, w, h);
+    gVrMenuRCaptureViewport[0] = 0;
+    gVrMenuRCaptureViewport[1] = 0;
+    gVrMenuRCaptureViewport[2] = w;
+    gVrMenuRCaptureViewport[3] = h;
+}
+
+void gfx_vr_hud_capture_end_R(void)
+{
+    hud_R_was_drawn = true;
+    gfx_flush();
+    gfx_opengl_menu_capture_pop();
+
+    if (gVrMenuRFbPrevious >= 0)
+        gfx_opengl_start_draw_to_framebuffer(gVrMenuRFbPrevious, 0.0f);
+    gVrMenuRFbPrevious = -1;
+    glViewport(gVrMenuRPrevViewport[0], gVrMenuRPrevViewport[1],
+               gVrMenuRPrevViewport[2], gVrMenuRPrevViewport[3]);
+    glScissor (gVrMenuRPrevViewport[0], gVrMenuRPrevViewport[1],
+               gVrMenuRPrevViewport[2], gVrMenuRPrevViewport[3]);
+
+
+}
+
+GLuint gfx_opengl_get_vr_menu_texture_R(void)
+{
+    if (gVrMenuRFb < 0) return 0;
+    return framebuffers[gVrMenuRFb].clrbuf;
+}
+
+bool gfx_vr_menu_R_dirty_and_clear(void) {
+    bool v = hud_R_was_drawn;
+    hud_R_was_drawn = false;
+    return v;
+}
+
+// ============================================================================
+// --- VR - Third menu/HUD quad HEAD-LOCKED
+// ============================================================================
+static int gVrMenuHFb = -1;
+static int gVrMenuHFbPrevious = -1;
+static GLint gVrMenuHPrevViewport[4] = {0,0,0,0};
+static GLint gVrMenuHCaptureViewport[4] = {0,0,0,0};
+
+
+static void gfx_opengl_vr_menu_H_fb_init(void) {
+    int w = vr_get_internal_render_width();
+    int h = vr_get_internal_render_height();
+    if (gVrMenuHFb <= 0)
+        gVrMenuHFb = gfx_opengl_create_framebuffer();
+    gfx_opengl_update_framebuffer_parameters(
+            gVrMenuHFb, (uint32_t)w, (uint32_t)h,
+            /*msaalevel=*/1, /*inverty=*/false,
+            /*rendertarget=*/true, /*hasdepth=*/true, /*canextractdepth=*/true);
+}
+
+void gfx_vr_hud_capture_begin_H(void)
+{
+    gfx_flush();
+    gfx_opengl_vr_menu_H_fb_init();
+
+    if (gVrMenuHCaptureDepth++ > 0) {
+        return;
+    }
+    gfx_opengl_menu_capture_push();
+
+    glGetIntegerv(GL_VIEWPORT, gVrMenuHPrevViewport);
+    gVrMenuHFbPrevious = (int)current_framebuffer;
+
+    gfx_opengl_start_draw_to_framebuffer(gVrMenuHFb, 0.0f);
+
+    int w = vr_get_internal_render_width();
+    int h = vr_get_internal_render_height();
+
+    glViewport(0, 0, w, h);
+    glDisable(GL_SCISSOR_TEST);
+
+    if (!gVrMenuHWasClearedThisFrame) {
+        glClearColor(0.f, 0.f, 0.f, 0.f);
+        glClear(GL_COLOR_BUFFER_BIT);
+        gVrMenuHWasClearedThisFrame = true;
+    }
+
+    glEnable(GL_SCISSOR_TEST);
+    glScissor(0, 0, w, h);
+
+    gVrMenuHCaptureViewport[0] = 0;
+    gVrMenuHCaptureViewport[1] = 0;
+    gVrMenuHCaptureViewport[2] = w;
+    gVrMenuHCaptureViewport[3] = h;
+}
+
+
+void gfx_vr_hud_capture_end_H(void)
+{
+    gfx_flush();
+
+    if (gVrMenuHCaptureDepth <= 0) {
+        gVrMenuHCaptureDepth = 0;
+        return;
+    }
+
+    if (--gVrMenuHCaptureDepth > 0) {
+        return;
+    }
+
+    gfx_opengl_menu_capture_pop();
+    hud_H_was_drawn = true;
+
+    if (gVrMenuHFbPrevious >= 0) {
+        gfx_opengl_start_draw_to_framebuffer(gVrMenuHFbPrevious, 0.0f);
+    }
+
+    gVrMenuHFbPrevious = -1;
+
+    glViewport(
+            gVrMenuHPrevViewport[0],
+            gVrMenuHPrevViewport[1],
+            gVrMenuHPrevViewport[2],
+            gVrMenuHPrevViewport[3]);
+
+    glScissor(
+            gVrMenuHPrevViewport[0],
+            gVrMenuHPrevViewport[1],
+            gVrMenuHPrevViewport[2],
+            gVrMenuHPrevViewport[3]);
+}
+
+bool gfx_vr_menu_H_dirty_and_clear(void) {
+    bool v = hud_H_was_drawn;
+    hud_H_was_drawn = false;
+    return v;
+}
+
+GLuint gfx_opengl_get_vr_menu_texture_H(void) {
+    if (gVrMenuHFb <= 0) return 0;
+    return framebuffers[gVrMenuHFb].clrbuf;
+}
+//---
+
+
+
+
 
 
 void gfx_opengl_clear_framebuffer(bool clear_color, bool clear_depth) {
@@ -1960,6 +2459,14 @@ void gfx_opengl_copy_framebuffer(int fb_dst, int fb_src, int left, int top, bool
         GLuint texArray = vr_get_current_multiview_swapchain_tex();
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D_ARRAY, texArray);
+
+
+#ifndef __ANDROID__ // if PC
+        // Fix AMD
+        gfx_flush();
+        gl_texture_barrier_safe(); // force visibility of the previous write
+#endif
+
         glUniform1i(mv_blit_uTexLoc, 0);
         glUniform1i(mv_blit_uFlipYLoc, flip_y ? 1 : 0);
 
@@ -2114,14 +2621,84 @@ static void gfx_opengl_mirror_to_desktop(
     glUniform1i(s_mirror_uloc_layer, gfx_sdl_get_mirror_eye());
 
     glBindVertexArray(s_mirror_vao);
-    glDrawArrays(GL_TRIANGLES, 0, 3);              // fullscreen triangle
-    glBindVertexArray(0);
+    glDrawArrays(GL_TRIANGLES, 0, 3);  // fullscreen triangle
 
+    // --- NEW BLOCK 2: HUD DISPLAY ---
+    // ── Switch to mirror_wnd ──
+    SDL_GL_MakeCurrent(mirror_wnd, mirror_ctx);
+
+    glDisable(GL_FRAMEBUFFER_SRGB);
+    glViewport(0, 0, (GLsizei)dst_w, (GLsizei)dst_h);
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_BLEND);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+    glUseProgram(s_mirror_prog);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D_ARRAY, eye_array_tex);
+    glUniform1i(s_mirror_uloc_tex, 0);
+    // ... (uniforms sbs/layer/rect unchanged) ...
+
+    glBindVertexArray(s_mirror_vao);
+    glDrawArrays(GL_TRIANGLES, 0, 3); // fullscreen triangle
+
+// --- XR Layers: quad menu panel, same as in the headset ---
+    glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D_ARRAY, 0);
-    glUseProgram(0);
 
-    // ── Switch back to the main context ──
-    SDL_GL_MakeCurrent(wnd, ctx);
+    if (sbs) {
+        // Left half = left eye, right half = right eye
+        int halfW = dst_w / 2;
+
+        VrMirrorMenuEntry entriesL[3];
+        int nL = vrGetMenuMirrorMVPList(0, entriesL);
+        for (int i = 0; i < nL; i++) {
+            GLuint tex = 0;
+            switch (entriesL[i].source) {
+                case VR_MIRROR_MENU_L: tex = gfx_opengl_get_vr_menu_texture();   break;
+                case VR_MIRROR_MENU_R: tex = gfx_opengl_get_vr_menu_texture_R(); break;
+                case VR_MIRROR_MENU_H: tex = gfx_opengl_get_vr_menu_texture_H(); break;
+            }
+            gfx_opengl_draw_mirror_menu_overlay(tex, entriesL[i].mvp, 0, 0, halfW, dst_h);
+        }
+
+        VrMirrorMenuEntry entriesR[3];
+        int nR = vrGetMenuMirrorMVPList(1, entriesR);
+        for (int i = 0; i < nR; i++) {
+            GLuint tex = 0;
+            switch (entriesR[i].source) {
+                case VR_MIRROR_MENU_L: tex = gfx_opengl_get_vr_menu_texture();   break;
+                case VR_MIRROR_MENU_R: tex = gfx_opengl_get_vr_menu_texture_R(); break;
+                case VR_MIRROR_MENU_H: tex = gfx_opengl_get_vr_menu_texture_H(); break;
+            }
+            gfx_opengl_draw_mirror_menu_overlay(tex, entriesR[i].mvp, halfW, 0, dst_w - halfW, dst_h);
+        }
+
+        // Restore the full-screen viewport for the rest
+        glViewport(0, 0, dst_w, dst_h);
+    } else {
+        int mirrorEye = gfx_sdl_get_mirror_eye();
+        VrMirrorMenuEntry entries[3];
+        int n = vrGetMenuMirrorMVPList(mirrorEye, entries);
+        for (int i = 0; i < n; i++) {
+            GLuint tex = 0;
+            switch (entries[i].source) {
+                case VR_MIRROR_MENU_L: tex = gfx_opengl_get_vr_menu_texture();   break;
+                case VR_MIRROR_MENU_R: tex = gfx_opengl_get_vr_menu_texture_R(); break;
+                case VR_MIRROR_MENU_H: tex = gfx_opengl_get_vr_menu_texture_H(); break;
+            }
+            gfx_opengl_draw_mirror_menu_overlay(tex, entries[i].mvp, 0, 0, dst_w, dst_h);
+        }
+    }
+
+// Cleanup
+glBindVertexArray(0);
+glBindTexture(GL_TEXTURE_2D, 0);
+glUseProgram(0);
+glDisable(GL_BLEND);
+glFlush();
+
+SDL_GL_MakeCurrent(wnd, ctx);
 #endif
 }
 

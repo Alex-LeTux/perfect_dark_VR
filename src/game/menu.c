@@ -60,10 +60,14 @@
 #define BLUR_OFS 30
 #endif
 
+#include "../../port/vr/vr_openxr.h"
+
 //VR
 extern int VrSmallW;
 extern int VrSmallH;
 extern float XrAspect;
+extern int VrIsPaused;
+
 
 #if VERSION >= VERSION_PAL_FINAL
 char g_CheatMarqueeString[300];
@@ -1485,6 +1489,7 @@ void menuOpenDialog(struct menudialogdef *dialogdef, struct menudialog *dialog, 
 
     dialog->definition = dialogdef;
 
+
     switch (g_MenuData.root) {
         case MENUROOT_MPSETUP:
         case MENUROOT_4MBMAINMENU:
@@ -2235,6 +2240,8 @@ Gfx *menuRenderModel(Gfx *gdl, struct menumodel *menumodel, s32 modeltype)
 
 
         cam0f0b4c3c(screenpos, &tmpcoord, 1.0f); // VR
+
+
         mtx4LoadIdentity(&posmtx);
 
         // Show or hide model parts according to the visibility list
@@ -5453,8 +5460,12 @@ Gfx *menuRenderBackgroundLayer2(Gfx *gdl, u8 bg, f32 frac)
 
 Gfx *menuRender(Gfx *gdl)
 {
+
     // VR HACK : On prévient le moteur de rendu
     gDPNoOpTag(gdl++, 0x56520001);
+    VrIsPaused = (g_MenuData.count > 0);
+    gDPNoOpTag(gdl++, VR_MENU_HUD_CAPTURE_BEGIN_L); // VR
+
     static u32 usepiece = 1;
 
     g_MpPlayerNum = 0;
@@ -5469,6 +5480,9 @@ Gfx *menuRender(Gfx *gdl)
 
     gSPDisplayList(gdl++, var800613a0);
 
+    // --- Fond flou (layer2) EXCLU du panneau ---
+    gDPNoOpTag(gdl++, VR_MENU_HUD_CAPTURE_END_L); // VR
+
     // Render the background
     if (g_MenuData.nextbg != 255) {
         if (g_MenuData.nextbg == 0) {
@@ -5480,6 +5494,9 @@ Gfx *menuRender(Gfx *gdl)
     } else {
         gdl = menuRenderBackgroundLayer1(gdl, g_MenuData.bg, 1.0f);
     }
+
+
+    // --- Fin exclusion ---
 
 #ifndef PLATFORM_N64
     gSPSetExtraGeometryModeEXT(gdl++, G_ASPECT_CENTER_EXT);
@@ -5567,6 +5584,8 @@ Gfx *menuRender(Gfx *gdl)
         g_MenuProjectFromY = g_MenuData.unk674;
     }
 
+
+
     // Render the second layer of the background (for the combat simulator cone,
     // which draws over the top of the hud piece)
     if (g_MenuData.nextbg != 255) {
@@ -5579,6 +5598,9 @@ Gfx *menuRender(Gfx *gdl)
     } else {
         gdl = menuRenderBackgroundLayer2(gdl, g_MenuData.bg, 1.0f);
     }
+
+    gDPNoOpTag(gdl++, VR_MENU_HUD_CAPTURE_BEGIN_L); // VR
+    // --- Fin exclusion ---
 
     // Render the health bar (playerRenderHealthBar may choose not to render)
     if ((g_MenuData.bg || g_MenuData.nextbg != 255)
@@ -5598,6 +5620,7 @@ Gfx *menuRender(Gfx *gdl)
         // Render dialogs
         gdl = text0f153ab0(gdl);
 
+
         if (g_MenuData.root == MENUROOT_MPPAUSE || g_MenuData.root == MENUROOT_MPENDSCREEN) {
             g_MpPlayerNum = g_Vars.currentplayerstats->mpindex;
             gdl = menuRenderDialogs(gdl);
@@ -5609,6 +5632,7 @@ Gfx *menuRender(Gfx *gdl)
                 gdl = menuRenderDialogs(gdl);
             }
         }
+
 
         g_MpPlayerNum = 0;
 
@@ -5811,8 +5835,8 @@ Gfx *menuRender(Gfx *gdl)
     g_ScaleX = 1;
 
     // VR HACK: We notify that the menu is finished,
+    gDPNoOpTag(gdl++, VR_MENU_HUD_CAPTURE_END_L); // VR
     gDPNoOpTag(gdl++, 0x56520000);
-
     return gdl;
 }
 

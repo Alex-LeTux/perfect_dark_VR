@@ -25,11 +25,14 @@
 #include "video.h"
 #endif
 
+#include "../../port/vr/vr_openxr.h"
+#include "../../port/vr/vr_log.h"
+
 //VR
 extern int VrSmallW;
 extern int VrSmallH;
 extern float XrAspect;
-
+extern float VrHudDistance;
 
 #ifdef AVOID_UB
 char var800a41c0[26];
@@ -181,10 +184,10 @@ Gfx *bviewCopyPixels(Gfx *gdl, u16 *fb, s32 top, u32 tile, s32 arg4, f32 arg5, s
 
 Gfx *bviewDrawFisheyeRect(Gfx *gdl, s32 arg1, f32 arg2, s32 arg3, s32 arg4)
 {
-
     if (arg2 < 1) {
+        f32 xoffset = 10.0f; // VR - shift the center of the circle to the right (px)
         f32 tmp = arg4 * 0.5f;
-        f32 fVar4 = arg3 + tmp;
+        f32 fVar4 = arg3 + tmp + xoffset;
         f32 fVar7 = (s32)(arg2 * tmp);
 
         gDPFillRectangle(gdl++, arg3, arg1, fVar4 - fVar7, arg1 + 1);
@@ -657,6 +660,7 @@ Gfx *bviewDrawFisheye(Gfx *gdl, u32 colour, u32 alpha, s32 shuttertime60, s8 sta
     s32 spec;
     u8 alpha2;
 
+
 #if VERSION >= VERSION_PAL_FINAL && PAL
     s32 vpadding;
 #endif
@@ -821,56 +825,47 @@ Gfx *bviewDrawFisheye(Gfx *gdl, u32 colour, u32 alpha, s32 shuttertime60, s8 sta
 
     s3 = 1;
 
-    if (shuttertime60 != 0 || starting) {
-        s32 s7;
-        s32 spa8 = viewheight * 0.5f;
-        f32 f20;
+    {
+        f32 circleScale = 0.5f; // VR - same value as the "at rest" circle
+        f32 openFrac;
+        f32 currentSqHalfheight;
 
-        if (!starting) {
-            shuttertime60 -= TICKS(12);
+        if (shuttertime60 != 0 || starting) {
+            s32 spa8 = viewheight * 0.5f;
 
-            if (shuttertime60 < 0) {
-                shuttertime60 = -shuttertime60;
-            }
+            if (!starting) {
+                shuttertime60 -= TICKS(12);
 
-            s7 = spa8 * (shuttertime60 / TICKS(12.0f));
-        } else {
-            s7 = curradius;
-        }
+                if (shuttertime60 < 0) {
+                    shuttertime60 = -shuttertime60;
+                }
 
-        for (i = viewtop; i < viewtop + spa8 - s7; i++) {
-            gdl = bviewDrawFisheyeRect(gdl, i, 0.0f, viewleft, viewwidth);
-            gdl = bviewDrawFisheyeRect(gdl, viewtop + viewtop + viewheight - i, 0.0f, viewleft, viewwidth);
-        }
-
-        gDPSetPrimColorViaWord(gdl++, 0, 0, 0x000000ff);
-
-        tmp = (f32) one * halfheight;
-        f20 = halfheight;
-
-        for (i = viewtop + spa8 - s7; i <= viewtop + spa8; i++) {
-            f32 f2;
-
-            if (sqhalfheight > f20 * f20) {
-//                f2 = sqrtf(sqhalfheight - f20 * f20) * (1.0f / 160.0f);
-                f2 = sqrtf(sqhalfheight - f20 * f20) * (1.0f / 320.0f); // VR Fix
+                openFrac = shuttertime60 / TICKS(12.0f);
             } else {
-                f2 = 0.01f;
+                openFrac = startupfrac;
             }
 
-            f20 += -tmp / s7;
-
-            gdl = bviewDrawFisheyeRect(gdl, i, f2 * startupfrac, viewleft, viewwidth);
-
-            if (i != viewtop + viewtop + viewheight - i) {
-                gdl = bviewDrawFisheyeRect(gdl, viewtop + viewtop + viewheight - i, f2 * startupfrac, viewleft, viewwidth);
+            if (openFrac > 1.0f) {
+                openFrac = 1.0f;
             }
+            if (openFrac < 0.0f) {
+                openFrac = 0.0f;
+            }
+        } else {
+            openFrac = 1.0f;
         }
-    } else {
+
+        currentSqHalfheight = sqhalfheight * circleScale * circleScale * openFrac * openFrac;
+
         s2 = 0;
 
         for (i = viewtop; i < viewtop + viewheight; i++) {
-            tmp = bview0f142d74(s2, f26, halfheight, sqhalfheight);
+            tmp = bview0f142d74(s2, f26, halfheight, currentSqHalfheight);
+
+            if (tmp <= 0.01f) {
+                tmp = 0.0f;
+            }
+
             gdl = bviewDrawFisheyeRect(gdl, i, tmp, viewleft, viewwidth);
 
             s2 += s3;
@@ -1004,6 +999,8 @@ Gfx *bviewDrawEyespyMetrics(Gfx *gdl)
     u32 colourtextbright;
     u32 colourtextdull;
     u32 colourglow;
+
+
 #if PAL
     s32 scale = 1;
 	f32 palscale = viewwidth > SCREEN_WIDTH_LO ? 1.4f : 1.0f;
@@ -1117,8 +1114,9 @@ Gfx *bviewDrawEyespyMetrics(Gfx *gdl)
 
     if (g_Vars.currentplayer->eyespy->mode == EYESPYMODE_DRUGSPY) {
         // Render crosshair
-        s32 x = viewleft + (viewwidth >> 1);
-        s32 y = viewtop + (viewheight >> 1);
+        s32 x = viewleft + (viewwidth >> 1) + 10.0f; // VR small offset correction
+        s32 y = viewtop + (viewheight >> 1) - 5.0f; // VR small offset correction
+
 
 #ifndef PLATFORM_N64
         gDPSetSubpixelOffsetEXT(gdl++, -2, -2);
@@ -1137,6 +1135,7 @@ Gfx *bviewDrawEyespyMetrics(Gfx *gdl)
         gDPSetSubpixelOffsetEXT(gdl++, 0, 0);
 #endif
     }
+
 
     if (g_Vars.currentplayer->eyespy->mode == EYESPYMODE_CAMSPY) {
         colourtextbright = 0x00ff00a0;
@@ -1160,6 +1159,8 @@ Gfx *bviewDrawEyespyMetrics(Gfx *gdl)
     y = savedy;
     x2 = x + textwidth; \
 	y2 = y + textheight; \
+
+    gDPNoOpTag(gdl++, VR_HUD_CAPTURE_BEGIN_H);
 	gdl = text0f153858(gdl, &x, &y, &x2, &y2);
 
 #if VERSION >= VERSION_JPN_FINAL
@@ -2116,7 +2117,7 @@ Gfx *bviewDrawEyespyMetrics(Gfx *gdl)
 
         gdl = func0f0d49c8(gdl);
     }
-
+    gDPNoOpTag(gdl++, VR_HUD_CAPTURE_END_H);
     return gdl;
 }
 
@@ -2639,7 +2640,7 @@ Gfx *bviewDrawHorizonScanner(Gfx *gdl)
     gDPFillRectangle(gdl++, viewleft, lenstop + lensheight, viewleft + viewwidth, viewtop + viewheight);
 
     gdl = text0f153838(gdl);
-
+    gDPNoOpTag(gdl++, VR_HUD_CAPTURE_BEGIN_H);
     // Prepare text buffers
     sprintf(directiontext, "%s %s:%03d", arrows, &directions[(turnangle + 22) / 45], turnangle);
     sprintf(hertztext, "%s %s%s%4.2fh", arrows, "", "", menuGetCosOscFrac(4) * 4.6f + 917.4f);
@@ -2722,9 +2723,10 @@ Gfx *bviewDrawHorizonScanner(Gfx *gdl)
     if (vsplit) {
         vsplit = 14;
     }
-
+    gDPNoOpTag(gdl++, VR_HUD_CAPTURE_END_H);
 #ifndef PLATFORM_N64
     if (!videoFramebuffersSupported()) {
+        gDPNoOpTag(gdl++, VR_HUD_CAPTURE_END_H);
         return gdl;
     }
     // make a copy of what we have drawn so far and use it as a texture

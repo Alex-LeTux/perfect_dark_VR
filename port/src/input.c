@@ -735,7 +735,7 @@ static inline void inputLoadBinds(void)
 s32 inputInit(void)
 {
     // Set SDL hints before initializing the controller subsystem.
-    if (useHIDAPI) {
+ /*   if (useHIDAPI) {
 #if SDL_VERSION_ATLEAST(2, 0, 12)
         SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_GAMECUBE, "1");
 #endif
@@ -782,6 +782,7 @@ s32 inputInit(void)
             sysLogPrintf(LOG_NOTE, "input: added %d controller mappings from %s", dbcount, dbpath);
         }
     }
+*/
 
     inputInitAllControllers();
 
@@ -793,7 +794,6 @@ s32 inputInit(void)
     for (s32 i = 0; i < INPUT_MAX_CONTROLLERS; ++i) {
         inputSetDefaultKeyBinds(i, 0);
     }
-
 
     // Setup VR bindings
     inputSetupVRBindings(0);
@@ -879,7 +879,7 @@ s32 inputReadController(s32 idx, OSContPad *npad)
     if (idx == 0) {
         if (optionsGetControlMode(g_Vars.currentplayerstats->mpindex) == CONTROLMODE_12) { // VR-1
             // index 1 = Right hand / index 0 = Left hand
-            if (!vr_invert_hands) {
+            if (g_Vars.currentplayer->gunctrl.weaponnum != WEAPON_LASER) {
                 if (get_button_state(1, "trigger")) npad->button |= CONT_G; // Z_TRIG
                 if (get_button_state(0, "grip") && vr_leftHasWeapon) { // Aim left grip
                     if (!vr_grip_for_unarmed) { // if not aim. For unarmed
@@ -1049,7 +1049,6 @@ s32 inputRumbleSupported(s32 idx) {
     return padsCfg[idx].rumbleOn;
 }
 
-
 void inputRumble(s32 idx, f32 strength, f32 time) {
     if (idx < 0 || idx >= INPUT_MAX_CONTROLLERS) {
         return;
@@ -1063,31 +1062,40 @@ void inputRumble(s32 idx, f32 strength, f32 time) {
     if (vr_init_done && idx == 0) {
         strength *= padsCfg[idx].rumbleScale;
 
+        s32 handRight = HAND_RIGHT;
+        s32 handLeft  = HAND_LEFT;
+
+        // Inversion des mains si arme = LASER
+        if (g_Vars.currentplayer->gunctrl.weaponnum == WEAPON_LASER) {
+            handRight = HAND_LEFT;
+            handLeft  = HAND_RIGHT;
+        }
+
         if (strength > 0.f) {
             if (strength > 1.f) strength = 1.f;
 
-            if (bgunIsFiring(HAND_RIGHT)) {
+            if (bgunIsFiring(handRight)) {
                 vr_right_gun_fire = 5;
             }
-            if (bgunIsFiring(HAND_LEFT)) {
+            if (bgunIsFiring(handLeft)) {
                 vr_left_gun_fire = 5;
             }
 
-            if(bgunIsFiring(HAND_RIGHT) && vr_right_gun_fire > 0){
+            if (bgunIsFiring(handRight) && vr_right_gun_fire > 0) {
                 trigger_haptic_vibration_c(1, strength, time);
             }
-            if(vr_right_gun_fire > 0){
+            if (vr_right_gun_fire > 0) {
                 vr_right_gun_fire--;
             }
 
-            if(bgunIsFiring(HAND_LEFT) && vr_left_gun_fire > 0){
+            if (bgunIsFiring(handLeft) && vr_left_gun_fire > 0) {
                 trigger_haptic_vibration_c(0, strength, time);
             }
-            if(vr_left_gun_fire > 0){
+            if (vr_left_gun_fire > 0) {
                 vr_left_gun_fire--;
             }
 
-            if (!bgunIsFiring(HAND_RIGHT) && !bgunIsFiring(HAND_LEFT) && vr_right_gun_fire == 0 && vr_left_gun_fire == 0) {
+            if (!bgunIsFiring(handRight) && !bgunIsFiring(handLeft) && vr_right_gun_fire == 0 && vr_left_gun_fire == 0) {
                 trigger_haptic_vibration_c(1, strength, time);
                 trigger_haptic_vibration_c(0, strength, time);
             }
@@ -1097,8 +1105,6 @@ void inputRumble(s32 idx, f32 strength, f32 time) {
         }
         return;
     }
-
-
 
     if (!pads[idx]) {
         return;

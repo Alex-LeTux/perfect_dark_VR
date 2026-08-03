@@ -18,8 +18,10 @@ extern "C" void vrSettingsSave(void)
     fprintf(f, "MotionThrowing=%d\n", VrMotionThrowing ? 1 : 0);
     fprintf(f, "Vibration=%.4f\n", inputRumbleGetStrength(g_ExtMenuPlayer));
     fprintf(f, "StereoCrosshair=%.4f\n", VrStereoCrosshair);
+    fprintf(f, "HudDistance=%.4f\n", VrHudDistance);
     fprintf(f, "WeaponRecoil=%d\n", VrWeaponRecoil ? 1 : 0);
     fprintf(f, "WorldScale=%.4f\n", VrSetWorldScale);
+    fprintf(f, "StickClickToCrouch=%d\n", VrStickClickToCrouch ? 1 : 0);
     fprintf(f, "UseSnapTurn=%d\n", VrUseSnapTurn ? 1 : 0);
     fprintf(f, "TwoHandedAiming=%d\n", VrTwoHandAim ? 1 : 0);
 
@@ -69,6 +71,7 @@ extern "C" void vrSettingsLoad(void)
             else if (strcmp(key, "SeatedMode") == 0) VrSeatedMode = ival != 0;
             else if (strcmp(key, "MotionThrowing") == 0) VrMotionThrowing = ival != 0;
             else if (strcmp(key, "WeaponRecoil") == 0) VrWeaponRecoil = (ival != 0);
+            else if (strcmp(key, "StickClickToCrouch") == 0) VrStickClickToCrouch = (ival != 0);
             else if (strcmp(key, "UseSnapTurn") == 0) VrUseSnapTurn = (ival != 0);
             else if (strcmp(key, "TwoHandedAiming") == 0) VrTwoHandAim = (ival != 0);
             else if (strcmp(key, "FistClench") == 0) VrFistClench = ival;
@@ -81,11 +84,17 @@ extern "C" void vrSettingsLoad(void)
                 if (fval > HUD_STEREO_DEPTH_MAX) fval = HUD_STEREO_DEPTH_MAX;
                 VrStereoCrosshair = fval;
             }
+            else if (strcmp(key, "HudDistance") == 0) {
+                if (fval < HUD_DISTANCE_MIN) fval = HUD_DISTANCE_MIN;
+                if (fval > HUD_DISTANCE_MAX) fval = HUD_DISTANCE_MAX;
+                VrHudDistance = fval;
+            }
             else if (strcmp(key, "WorldScale") == 0) {
                 if (fval < WORLDSCALE_MIN) fval = WORLDSCALE_MIN;
                 if (fval > WORLDSCALE_MAX) fval = WORLDSCALE_MAX;
                 VrSetWorldScale = fval;
             }
+
             else if (strcmp(key, "ArmElbowTuck") == 0) VrArmElbowTuck = fval;
             else if (strcmp(key, "ArmBodyFollow") == 0) VrArmBodyFollow = fval;
             else if (strcmp(key, "GunOffX") == 0) VrGunOffX = fval;

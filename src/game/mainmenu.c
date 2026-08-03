@@ -72,9 +72,66 @@ extern void vrSettingsSave();
 //---
 #define WORLDSCALE_STEP   0.01f
 #define WORLDSCALE_STEPS  (s32)((WORLDSCALE_MAX - WORLDSCALE_MIN) / WORLDSCALE_STEP)
-
 //--
+//---
+#define HUD_DISTANCE_STEP 0.05f
+#define HUD_DISTANCE_STEPS ((s32)((HUD_DISTANCE_MAX - HUD_DISTANCE_MIN) / HUD_DISTANCE_STEP))
 
+
+
+
+MenuItemHandlerResult menuhandlerVRHudDistance(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+    static u8 lastRawValue = 0xFF;
+
+    switch (operation)
+    {
+        case MENUOP_GETSLIDER:
+        {
+            s32 stepIndex = (s32)roundf((VrHudDistance - HUD_DISTANCE_MIN) / HUD_DISTANCE_STEP);
+            data->slider.value = (u8)roundf((f32)stepIndex * 255.0f / (f32)HUD_DISTANCE_STEPS);
+            lastRawValue = data->slider.value;
+            break;
+        }
+        case MENUOP_SET:
+        {
+            s32 delta = (s32)data->slider.value - (s32)lastRawValue;
+
+            if (delta != 0)
+            {
+                s32 currentStep = (s32)roundf((VrHudDistance - HUD_DISTANCE_MIN) / HUD_DISTANCE_STEP);
+                s32 stepDelta = (delta > 0) ? 1 : -1;
+
+                currentStep += stepDelta;
+                if (currentStep < 0) currentStep = 0;
+                if (currentStep > HUD_DISTANCE_STEPS) currentStep = HUD_DISTANCE_STEPS;
+
+                VrHudDistance = HUD_DISTANCE_MIN + (f32)currentStep * HUD_DISTANCE_STEP;
+                g_Vars.modifiedfiles |= MODFILE_GAME;
+            }
+
+            lastRawValue = data->slider.value;
+            break;
+        }
+        case MENUOP_GETSLIDERLABEL:
+            sprintf(data->slider.label, "%.2fm", VrHudDistance);
+            break;
+    }
+    return 0;
+}
+
+MenuItemHandlerResult menuhandlerVRStickClickToCrouch(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+    switch (operation) {
+        case MENUOP_GET:
+            return VrStickClickToCrouch ? true : false;
+        case MENUOP_SET:
+            VrStickClickToCrouch = data->checkbox.value ? true : false;
+            g_Vars.modifiedfiles |= MODFILE_GAME;
+            break;
+    }
+    return 0;
+}
 
 MenuItemHandlerResult menuhandlerVRSnapTurn(s32 operation, struct menuitem *item, union handlerdata *data) {
     switch (operation) {
@@ -379,6 +436,16 @@ struct menuitem gVROptionsMenuItems[] = {
         menuhandlerStereoCrosshair,
         },
 
+        // VR HUD Distance
+    {
+            MENUITEMTYPE_SLIDER,
+            0,
+            MENUITEMFLAG_LITERAL_TEXT,
+            (uintptr_t)"HUD Distance",
+            0xff,
+            menuhandlerVRHudDistance,
+    },
+
         // VR World Scale
         {
         MENUITEMTYPE_SLIDER,
@@ -397,6 +464,16 @@ struct menuitem gVROptionsMenuItems[] = {
         (uintptr_t)"Weapon Recoil",
         0,
         menuhandlerVRWeaponRecoil,
+        },
+
+        // Two-Handed Aiming
+        {
+        MENUITEMTYPE_CHECKBOX,
+        0,
+        MENUITEMFLAG_LITERAL_TEXT,
+        (uintptr_t)"Two-Handed Aiming",
+        0,
+        menuhandlerVRTwoHandedAiming,
         },
 
         // VR Motion Throwing
@@ -429,23 +506,24 @@ struct menuitem gVROptionsMenuItems[] = {
         menuhandlerVRSeatedMode,
         },
 
-        {
-            MENUITEMTYPE_CHECKBOX,
-            0,
-            MENUITEMFLAG_LITERAL_TEXT,
-            (uintptr_t)"Snap Turn",
-            0,
-            menuhandlerVRSnapTurn,
-        },
-
-        // Two-Handed Aiming
+        // Left Stick Click to Crouch
         {
         MENUITEMTYPE_CHECKBOX,
         0,
         MENUITEMFLAG_LITERAL_TEXT,
-        (uintptr_t)"Two-Handed Aiming",
+        (uintptr_t)"Left Stick Click to Crouch",
         0,
-        menuhandlerVRTwoHandedAiming,
+        menuhandlerVRStickClickToCrouch,
+        },
+
+        // Snap Turn
+        {
+        MENUITEMTYPE_CHECKBOX,
+        0,
+        MENUITEMFLAG_LITERAL_TEXT,
+        (uintptr_t)"Snap Turn",
+        0,
+        menuhandlerVRSnapTurn,
         },
 
         // Manual Reloading
