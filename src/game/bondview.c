@@ -740,12 +740,27 @@ Gfx *bviewDrawFisheye(Gfx *gdl, u32 colour, u32 alpha, s32 shuttertime60, s8 sta
 
     gDPPipeSync(gdl++);
 
-    gdl = bviewPrepareStaticRgba16(gdl, colour, alpha);
-
 #ifndef PLATFORM_N64
     // make a copy of the current back buffer contents that we will be using as a texture
     gDPFlushEXT(gdl++);
     gDPCopyFramebufferEXT(gdl++, g_PrevFrameFb, 0, 0, 0, G_ON);
+
+    // VR: black out the whole field of view, after the snapshot above and
+    // before the lens is drawn from it.
+    //
+    // The camera surround is masked per scanline by bviewDrawFisheyeRect, which
+    // can only ever reach the viewport: fill rect coordinates are packed into 10
+    // bits, so nothing outside 0..1023 can even be addressed. That left the world
+    // showing all around the camera frame in a headset, which sees well past the
+    // viewport. A full-viewport rect is widened by the renderer to cover the eye,
+    // and taking the snapshot first means the lens still samples the clean scene
+    // rather than this black.
+    gdl = playerDrawFade(gdl, 0, 0, 0, 1.0f);
+#endif
+
+    gdl = bviewPrepareStaticRgba16(gdl, colour, alpha);
+
+#ifndef PLATFORM_N64
     gDPSetFramebufferTextureEXT(gdl++, 0, 0, 0, g_PrevFrameFb);
 #endif
 
