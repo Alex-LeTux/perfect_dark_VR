@@ -46,6 +46,7 @@ RoomNum cdFindCeilingRoomYColourFlagsNormalAtPos(struct coord *pos, RoomNum *roo
 s32 cdTestVolume(struct coord *pos, f32 radius, RoomNum *rooms, s32 types, bool checkvertical, f32 ymax, f32 ymin);
 s32 cdExamCylMove01(struct coord *pos, struct coord *pos2, f32 radius, RoomNum *rooms, s32 types, bool checkvertical, f32 ymax, f32 ymin);
 s32 cdExamCylMove02(struct coord *origpos, struct coord *dstpos, f32 width, RoomNum *dstrooms, s32 types, bool checkvertical, f32 ymax, f32 ymin);
+void cdCollectGeoForCylMove(struct coord *pos, f32 width, RoomNum *rooms, u32 types, u16 geoflags, bool checkvertical, f32 ymax, f32 ymin, struct collision *collisions, s32 maxcollisions);
 bool cdTestCylMove01(struct coord *pos, RoomNum *rooms, struct coord *targetpos, u32 types, u32 arg4, f32 ymax, f32 ymin);
 s32 cdTestCylMove02(struct coord *pos, RoomNum *rooms, struct coord *coord2, RoomNum *rooms2, u32 types, bool arg5, f32 ymax, f32 ymin);
 s32 cdExamCylMove03(struct coord *pos, RoomNum *rooms, struct coord *arg2, u32 types, u32 arg4, f32 ymax, f32 ymin);

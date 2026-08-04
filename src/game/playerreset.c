@@ -107,6 +107,10 @@ struct cmd32 {
 	s32 param3;
 };
 
+// VR: restart the head height calibration used when the runtime only offers a
+// LOCAL reference space. No-op with a floor-relative space.
+extern void vr_recalibrate_head_height(void);
+
 void playerReset(void)
 {
 	struct coord pos = {0, 0, 0};
@@ -126,6 +130,8 @@ void playerReset(void)
 
 	playerResetLoResIf4Mb();
 	func0f18e558();
+
+	vr_recalibrate_head_height();
 
 	g_InCutscene = false;
 

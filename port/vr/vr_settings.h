@@ -14,6 +14,20 @@ extern bool VrWeaponRecoil;
 #define WORLDSCALE_MIN    0.50f
 #define WORLDSCALE_MAX    1.50f
 extern float VrSetWorldScale;
+
+// Your standing EYE height in cm -- where your eyes are off the floor, roughly
+// 13 cm below the top of your head, not your stature. That is what the headset
+// reports and what the game's own vv_eyeheight means. It is the reference
+// physical crouching is measured against, and in character-height mode it maps
+// your stand onto the character's stand.
+#define PLAYERHEIGHT_MIN  130.0f
+#define PLAYERHEIGHT_MAX  200.0f
+extern float VrPlayerHeight;
+
+// false: your real height carries into the game -- your eyes sit where your own
+// eyes are whatever body you are wearing. true: you take the height of the
+// character you are playing, so Elvis is short and Mr Blonde towers.
+extern bool VrMatchCharacterHeight;
 extern int VrUseSnapTurn;
 extern bool VrTwoHandAim;       // two-handed weapons aim along the line between both controllers
 extern int VrStickClickToCrouch;

@@ -110,6 +110,7 @@ extern bool VrIsTitleLegal;
 extern int VrSmallW;
 extern int VrSmallH;
 extern void vr_player_rot();
+extern f32 vr_get_head_clip_frac(void);   // bondwalk.c: head-into-geometry comfort fade
 
 static s16 g_PrevAnimNumForContinuity = -1;
 static f32 g_RefHMDQuat[4] = { 1.0f, 0.0f, 0.0f, 0.0f };
@@ -2603,6 +2604,41 @@ Gfx* playerDrawFade(Gfx* gdl, u32 r, u32 g, u32 b, f32 frac)
         gDPSetPrimColor(gdl++, 0, 0, r, g, b, (s32)(frac * 255));
         gDPFillRectangle(gdl++, viGetViewLeft(), viGetViewTop(),
                          viGetViewLeft() + viGetViewWidth(), viGetViewTop() + viGetViewHeight());
+        gDPPipeSync(gdl++);
+        gDPSetColorDither(gdl++, G_CD_BAYER);
+        gDPSetTexturePersp(gdl++, G_TP_PERSP);
+        gDPSetTextureLOD(gdl++, G_TL_LOD);
+    }
+
+    return gdl;
+}
+
+// playerDrawFade, but covering the whole field of view rather than the
+// viewport, which in a headset falls well short of the edges.
+//
+// 319x239 is not a typo and not the screen size: gfx_dp_fill_rectangle watches
+// for exactly that rect and widens it to roughly twice the screen in every
+// direction, a hack it already carries for widescreen fades. Going through
+// that instead of emitting the wide opcode directly matters -- the wide opcode
+// is two display list words, and however it is being consumed it only ever
+// reaches one eye, while ordinary fill rects (the damage flash, the death
+// wash) reach both.
+static Gfx* playerDrawFadeWide(Gfx* gdl, u32 r, u32 g, u32 b, f32 frac)
+{
+    if (frac > 0) {
+        gDPPipeSync(gdl++);
+        gDPSetCycleType(gdl++, G_CYC_1CYCLE);
+        gDPSetColorDither(gdl++, G_CD_DISABLE);
+        gDPSetTexturePersp(gdl++, G_TP_NONE);
+        gDPSetAlphaCompare(gdl++, G_AC_NONE);
+        gDPSetTextureLOD(gdl++, G_TL_TILE);
+        gDPSetTextureFilter(gdl++, G_TF_BILERP);
+        gDPSetTextureConvert(gdl++, G_TC_FILT);
+        gDPSetTextureLUT(gdl++, G_TT_NONE);
+        gDPSetRenderMode(gdl++, G_RM_CLD_SURF, G_RM_CLD_SURF2);
+        gDPSetCombineMode(gdl++, G_CC_PRIMITIVE, G_CC_PRIMITIVE);
+        gDPSetPrimColor(gdl++, 0, 0, r, g, b, (s32)(frac * 255));
+        gDPFillRectangle(gdl++, 0, 0, 319, 239);
         gDPPipeSync(gdl++);
         gDPSetColorDither(gdl++, G_CD_BAYER);
         gDPSetTexturePersp(gdl++, G_TP_PERSP);
@@ -5384,6 +5420,24 @@ Gfx* playerRenderHud(Gfx* gdl)
     }
 
     if (g_Vars.currentplayer->cameramode != CAMERAMODE_EYESPY) {
+        // VR: fade out as your real head pushes into something the view will
+        // not follow you into.
+        //
+        // Drawn before the HUD, not after. Everything below -- the weapon HUD,
+        // the radar, the messages -- opens capture regions that redirect
+        // drawing into other framebuffers, and a fade emitted after them only
+        // reached one eye, reliably in the campaign but not with a radar on
+        // screen. Ahead of them there is no capture state to inherit. It costs
+        // nothing visually: the HUD is composited as its own layer, so it sits
+        // on top of this either way.
+        {
+            f32 headclip = vr_get_head_clip_frac();
+
+            if (headclip > 0.0f) {
+                gdl = playerDrawFadeWide(gdl, 0, 0, 0, headclip);
+            }
+        }
+
         gdl = bgunDrawSight(gdl);
 
         if (bgunGetWeaponNum(HAND_RIGHT) == WEAPON_HORIZONSCANNER) {

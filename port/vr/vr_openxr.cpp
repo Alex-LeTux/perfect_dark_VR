@@ -259,7 +259,28 @@ bool orientationValid = false;
 
 XrQuaternionf gRawHeadQ = { 0, 0, 0, 1 };
 float g_yawOffsetDegrees = 0.0f;
-float gStandingHeadHeight = 0.0f;
+
+// ============================================================
+// FLOOR-REFERENCED HEAD HEIGHT
+// ============================================================
+// LOCAL_FLOOR/STAGE put the origin on the physical floor, so the runtime's Y is
+// already the true head height and nothing has to be calibrated or remembered.
+// A plain LOCAL space puts the origin wherever the head was when the space was
+// created, so there we calibrate once per level: the median head Y over ~1 s is
+// taken to be a standing pose. Median, not maximum -- a running maximum latches
+// onto a physical jump and never comes back down, which is what used to leave
+// the player permanently shorter for the rest of the session.
+bool  gVrFloorRelativeSpace = false;
+float gVrHeadHeightCm       = VR_NOMINAL_HEAD_HEIGHT_CM;
+
+extern "C" float VrPlayerHeight;   // your standing height, cm (bondwalk.c)
+
+#define VR_HEIGHT_CALIB_SAMPLES 90   // ~1 s of frames
+
+static float sHeightCalibSamples[VR_HEIGHT_CALIB_SAMPLES];
+static int   sHeightCalibCount  = 0;
+static bool  sHeightCalibDone   = false;
+static float sHeightCalibOffset = VR_NOMINAL_HEAD_HEIGHT_CM;
 
 // ============================================================
 // SMOOTHING HMD — When zoom is enabled
@@ -788,6 +809,11 @@ static bool vr_create_play_space()
         LOGI("Play space = LOCAL");
     }
 
+    // Only the first two report Y relative to the physical floor; LOCAL needs
+    // the one-shot height calibration instead.
+    gVrFloorRelativeSpace = (gPlaySpaceType != XR_REFERENCE_SPACE_TYPE_LOCAL);
+    vr_recalibrate_head_height();
+
     XrReferenceSpaceCreateInfo spaceInfo{ XR_TYPE_REFERENCE_SPACE_CREATE_INFO };
     spaceInfo.referenceSpaceType            = gPlaySpaceType;
     spaceInfo.poseInReferenceSpace.orientation = { 0, 0, 0, 1 };
@@ -1237,6 +1263,43 @@ static XrQuaternionf SlerpQuaternions(XrQuaternionf a, XrQuaternionf b, float t)
     return {out[1], out[2], out[3], out[0]};    // → {x,y,z,w}
 }
 
+// Turn the runtime's head Y into a height above the physical floor, in cm.
+static void vr_update_head_height()
+{
+    if (gVrFloorRelativeSpace) {
+        gVrHeadHeightCm = gHeadPos.y;
+        return;
+    }
+
+    if (!sHeightCalibDone) {
+        sHeightCalibSamples[sHeightCalibCount++] = gHeadPos.y;
+
+        if (sHeightCalibCount >= VR_HEIGHT_CALIB_SAMPLES) {
+            std::sort(sHeightCalibSamples, sHeightCalibSamples + VR_HEIGHT_CALIB_SAMPLES);
+
+            float median = sHeightCalibSamples[VR_HEIGHT_CALIB_SAMPLES / 2];
+            sHeightCalibOffset = VrPlayerHeight - median;
+            sHeightCalibDone   = true;
+
+            LOGI("Head height calibrated (LOCAL space): median %.1f cm, offset %.1f cm",
+                 median, sHeightCalibOffset);
+        }
+    }
+
+    gVrHeadHeightCm = gHeadPos.y + sHeightCalibOffset;
+}
+
+// Start a fresh calibration. No-op under a floor-relative space, where the
+// runtime already gives us absolute height.
+extern "C" void vr_recalibrate_head_height(void)
+{
+    sHeightCalibCount  = 0;
+    sHeightCalibDone   = false;
+    // Until the median lands, assume the head is at standing height, which is
+    // where a LOCAL space puts its own origin anyway.
+    sHeightCalibOffset = VrPlayerHeight;
+}
+
 static void vr_update_head_tracking(XrTime predictedDisplayTime)
 {
     if (!g_vrState.sessionRunning || g_vrState.session == XR_NULL_HANDLE) return;
@@ -1299,10 +1362,7 @@ static void vr_update_head_tracking(XrTime predictedDisplayTime)
             vr_HMD_rot_Q         = rawQ;
         }
 
-        if (gHeadPos.y > gStandingHeadHeight) {
-            gStandingHeadHeight = gHeadPos.y;
-        }
-
+        vr_update_head_height();
     }
 }
 
