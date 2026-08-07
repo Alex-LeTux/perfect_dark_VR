@@ -50,6 +50,18 @@ XrSpaceLocation spaceLocation;
 float vr_ctrl_velocity[2][3]; // [ctrlIndex][x,y,z]
 bool gIsValveIndex = false;
 
+// --- Gesture frame, located against playSpace ---
+// The pose above is located against viewSpace, which is what weapon placement
+// wants. Its velocity is not usable for gestures: a velocity relative to a
+// moving VIEW space needs the runtime to track that space's own velocity, and
+// runtimes that don't just hand back the room-fixed tracking velocity instead.
+// Asking for playSpace explicitly is unambiguous on every runtime, so all swing
+// gestures use these and apply the play -> world transform themselves.
+static XrPosef gCtrlPosePlay[2] = {};
+static XrSpaceVelocity gCachedVelocityPlay[2] = {};
+float vr_ctrl_quat_play[2][4];     // {w,x,y,z}, raw OpenXR basis, play space
+float vr_ctrl_velocity_play[2][3]; // m/s,       raw OpenXR basis, play space
+
 // ===== MANUAL RELOADING =========================
 
 float gVrReloadPullLocalX = 0.0f;
@@ -521,6 +533,21 @@ XrResult update_vr_controllers(XrTime predicted_time) {
 //                vr_log("[VR_DEBUG] hand=%d xrLocateSpace failed: res=%d flags=0x%X pose.isActive=%d",
 //                       hand, (int)res, (unsigned)loc.locationFlags, (int)state.pose.isActive);
                 state.is_active = false;
+            }
+        }
+
+        // Same controller, located against playSpace: the gesture frame.
+        {
+            XrSpaceVelocity velocity = { XR_TYPE_SPACE_VELOCITY };
+            XrSpaceLocation loc = { XR_TYPE_SPACE_LOCATION };
+            loc.next = &velocity;
+
+            XrResult res = xrLocateSpace(gControllerSpace[hand], g_vrState.playSpace, predicted_time, &loc);
+
+            if (XR_SUCCEEDED(res) &&
+                (loc.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT)) {
+                gCtrlPosePlay[hand] = loc.pose;
+                gCachedVelocityPlay[hand] = velocity;
             }
         }
 
@@ -1167,6 +1194,21 @@ void controller_pose() {
             // Reset smoothing if the controller becomes inactive
             sSmoothedInit[i] = false;
             continue;
+        }
+
+        // --- Gesture frame: publish the play-space pose/velocity verbatim ---
+        // Deliberately none of the conditioning applied below. Gesture maths
+        // needs the rotation and the velocity to live in the same basis, and
+        // the mirror/offset/recoil that the weapon pose needs would break that.
+        vr_ctrl_quat_play[i][0] = gCtrlPosePlay[i].orientation.w;
+        vr_ctrl_quat_play[i][1] = gCtrlPosePlay[i].orientation.x;
+        vr_ctrl_quat_play[i][2] = gCtrlPosePlay[i].orientation.y;
+        vr_ctrl_quat_play[i][3] = gCtrlPosePlay[i].orientation.z;
+
+        if (gCachedVelocityPlay[i].velocityFlags & XR_SPACE_VELOCITY_LINEAR_VALID_BIT) {
+            vr_ctrl_velocity_play[i][0] = gCachedVelocityPlay[i].linearVelocity.x;
+            vr_ctrl_velocity_play[i][1] = gCachedVelocityPlay[i].linearVelocity.y;
+            vr_ctrl_velocity_play[i][2] = gCachedVelocityPlay[i].linearVelocity.z;
         }
 
         // --- Raw OpenXR position ---

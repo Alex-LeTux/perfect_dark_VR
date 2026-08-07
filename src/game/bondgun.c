@@ -85,7 +85,12 @@
 // VR global -----------------------------------------
 extern XrQuaternionf vr_joy_rot_Q;
 extern XrQuaternionf vr_HMD_rot_Q;
+extern XrQuaternionf vr_recenter_rot_Q;
 extern float vr_ctrl_velocity[2][3]; // [ctrlIndex][x,y,z] en m/s
+// Gesture frame: play space, raw OpenXR axes. See vr_openxr.h.
+extern float vr_ctrl_quat_play[2][4];
+extern float vr_ctrl_velocity_play[2][3];
+extern float vr_head_velocity_play[3];
 extern void vr_rotate_vector_by_quaternion(struct coord* v, const XrQuaternionf* q);
 int vr_invert_hands = false;
 bool vr_leftHasWeapon = false;
@@ -2779,6 +2784,12 @@ struct coord vr_throw(s32 handnum) {
 
 
 // 1. Capture the orientation at the time of recording
+//
+// The samples are play-space velocities, so the play -> world rotation is the
+// recenter followed by the stick/snap body yaw. NOT vr_HMD_rot_Q: that already
+// contains the recenter times the raw head rotation, and folding the head yaw
+// into a vector that is not head-relative applies the player's facing twice --
+// which is what used to send every throw off toward the room's forward.
 void vr_record_throw_sample(int ctrlIdx, float vx, float vy, float vz) {
     vr_ThrowSample *s = &gThrowHistory[ctrlIdx][vr_ThrowHistoryIdx[ctrlIdx]];
     s->vx = vx;
@@ -2786,8 +2797,9 @@ void vr_record_throw_sample(int ctrlIdx, float vx, float vy, float vz) {
     s->vz = vz;
     s->vr_magnitude = sqrtf(vx*vx + vy*vy + vz*vz);
 
-    // freeze the head/joystick orientation at THIS exact frame
-    quaternionMul_XR(&vr_joy_rot_Q, &vr_HMD_rot_Q, &s->orientQ);
+    // freeze the body orientation at THIS exact frame, so snap-turning during
+    // the wind-up cannot swing a throw that has already been aimed
+    quaternionMul_XR(&vr_joy_rot_Q, &vr_recenter_rot_Q, &s->orientQ);
 
     s->frame60 = g_Vars.lvframe60;
     vr_ThrowHistoryIdx[ctrlIdx] = (vr_ThrowHistoryIdx[ctrlIdx] + 1) % VR_THROW_HISTORY_MAX;
@@ -2801,15 +2813,15 @@ struct coord vr_throw(s32 handnum) {
                                  : (handnum == HAND_RIGHT ? 0 : 1);
     uint32_t frameNow = g_Vars.lvframe60;
 
-    float bestvx = vr_ctrl_velocity[ctrlIdx][0];
-    float bestvy = vr_ctrl_velocity[ctrlIdx][1];
-    float bestvz = vr_ctrl_velocity[ctrlIdx][2];
+    float bestvx = vr_ctrl_velocity_play[ctrlIdx][0];
+    float bestvy = vr_ctrl_velocity_play[ctrlIdx][1];
+    float bestvz = vr_ctrl_velocity_play[ctrlIdx][2];
     float bestmag = sqrtf(bestvx*bestvx + bestvy*bestvy + bestvz*bestvz);
 
     // Default orientation = the current one, in case
     // the "live" (current) sample wins
     XrQuaternionf bestOrientQ;
-    quaternionMul_XR(&vr_joy_rot_Q, &vr_HMD_rot_Q, &bestOrientQ);
+    quaternionMul_XR(&vr_joy_rot_Q, &vr_recenter_rot_Q, &bestOrientQ);
 
     int count = vr_ThrowHistoryCount[ctrlIdx];
     int cur   = vr_ThrowHistoryIdx[ctrlIdx];
@@ -2837,6 +2849,10 @@ struct coord vr_throw(s32 handnum) {
         throwdir.z = -vz / vrmagnitude;
 
         vr_rotate_vector_by_quaternion(&throwdir, &bestOrientQ);
+        // Negating all three then restoring Y is the 180deg-Y basis flip that
+        // takes an OpenXR direction into game space -- the same convention as
+        // the look vector in vr_player_rot() and the head position in
+        // vr_update_head_tracking(). Leave it alone.
         throwdir.y = -throwdir.y;
 
         float minSpeed = 1.0f, maxSpeed = 1000.0f;
@@ -7761,7 +7777,8 @@ void bgunCreateThrownProjectile(s32 handnum, struct gset* gset)
               gset->weaponnum == WEAPON_TIMEDMINE     ||
               gset->weaponnum == WEAPON_REMOTEMINE ||
               (gset->weaponnum == WEAPON_LAPTOPGUN && gset->weaponfunc == FUNC_SECONDARY)||
-              (gset->weaponnum == WEAPON_DRAGON && gset->weaponfunc == FUNC_SECONDARY))) {
+              (gset->weaponnum == WEAPON_DRAGON && gset->weaponfunc == FUNC_SECONDARY)||
+              (gset->weaponnum == WEAPON_COMBATKNIFE && gset->weaponfunc == FUNC_SECONDARY))) {
         // VR Motion Throwing is enabled: the velocity has already been calculated by vr_throw()
         // in bgunTickIncAttackingThrow, so `velocity` is left unchanged here.
         // do nothing
@@ -15941,8 +15958,9 @@ bool bgunIsUsingSecondaryFunction(void)
 
 
 
-// Rotate a world-space vector v into the local space of quaternion q
-// = multiply by the conjugate (qw, -qx, -qy, -qz)
+// Rotate a vector v into the local space of quaternion q
+// = multiply by the conjugate (qw, -qx, -qy, -qz).
+// v and q must be expressed in the same basis, or the result is meaningless.
 static void worldToLocal(const float q[4], const float v[3], float out[3]) // VR
 {
     float qw =  q[0], qx = -q[1], qy = -q[2], qz = -q[3];
@@ -16067,8 +16085,25 @@ void bgunTickGameplay(bool triggeron) {
             ctrlIndex = (handnum == HAND_RIGHT ? 0 : 1);
         }
 
+        // Swing velocity in the controller's own frame, relative to the body.
+        //
+        // Both inputs are play space in raw OpenXR axes, so the conjugate
+        // rotation actually lands in controller-local space. The old pairing of
+        // gCtrlQuat with vr_ctrl_velocity did not: gCtrlQuat is head-relative
+        // and carries the mirror plus the 90deg gun offset, so the player's head
+        // yaw survived into the result and the gesture only ever fired while
+        // facing the room's forward.
+        //
+        // Subtracting the head keeps this a measure of the hand moving relative
+        // to the player rather than to the room, so walking does not punch.
+        float relVel[3];
         float localVel[3];
-        worldToLocal(gCtrlQuat[ctrlIndex], vr_ctrl_velocity[ctrlIndex], localVel);
+
+        relVel[0] = vr_ctrl_velocity_play[ctrlIndex][0] - vr_head_velocity_play[0];
+        relVel[1] = vr_ctrl_velocity_play[ctrlIndex][1] - vr_head_velocity_play[1];
+        relVel[2] = vr_ctrl_velocity_play[ctrlIndex][2] - vr_head_velocity_play[2];
+
+        worldToLocal(vr_ctrl_quat_play[ctrlIndex], relVel, localVel);
         vr_set_motion_triggered = false;
 
         if(VrMotionThrowing) {
@@ -16082,9 +16117,9 @@ void bgunTickGameplay(bool triggeron) {
 
                 vr_record_throw_sample(
                         ctrlIndex,
-                        vr_ctrl_velocity[ctrlIndex][0],
-                        vr_ctrl_velocity[ctrlIndex][1],
-                        vr_ctrl_velocity[ctrlIndex][2]
+                        vr_ctrl_velocity_play[ctrlIndex][0],
+                        vr_ctrl_velocity_play[ctrlIndex][1],
+                        vr_ctrl_velocity_play[ctrlIndex][2]
                 );
 
             }
@@ -16110,9 +16145,9 @@ void bgunTickGameplay(bool triggeron) {
                 vr_throw_cancelled = true;
                 vr_record_throw_sample(
                         ctrlIndex,
-                        vr_ctrl_velocity[ctrlIndex][0],
-                        vr_ctrl_velocity[ctrlIndex][1],
-                        vr_ctrl_velocity[ctrlIndex][2]
+                        vr_ctrl_velocity_play[ctrlIndex][0],
+                        vr_ctrl_velocity_play[ctrlIndex][1],
+                        vr_ctrl_velocity_play[ctrlIndex][2]
                 );
                 vr_R_knife_sec_anim_run = false;
                 vr_R_func_secondary_knife = false;
@@ -16141,9 +16176,9 @@ void bgunTickGameplay(bool triggeron) {
                 vr_throw_cancelled = true;
                 vr_record_throw_sample(
                         ctrlIndex,
-                        vr_ctrl_velocity[ctrlIndex][0],
-                        vr_ctrl_velocity[ctrlIndex][1],
-                        vr_ctrl_velocity[ctrlIndex][2]
+                        vr_ctrl_velocity_play[ctrlIndex][0],
+                        vr_ctrl_velocity_play[ctrlIndex][1],
+                        vr_ctrl_velocity_play[ctrlIndex][2]
                 );
                 vr_L_knife_sec_anim_run = false;
                 vr_L_func_secondary_knife = false;
@@ -16153,24 +16188,31 @@ void bgunTickGameplay(bool triggeron) {
             }
 
 
-            if (weaponnum == WEAPON_COMBATKNIFE && hand->gset.weaponfunc == FUNC_PRIMARY) {
+            // In controller-local space +Y runs along the barrel and out over
+            // the knuckles: it is the axis that the 90deg X offset applied in
+            // vr_input.cpp maps onto the gun model's forward. So a thrust is +Y
+            // and a slash is whatever is left in the perpendicular XZ plane.
+            // Testing the plane by magnitude keeps the knife's "any of four
+            // directions" behaviour without depending on which way is "up".
+            f32 thrust = localVel[1];
+            f32 slash  = sqrtf(localVel[0] * localVel[0] + localVel[2] * localVel[2]);
 
-                float threshold = 1.0f;
-                bool fwd = (localVel[2] < -threshold);
-                bool left = (localVel[1] > threshold);
-                bool up = (localVel[0] > threshold);
-                bool down = (localVel[0] < -threshold);
-                vr_set_motion_triggered = fwd || left || up || down;
+            if (weaponnum == WEAPON_COMBATKNIFE && hand->gset.weaponfunc == FUNC_PRIMARY) {
+                vr_set_motion_triggered = (thrust > 1.0f) || (slash > 1.0f);
 
             } else if (weaponnum == WEAPON_UNARMED) {
-                vr_set_motion_triggered = (-localVel[0] < -2.0f) || (localVel[2] < -2.0f);
+                // Straight punch, or a hook thrown across the body.
+                vr_set_motion_triggered = (thrust > 1.5f) || (slash > 2.5f);
 
             } else if (weaponnum == WEAPON_FALCON2 ||
                        weaponnum == WEAPON_FALCON2_SCOPE ||
                        weaponnum == WEAPON_FALCON2_SILENCER ||
                        weaponnum == WEAPON_DY357MAGNUM ||
                        weaponnum == WEAPON_DY357LX) {
-                vr_set_motion_triggered = (localVel[2] < -2.0f);
+                // A pistol whip is a swing, not a thrust: the grip travels in an
+                // arc about the wrist, so most of the speed lands perpendicular
+                // to the barrel. Testing thrust alone missed nearly all of them.
+                vr_set_motion_triggered = (thrust > 2.0f) || (slash > 2.0f);
             } else {
                 vr_hand_triggered[i] = false;
                 continue;
