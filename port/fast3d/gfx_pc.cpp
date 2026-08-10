@@ -105,6 +105,58 @@ bool is_weapon_hud = false;
 extern "C" void gfxSetCrosshairParallaxRight(float correction);
 extern "C" void gfxSetCrosshairParallaxLeft(float correction);
 
+// --- VR: culling has to account for the per-eye clip-space shear -------------
+//
+// Vertices are transformed on the CPU with the game's projection, which is a
+// single symmetric frustum built from the mean of the two eyes' tangent extents.
+// The multiview vertex shader then shears clip space per eye:
+//
+//     x' = x - ex - ey * w        ex = IPD offset, ey = horizontal lens asymmetry
+//     y' = y - ew * w             ew = vertical lens asymmetry
+//
+// So the frustum the CPU culls against matches neither eye. Two tests below are
+// corrected with the values the shader itself is given, rather than a guess.
+// All of these stay zero outside VR, where the corrections reduce to identities.
+
+// Trivial reject: how far beyond the unsheared frustum a vertex may sit and
+// still be visible to one of the eyes. The constant term is the IPD offset; the
+// w-scaled term covers the lens asymmetry and the HUD branch's own shear.
+static float vr_clip_margin_x_const = 0.0f;
+static float vr_clip_margin_x_w = 0.0f;
+static float vr_clip_margin_y_w = 0.0f;
+
+// Backface winding: only ex survives the differencing of the cross product (ey
+// and ew are constant per vertex and cancel), so this is all the cull test needs.
+static float vr_cull_eye_dx[2] = { 0.0f, 0.0f };
+static bool vr_cull_stereo = false;
+
+static void vr_set_cull_offsets(const float offsets[8]) {
+    // Layout per eye, from gfx_opengl_set_eye_offsets: { ipd, asym_x, hud, asym_y }.
+    const float exL = offsets[0], eyL = offsets[1], ezL = offsets[2], ewL = offsets[3];
+    const float exR = offsets[4], eyR = offsets[5], ezR = offsets[6], ewR = offsets[7];
+
+    vr_clip_margin_x_const = std::max(std::fabs(exL), std::fabs(exR));
+    vr_clip_margin_x_w = std::max(std::max(std::fabs(eyL), std::fabs(eyR)),
+                                  std::max(std::fabs(ezL), std::fabs(ezR)));
+    vr_clip_margin_y_w = std::max(std::fabs(ewL), std::fabs(ewR));
+
+    vr_cull_eye_dx[0] = exL;
+    vr_cull_eye_dx[1] = exR;
+    vr_cull_stereo = (exL != exR);
+
+    // The margins are only as good as the asymmetry the runtime reports, and that
+    // differs per headset. Log them once so they can be read back rather than
+    // assumed.
+    static bool logged = false;
+    if (!logged) {
+        logged = true;
+        vr_log("VR cull offsets: L ipd=%.4f asym_x=%.4f hud=%.4f asym_y=%.4f", exL, eyL, ezL, ewL);
+        vr_log("VR cull offsets: R ipd=%.4f asym_x=%.4f hud=%.4f asym_y=%.4f", exR, eyR, ezR, ewR);
+        vr_log("VR clip margins: x_const=%.4f x_w=%.4f y_w=%.4f",
+               vr_clip_margin_x_const, vr_clip_margin_x_w, vr_clip_margin_y_w);
+    }
+}
+
 //------------------------------------------------------------------------------
 
 struct RGBA {
@@ -1187,17 +1239,26 @@ static void gfx_sp_vertex(size_t n_vertices, size_t dest_index, const Vtx* verti
         d->v = V;
 
         // trivial clip rejection
+        //
+        // The bounds are widened by however far the per-eye shear can carry a
+        // vertex back into view (zero outside VR). Being generous here only
+        // costs a few triangles the GPU then clips; being tight drops geometry
+        // the headset can see, in a strip down the outer edge of each eye.
+        const float aw = fabsf(w);
+        const float mx = vr_clip_margin_x_const + vr_clip_margin_x_w * aw;
+        const float my = vr_clip_margin_y_w * aw;
+
         d->clip_rej = 0;
-        if (x < -w) {
+        if (x < -w - mx) {
             d->clip_rej |= 1; // CLIP_LEFT
         }
-        if (x > w) {
+        if (x > w + mx) {
             d->clip_rej |= 2; // CLIP_RIGHT
         }
-        if (y < -w) {
+        if (y < -w - my) {
             d->clip_rej |= 4; // CLIP_BOTTOM
         }
-        if (y > w) {
+        if (y > w + my) {
             d->clip_rej |= 8; // CLIP_TOP
         }
         // if (z < -w) d->clip_rej |= 16; // CLIP_NEAR
@@ -1249,6 +1310,27 @@ static inline int gfx_lod_tile_offset(const int i) {
     return (rdp.tex_lod ? rdp.tex_detail : i);
 }
 
+// Signed area of the triangle as one eye sees it. eye_dx is that eye's clip-space
+// IPD offset: the shader's shear is x' = x - ex - ey*w, and the constant ey drops
+// out of the differences, so subtracting ex is the whole correction. Called with
+// eye_dx == 0 outside VR, where it is the stock centre-camera cross product.
+static inline float gfx_tri_signed_area(const struct LoadedVertex* v1, const struct LoadedVertex* v2,
+                                        const struct LoadedVertex* v3, float eye_dx) {
+    float dx1 = (v1->x - eye_dx) / (v1->w) - (v2->x - eye_dx) / (v2->w);
+    float dy1 = v1->y / (v1->w) - v2->y / (v2->w);
+    float dx2 = (v3->x - eye_dx) / (v3->w) - (v2->x - eye_dx) / (v2->w);
+    float dy2 = v3->y / (v3->w) - v2->y / (v2->w);
+    float cross = dx1 * dy2 - dy1 * dx2;
+
+    if ((v1->w < 0) ^ (v2->w < 0) ^ (v3->w < 0)) {
+        // If one vertex lies behind the eye, negating cross will give the correct result.
+        // If all vertices lie behind the eye, the triangle will be rejected anyway.
+        cross = -cross;
+    }
+
+    return cross;
+}
+
 static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bool is_rect) {
     struct LoadedVertex* v1 = &rsp.loaded_vertices[vtx1_idx];
     struct LoadedVertex* v2 = &rsp.loaded_vertices[vtx2_idx];
@@ -1263,16 +1345,25 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bo
     }
 
     if ((rsp.geometry_mode & G_CULL_BOTH) != 0) {
-        float dx1 = v1->x / (v1->w) - v2->x / (v2->w);
-        float dy1 = v1->y / (v1->w) - v2->y / (v2->w);
-        float dx2 = v3->x / (v3->w) - v2->x / (v2->w);
-        float dy2 = v3->y / (v3->w) - v2->y / (v2->w);
-        float cross = dx1 * dy2 - dy1 * dx2;
+        if ((rsp.geometry_mode & G_CULL_BOTH) == G_CULL_BOTH) {
+            // Why is this even an option?
+            return;
+        }
 
-        if ((v1->w < 0) ^ (v2->w < 0) ^ (v3->w < 0)) {
-            // If one vertex lies behind the eye, negating cross will give the correct result.
-            // If all vertices lie behind the eye, the triangle will be rejected anyway.
-            cross = -cross;
+        const bool cull_front = (rsp.geometry_mode & G_CULL_BOTH) == G_CULL_FRONT;
+
+        // The two eyes do not agree about the winding of a triangle that is close
+        // to edge-on, because their parallax is depth-dependent and so does not
+        // cancel out of the cross product. Multiview gives us one vertex stream for
+        // both views, so a triangle either survives for both eyes or for neither:
+        // keep it if either eye sees its front. Where the eyes disagree the other
+        // one is looking at a degenerate sliver, so drawing it there costs nothing.
+        float cross = gfx_tri_signed_area(v1, v2, v3, vr_cull_eye_dx[0]);
+        bool cull = cull_front ? (cross <= 0) : (cross >= 0);
+
+        if (cull && vr_cull_stereo) {
+            cross = gfx_tri_signed_area(v1, v2, v3, vr_cull_eye_dx[1]);
+            cull = cull_front ? (cross <= 0) : (cross >= 0);
         }
 
         // If inverted culling is requested, negate the cross
@@ -1280,20 +1371,8 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bo
         //     cross = -cross;
         // }
 
-        switch (rsp.geometry_mode & G_CULL_BOTH) {
-            case G_CULL_FRONT:
-                if (cross <= 0) {
-                    return;
-                }
-                break;
-            case G_CULL_BACK:
-                if (cross >= 0) {
-                    return;
-                }
-                break;
-            case G_CULL_BOTH:
-                // Why is this even an option?
-                return;
+        if (cull) {
+            return;
         }
     }
 
@@ -2937,6 +3016,11 @@ extern "C" void gfx_run(Gfx* commands) {
 
         gfx_rapi->set_eye_offsets(offsets[0], offsets[1], offsets[2], offsets[3],
                                   offsets[4], offsets[5], offsets[6], offsets[7]);
+
+        // Feed the same numbers to the CPU-side clip and backface tests, so they
+        // cull against the frusta the shader actually renders rather than the
+        // centred average frustum the game's projection matrix describes.
+        vr_set_cull_offsets(offsets);
 
 
         // 1) Acquire + attach swapchain to g_multiviewFBO
