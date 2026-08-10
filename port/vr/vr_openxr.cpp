@@ -285,6 +285,16 @@ static int   sHeightCalibCount  = 0;
 static bool  sHeightCalibDone   = false;
 static float sHeightCalibOffset = VR_NOMINAL_HEAD_HEIGHT_CM;
 
+// The recenter alone, as a quaternion: play space -> recentered play space.
+// vr_HMD_rot_Q is this times gRawHeadQ, so anything that starts from a vector
+// already expressed in play space wants THIS, not vr_HMD_rot_Q -- applying the
+// latter would fold the head yaw in a second time.
+XrQuaternionf vr_recenter_rot_Q = { 0, 0, 0, 1 };
+
+// Head linear velocity in play space, raw OpenXR axes, m/s. Subtract it from a
+// controller's play-space velocity to get motion relative to the body.
+float vr_head_velocity_play[3] = { 0.0f, 0.0f, 0.0f };
+
 // ============================================================
 // SMOOTHING HMD — When zoom is enabled
 // ============================================================
@@ -1313,6 +1323,9 @@ static void vr_update_head_tracking(XrTime predictedDisplayTime)
     if (!g_vrState.sessionRunning || g_vrState.session == XR_NULL_HANDLE) return;
 
     XrSpaceLocation headLocation = {XR_TYPE_SPACE_LOCATION};
+    XrSpaceVelocity headVelocity = {XR_TYPE_SPACE_VELOCITY};
+    headLocation.next = &headVelocity;
+
     XrResult result = xrLocateSpace(
             g_vrState.viewSpace, g_vrState.playSpace,
             predictedDisplayTime, &headLocation);
@@ -1337,6 +1350,14 @@ static void vr_update_head_tracking(XrTime predictedDisplayTime)
         XrQuaternionf offsetQ = YawToQuaternion(g_yawOffsetDegrees);
         XrQuaternionf rawQ    = MultiplyQuaternions(offsetQ, gRawHeadQ);
         XrVector3f    rawHead = RotateVectorY(rawPos, g_yawOffsetDegrees);
+
+        vr_recenter_rot_Q = offsetQ;
+
+        if (headVelocity.velocityFlags & XR_SPACE_VELOCITY_LINEAR_VALID_BIT) {
+            vr_head_velocity_play[0] = headVelocity.linearVelocity.x;
+            vr_head_velocity_play[1] = headVelocity.linearVelocity.y;
+            vr_head_velocity_play[2] = headVelocity.linearVelocity.z;
+        }
 
         // --- Grip pressed on either controller ---
         bool gripAny = (vr_button_R_grip != 0) || (vr_button_L_grip != 0);

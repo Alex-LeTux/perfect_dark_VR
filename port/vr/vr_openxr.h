@@ -52,12 +52,22 @@ int shaders_build_xr_projection(
 extern XrVector3f gHeadPos;
 extern XrQuaternionf vr_HMD_rot_Q;
 extern XrQuaternionf gRawHeadQ;
+extern XrQuaternionf vr_recenter_rot_Q;
 extern float XrAspect;
 
 extern float gCtrlPos[2][3];
 extern float gCtrlQuat[2][4];
 extern float gCtrlQuatRaw[2][4];
 
+// Gesture frame. Everything above is head-relative and carries the engine's
+// mirrored basis; these are located against playSpace in raw OpenXR axes, with
+// no mirror, no 90deg gun offset, no smoothing and no recoil. Swing gestures
+// need one self-consistent basis, which is what this pair is for.
+extern float vr_ctrl_quat_play[2][4];     // {w,x,y,z}
+extern float vr_ctrl_velocity_play[2][3]; // m/s
+extern float vr_head_velocity_play[3];    // m/s
+
+extern float gStandingHeadHeight;
 // A plausible standing head (HMD) height in centimetres, used only until real
 // tracking arrives. Everything that cares about the player's actual height uses
 // the VrPlayerHeight setting.
