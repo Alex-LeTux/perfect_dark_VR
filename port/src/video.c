@@ -78,6 +78,7 @@ extern float RENDER_SCALE;
 static f32 *vidModeScales = NULL;
 extern bool vr_restart_with_new_scale(float scale);
 extern bool vr_configure_resolution();
+extern void vr_request_scale(float scale);
 
 
 
@@ -384,18 +385,20 @@ void videoSetDisplayMode(const s32 index)
 {
 
     const displaymode dm = vidModes[index];
+    const f32 newScale = (vidModeScales && vidModeScales[index] > 0.f) ? vidModeScales[index] : 1.0f;
+
+    // The menu commits on every selection, so just opening the Resolution dropdown and
+    // confirming the entry that was already active used to tear down and rebuild the whole
+    // OpenXR instance for nothing. Bail out before touching anything.
+    if (newScale == RENDER_SCALE && vidWidth == dm.width && vidHeight == dm.height) {
+        return;
+    }
+
     vidWidth  = dm.width;
     vidHeight = dm.height;
 
-    // Update RENDER_SCALE
-    if (vidModeScales && vidModeScales[index] > 0.f) {
-        RENDER_SCALE = vidModeScales[index];
-    } else {
-        RENDER_SCALE = 1.0f;
-    }
-
-    vr_log("videoSetDisplayMode: index=%d, %dx%d, scale=%.2f",
-           index, vidWidth, vidHeight, RENDER_SCALE);
+    vr_log("videoSetDisplayMode: index=%d, %dx%d, scale=%.2f -> %.2f",
+           index, vidWidth, vidHeight, RENDER_SCALE, newScale);
 
 
     s32 posX = 100;
@@ -414,10 +417,13 @@ void videoSetDisplayMode(const s32 index)
         }
     }
 
-    // Update RENDER_SCALE and restart
-    if (vidModeScales && vidModeScales[index] > 0.f) {
-        vr_restart_with_new_scale(vidModeScales[index]);
-    }
+    // Deliberately NOT restarting VR here. This runs from the options menu, which the game
+    // ticks between xrBeginFrame and xrEndFrame -- destroying the OpenXR instance inside an
+    // open frame leaves an out-of-process runtime holding a half-torn-down session, and a
+    // few of those in a row are enough to make xrCreateSwapchain fail outright. RENDER_SCALE
+    // is left alone too, so the menu keeps reporting the resolution that is actually live.
+    // mainTick applies the request once the frame is closed.
+    vr_request_scale(newScale);
 
 }
 

@@ -91,6 +91,7 @@ extern bool vr_is_initialized();
 extern bool vr_begin_frame_and_update_poses();
 extern void vr_poll_events();
 extern void vr_end_frame_and_submit();
+extern bool vr_apply_pending_scale(void);
 extern bool g_frameStarted;
 bool vr_init_done = false;
 extern void vrShowWaitingWindow(const char *bmpPath);
@@ -665,6 +666,9 @@ void mainTick(void)
     // VR
     if(vr_init_done) {
         vr_end_frame_and_submit();
+        // The frame is closed now, so it is safe to rebuild the OpenXR instance if the
+        // options menu asked for a different render scale earlier in this tick.
+        vr_apply_pending_scale();
     }
 }
 

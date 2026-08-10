@@ -82,7 +82,7 @@ uintptr_t gfxFramebuffer;
 // ============================================================================
 
 extern "C" bool   vr_is_initialized();
-void   vr_begin_eye_render();
+bool   vr_begin_eye_render();
 void   vr_end_eye_render();
 float* vr_get_eye_proj_mtx(int eye);
 void   vr_get_eye_view_offset(int eye, float* out_tx, float* out_ty, float* out_tz, float *out_tx_HUD);
@@ -2872,41 +2872,49 @@ extern "C" void gfx_run(Gfx* commands) {
 
 
         // 1) Acquire + attach swapchain to g_multiviewFBO
-        vr_begin_eye_render();              // bind g_multiviewFBO, attache color+depth, clear
+        // Bails out when the runtime has no swapchain to give us (a dead or restarting
+        // session): rendering the display list anyway would just dump a full scene into
+        // whatever framebuffer happened to be bound.
+        if (vr_begin_eye_render()) {         // bind g_multiviewFBO, attache color+depth, clear
 
-        // 2) Tell the backend that "current FBO = index 0"
-        gfx_rapi->start_draw_to_framebuffer(0, 1.0f);
+            // 2) Tell the backend that "current FBO = index 0"
+            gfx_rapi->start_draw_to_framebuffer(0, 1.0f);
 
-        gfx_sp_reset();
-        buf_vbo_len = buf_vbo_num_tris = 0;
-        fbActive = 0;
-        rdp.textures_changed[0] = rdp.textures_changed[1] = true;
-        rdp.viewport_or_scissor_changed = true;
+            gfx_sp_reset();
+            buf_vbo_len = buf_vbo_num_tris = 0;
+            fbActive = 0;
+            rdp.textures_changed[0] = rdp.textures_changed[1] = true;
+            rdp.viewport_or_scissor_changed = true;
 
-        // 3) Render the game directly into the headset texture
-        gfx_run_dl(commands);
-        gfx_flush();
+            // 3) Render the game directly into the headset texture
+            gfx_run_dl(commands);
+            gfx_flush();
 
-        // 4) Release + submit
-        vr_end_eye_render();
-
-        // ─────────────────────────────────────────────────────
-        // 3) MIRROR: Blit the left eye to the desktop back buffer
-        // ─────────────────────────────────────────────────────
+            // ─────────────────────────────────────────────────────
+            // 4) MIRROR: Blit the left eye to the desktop back buffer
+            //
+            // Must happen BEFORE vr_end_eye_render(). That call releases the image back to
+            // the runtime, which then owns it -- under a streaming runtime it is being
+            // copied and fed to the video encoder at that moment, from another process.
+            // Sampling it from our mirror context after the release is a read-write hazard.
+            // ─────────────────────────────────────────────────────
 #ifndef ANDROID // if PC
-        int mw = 0, mh = 0;
-        gfx_sdl_get_mirror_dimensions(&mw, &mh);
+            int mw = 0, mh = 0;
+            gfx_sdl_get_mirror_dimensions(&mw, &mh);
 
-        if (mw > 0 && mh > 0) {
-            gfx_rapi->mirror_to_desktop(
-                    (uint32_t)vr_get_internal_render_width(),   // src_w : résolution VR fixe
-                    (uint32_t)vr_get_internal_render_height(),  // src_h : résolution VR fixe
-                    (uint32_t)mw,                               // dst_w : taille miroir dynamique
-                    (uint32_t)mh                                // dst_h : taille miroir dynamique
-            );
-        }
+            if (mw > 0 && mh > 0) {
+                gfx_rapi->mirror_to_desktop(
+                        (uint32_t)vr_get_internal_render_width(),   // src_w : résolution VR fixe
+                        (uint32_t)vr_get_internal_render_height(),  // src_h : résolution VR fixe
+                        (uint32_t)mw,                               // dst_w : taille miroir dynamique
+                        (uint32_t)mh                                // dst_h : taille miroir dynamique
+                );
+            }
 #endif
-        // ─────────────────────────────────────────────────────
+
+            // 5) Release + submit
+            vr_end_eye_render();
+        }
 
         gfx_rapi->end_frame();
         gfx_wapi->swap_buffers_begin();
