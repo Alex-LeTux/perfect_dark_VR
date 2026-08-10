@@ -839,10 +839,15 @@ Gfx *nbombRenderOverlay(Gfx *gdl)
 		colours = gfxAllocateColours(1);
 		vertices = gfxAllocateVertices(4);
 
-		viewleft = viGetViewLeft() * 10;
-		viewtop = viGetViewTop() * 10;
-		viewright = (s16) (viGetViewLeft() + viGetViewWidth()) * 10;
-		viewbottom = (s16) (viGetViewTop() + viGetViewHeight()) * 10;
+		// VR: the headset sees well past the game viewport, so an overlay that
+		// stops at the viewport leaves its edge sitting in your periphery.
+		// Grow the quad by a whole view in every direction. The texture
+		// coordinates below grow by the same factor, so the gas keeps its
+		// density instead of being stretched across the larger quad.
+		viewleft = viGetViewLeft() * 10 - viGetViewWidth() * 10;
+		viewtop = viGetViewTop() * 10 - viGetViewHeight() * 10;
+		viewright = (s16) (viGetViewLeft() + viGetViewWidth()) * 10 + viGetViewWidth() * 10;
+		viewbottom = (s16) (viGetViewTop() + viGetViewHeight()) * 10 + viGetViewHeight() * 10;
 
 		s = (s32) (8.0f * g_20SecIntervalFrac * 128.0f * 32.0f) % 2048;
 		t = (s16) ((s32) (campos.f[1] * 8.0f) % 2048) + (s16) (2.0f * g_20SecIntervalFrac * 128.0f * 32.0f);
@@ -884,14 +889,15 @@ Gfx *nbombRenderOverlay(Gfx *gdl)
 		vertices[3].y = viewbottom;
 		vertices[3].z = -10;
 
+		// 3x the original 160/960 spans, matching the 3x quad above.
 		vertices[0].s = s;
 		vertices[0].t = t;
-		vertices[1].s = s + 160;
+		vertices[1].s = s + 480;
 		vertices[1].t = t;
-		vertices[2].s = s + 160;
-		vertices[2].t = t + 960;
+		vertices[2].s = s + 480;
+		vertices[2].t = t + 2880;
 		vertices[3].s = s;
-		vertices[3].t = t + 960;
+		vertices[3].t = t + 2880;
 
 		vertices[0].colour = 0;
 		vertices[1].colour = 0;
@@ -993,10 +999,16 @@ Gfx *gasRender(Gfx *gdl)
 		if (show) {
 			Col *colours = gfxAllocateColours(1);
 			Vtx *vertices = gfxAllocateVertices(8);
-			s16 viewleft = viGetViewLeft() * 10;
-			s16 viewtop = viGetViewTop() * 10;
-			s16 viewright = (s16) (viGetViewLeft() + viGetViewWidth()) * 10;
-			s16 viewbottom = (s16) (viGetViewTop() + viGetViewHeight()) * 10;
+			// Grown by a whole view in every direction, as the N-bomb overlay
+			// above is and for the same reason: the headset sees past the game
+			// viewport, so a quad that stops there leaves its edge in your
+			// periphery. Both layers' texture coordinates grow to match, so the
+			// gas keeps its density instead of being stretched over the larger
+			// quad.
+			s16 viewleft = viGetViewLeft() * 10 - viGetViewWidth() * 10;
+			s16 viewtop = viGetViewTop() * 10 - viGetViewHeight() * 10;
+			s16 viewright = (s16) (viGetViewLeft() + viGetViewWidth()) * 10 + viGetViewWidth() * 10;
+			s16 viewbottom = (s16) (viGetViewTop() + viGetViewHeight()) * 10 + viGetViewHeight() * 10;
 			f32 lookx = g_Vars.currentplayer->cam_look.x;
 			f32 lookz = g_Vars.currentplayer->cam_look.z;
 			f32 camposx = g_Vars.currentplayer->cam_pos.x;
@@ -1070,28 +1082,30 @@ Gfx *gasRender(Gfx *gdl)
 			vertices[7].y = viewbottom;
 			vertices[7].z = -10;
 
+			// 3x the original 960/640 spans, matching the 3x quad above.
 			vertices[0].s = layer1s;
 			vertices[0].t = layer1t;
-			vertices[1].s = layer1s + 960;
+			vertices[1].s = layer1s + 2880;
 			vertices[1].t = layer1t;
-			vertices[2].s = layer1s + 960;
-			vertices[2].t = layer1t + 640;
+			vertices[2].s = layer1s + 2880;
+			vertices[2].t = layer1t + 1920;
 			vertices[3].s = layer1s;
-			vertices[3].t = layer1t + 640;
+			vertices[3].t = layer1t + 1920;
 
 			vertices[0].colour = 0;
 			vertices[1].colour = 0;
 			vertices[2].colour = 0;
 			vertices[3].colour = 0;
 
+			// 3x the original 640/480 spans, likewise.
 			vertices[4].s = layer2s;
 			vertices[4].t = layer2t;
-			vertices[5].s = layer2s + 640;
+			vertices[5].s = layer2s + 1920;
 			vertices[5].t = layer2t;
-			vertices[6].s = layer2s + 640;
-			vertices[6].t = layer2t + 480;
+			vertices[6].s = layer2s + 1920;
+			vertices[6].t = layer2t + 1440;
 			vertices[7].s = layer2s;
-			vertices[7].t = layer2t + 480;
+			vertices[7].t = layer2t + 1440;
 
 			vertices[4].colour = 0;
 			vertices[5].colour = 0;
