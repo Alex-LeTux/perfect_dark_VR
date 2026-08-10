@@ -68,6 +68,17 @@ extern float vr_ctrl_velocity_play[2][3]; // m/s
 extern float vr_head_velocity_play[3];    // m/s
 
 extern float gStandingHeadHeight;
+// A plausible standing head (HMD) height in centimetres, used only until real
+// tracking arrives. Everything that cares about the player's actual height uses
+// the VrPlayerHeight setting.
+#define VR_NOMINAL_HEAD_HEIGHT_CM 160.0f
+
+// Head height above the physical floor, in centimetres. Under a floor-relative
+// reference space this is exactly what the runtime reports; under LOCAL it is
+// the reported Y plus a one-shot calibration offset.
+extern float gVrHeadHeightCm;
+extern bool gVrFloorRelativeSpace;
+
 extern bool vr_init_done;
 extern float vr_world_scale;
 
@@ -98,3 +109,15 @@ extern void gfx_vr_hud_capture_end_R(void);
 #define VR_HUD_CAPTURE_END_H 0x56570001
 extern void gfx_vr_hud_capture_begin_H(void);
 extern void gfx_vr_hud_capture_end_H(void);
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+// Restart the LOCAL-space height calibration (called at level start).
+void vr_recalibrate_head_height(void);
+
+#ifdef __cplusplus
+}
+#endif
+

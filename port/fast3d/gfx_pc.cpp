@@ -82,11 +82,17 @@ uintptr_t gfxFramebuffer;
 // ============================================================================
 
 extern "C" bool   vr_is_initialized();
-void   vr_begin_eye_render();
+bool   vr_begin_eye_render();
 void   vr_end_eye_render();
 float* vr_get_eye_proj_mtx(int eye);
 void   vr_get_eye_view_offset(int eye, float* out_tx, float* out_ty, float* out_tz, float *out_tx_HUD);
 bool vr_dl_is_pause_or_menu = false;
+// True only between the menu's begin and end tags, unlike vr_dl_is_pause_or_menu
+// which latches on at the first menu and never clears (the game emits an end tag
+// for it, 0x56520000, that nothing handles). Left that alone deliberately: it
+// drives uIsMenu in the shader, so unlatching it would move the HUD parallax
+// mid-session. This is the flag to use for "menu content is being drawn now".
+static bool vr_dl_menu_scope = false;
 int VrIsPaused = 0;
 static float s_vr_proj_col_major[16] = {};
 extern "C" int vr_get_internal_render_width();
@@ -98,6 +104,58 @@ static float g_vr_internal_scale = 1.0f;
 bool is_weapon_hud = false;
 extern "C" void gfxSetCrosshairParallaxRight(float correction);
 extern "C" void gfxSetCrosshairParallaxLeft(float correction);
+
+// --- VR: culling has to account for the per-eye clip-space shear -------------
+//
+// Vertices are transformed on the CPU with the game's projection, which is a
+// single symmetric frustum built from the mean of the two eyes' tangent extents.
+// The multiview vertex shader then shears clip space per eye:
+//
+//     x' = x - ex - ey * w        ex = IPD offset, ey = horizontal lens asymmetry
+//     y' = y - ew * w             ew = vertical lens asymmetry
+//
+// So the frustum the CPU culls against matches neither eye. Two tests below are
+// corrected with the values the shader itself is given, rather than a guess.
+// All of these stay zero outside VR, where the corrections reduce to identities.
+
+// Trivial reject: how far beyond the unsheared frustum a vertex may sit and
+// still be visible to one of the eyes. The constant term is the IPD offset; the
+// w-scaled term covers the lens asymmetry and the HUD branch's own shear.
+static float vr_clip_margin_x_const = 0.0f;
+static float vr_clip_margin_x_w = 0.0f;
+static float vr_clip_margin_y_w = 0.0f;
+
+// Backface winding: only ex survives the differencing of the cross product (ey
+// and ew are constant per vertex and cancel), so this is all the cull test needs.
+static float vr_cull_eye_dx[2] = { 0.0f, 0.0f };
+static bool vr_cull_stereo = false;
+
+static void vr_set_cull_offsets(const float offsets[8]) {
+    // Layout per eye, from gfx_opengl_set_eye_offsets: { ipd, asym_x, hud, asym_y }.
+    const float exL = offsets[0], eyL = offsets[1], ezL = offsets[2], ewL = offsets[3];
+    const float exR = offsets[4], eyR = offsets[5], ezR = offsets[6], ewR = offsets[7];
+
+    vr_clip_margin_x_const = std::max(std::fabs(exL), std::fabs(exR));
+    vr_clip_margin_x_w = std::max(std::max(std::fabs(eyL), std::fabs(eyR)),
+                                  std::max(std::fabs(ezL), std::fabs(ezR)));
+    vr_clip_margin_y_w = std::max(std::fabs(ewL), std::fabs(ewR));
+
+    vr_cull_eye_dx[0] = exL;
+    vr_cull_eye_dx[1] = exR;
+    vr_cull_stereo = (exL != exR);
+
+    // The margins are only as good as the asymmetry the runtime reports, and that
+    // differs per headset. Log them once so they can be read back rather than
+    // assumed.
+    static bool logged = false;
+    if (!logged) {
+        logged = true;
+        vr_log("VR cull offsets: L ipd=%.4f asym_x=%.4f hud=%.4f asym_y=%.4f", exL, eyL, ezL, ewL);
+        vr_log("VR cull offsets: R ipd=%.4f asym_x=%.4f hud=%.4f asym_y=%.4f", exR, eyR, ezR, ewR);
+        vr_log("VR clip margins: x_const=%.4f x_w=%.4f y_w=%.4f",
+               vr_clip_margin_x_const, vr_clip_margin_x_w, vr_clip_margin_y_w);
+    }
+}
 
 //------------------------------------------------------------------------------
 
@@ -1181,17 +1239,26 @@ static void gfx_sp_vertex(size_t n_vertices, size_t dest_index, const Vtx* verti
         d->v = V;
 
         // trivial clip rejection
+        //
+        // The bounds are widened by however far the per-eye shear can carry a
+        // vertex back into view (zero outside VR). Being generous here only
+        // costs a few triangles the GPU then clips; being tight drops geometry
+        // the headset can see, in a strip down the outer edge of each eye.
+        const float aw = fabsf(w);
+        const float mx = vr_clip_margin_x_const + vr_clip_margin_x_w * aw;
+        const float my = vr_clip_margin_y_w * aw;
+
         d->clip_rej = 0;
-        if (x < -w) {
+        if (x < -w - mx) {
             d->clip_rej |= 1; // CLIP_LEFT
         }
-        if (x > w) {
+        if (x > w + mx) {
             d->clip_rej |= 2; // CLIP_RIGHT
         }
-        if (y < -w) {
+        if (y < -w - my) {
             d->clip_rej |= 4; // CLIP_BOTTOM
         }
-        if (y > w) {
+        if (y > w + my) {
             d->clip_rej |= 8; // CLIP_TOP
         }
         // if (z < -w) d->clip_rej |= 16; // CLIP_NEAR
@@ -1243,6 +1310,27 @@ static inline int gfx_lod_tile_offset(const int i) {
     return (rdp.tex_lod ? rdp.tex_detail : i);
 }
 
+// Signed area of the triangle as one eye sees it. eye_dx is that eye's clip-space
+// IPD offset: the shader's shear is x' = x - ex - ey*w, and the constant ey drops
+// out of the differences, so subtracting ex is the whole correction. Called with
+// eye_dx == 0 outside VR, where it is the stock centre-camera cross product.
+static inline float gfx_tri_signed_area(const struct LoadedVertex* v1, const struct LoadedVertex* v2,
+                                        const struct LoadedVertex* v3, float eye_dx) {
+    float dx1 = (v1->x - eye_dx) / (v1->w) - (v2->x - eye_dx) / (v2->w);
+    float dy1 = v1->y / (v1->w) - v2->y / (v2->w);
+    float dx2 = (v3->x - eye_dx) / (v3->w) - (v2->x - eye_dx) / (v2->w);
+    float dy2 = v3->y / (v3->w) - v2->y / (v2->w);
+    float cross = dx1 * dy2 - dy1 * dx2;
+
+    if ((v1->w < 0) ^ (v2->w < 0) ^ (v3->w < 0)) {
+        // If one vertex lies behind the eye, negating cross will give the correct result.
+        // If all vertices lie behind the eye, the triangle will be rejected anyway.
+        cross = -cross;
+    }
+
+    return cross;
+}
+
 static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bool is_rect) {
     struct LoadedVertex* v1 = &rsp.loaded_vertices[vtx1_idx];
     struct LoadedVertex* v2 = &rsp.loaded_vertices[vtx2_idx];
@@ -1257,16 +1345,25 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bo
     }
 
     if ((rsp.geometry_mode & G_CULL_BOTH) != 0) {
-        float dx1 = v1->x / (v1->w) - v2->x / (v2->w);
-        float dy1 = v1->y / (v1->w) - v2->y / (v2->w);
-        float dx2 = v3->x / (v3->w) - v2->x / (v2->w);
-        float dy2 = v3->y / (v3->w) - v2->y / (v2->w);
-        float cross = dx1 * dy2 - dy1 * dx2;
+        if ((rsp.geometry_mode & G_CULL_BOTH) == G_CULL_BOTH) {
+            // Why is this even an option?
+            return;
+        }
 
-        if ((v1->w < 0) ^ (v2->w < 0) ^ (v3->w < 0)) {
-            // If one vertex lies behind the eye, negating cross will give the correct result.
-            // If all vertices lie behind the eye, the triangle will be rejected anyway.
-            cross = -cross;
+        const bool cull_front = (rsp.geometry_mode & G_CULL_BOTH) == G_CULL_FRONT;
+
+        // The two eyes do not agree about the winding of a triangle that is close
+        // to edge-on, because their parallax is depth-dependent and so does not
+        // cancel out of the cross product. Multiview gives us one vertex stream for
+        // both views, so a triangle either survives for both eyes or for neither:
+        // keep it if either eye sees its front. Where the eyes disagree the other
+        // one is looking at a degenerate sliver, so drawing it there costs nothing.
+        float cross = gfx_tri_signed_area(v1, v2, v3, vr_cull_eye_dx[0]);
+        bool cull = cull_front ? (cross <= 0) : (cross >= 0);
+
+        if (cull && vr_cull_stereo) {
+            cross = gfx_tri_signed_area(v1, v2, v3, vr_cull_eye_dx[1]);
+            cull = cull_front ? (cross <= 0) : (cross >= 0);
         }
 
         // If inverted culling is requested, negate the cross
@@ -1274,20 +1371,8 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bo
         //     cross = -cross;
         // }
 
-        switch (rsp.geometry_mode & G_CULL_BOTH) {
-            case G_CULL_FRONT:
-                if (cross <= 0) {
-                    return;
-                }
-                break;
-            case G_CULL_BACK:
-                if (cross >= 0) {
-                    return;
-                }
-                break;
-            case G_CULL_BOTH:
-                // Why is this even an option?
-                return;
+        if (cull) {
+            return;
         }
     }
 
@@ -2227,6 +2312,47 @@ static void gfx_dp_image_rectangle(int32_t tile, int32_t w, int32_t h,
                                    int32_t lrx, int32_t lry, int16_t lrs, int16_t lrt) {
     uint64_t saved_combine_mode = rdp.combine_mode;
 
+    // Widen a full-viewport image rect exactly as gfx_dp_fill_rectangle widens a
+    // full-viewport fill rect, and for the same reason: the headset sees past
+    // the viewport, so the motion blur and the cutscene wash that ride on this
+    // opcode stopped short and left strips down the sides. The difference is
+    // that the source coordinates have to grow by the same proportion, or the
+    // captured frame would be stretched across the bigger rect rather than
+    // extended past it -- the blur has to stay registered with the scene under
+    // it. Sampling then runs off the edge of the capture, so the tile is
+    // clamped below and the edge pixels carry outward.
+    //
+    // Not for menus. The blurred backdrop behind the pause and title menus is
+    // the same opcode over the same captured frame, but it is a deliberate
+    // treatment of that image rather than an overlay on the world, and widening
+    // it garbles the backdrop.
+    bool vr_widened = false;
+
+    if (vr_is_initialized()
+            && !vr_dl_menu_scope
+            && ulx <= 0 && uly <= 0
+            && lrx >= (SCREEN_WIDTH - 1) * 4 && lry >= (SCREEN_HEIGHT - 1) * 4
+            && lrx > ulx && lry > uly) {
+        const int32_t newulx = -2 * 4 * SCREEN_WIDTH;
+        const int32_t newuly = -2 * 4 * SCREEN_HEIGHT;
+        const int32_t newlrx =  3 * 4 * SCREEN_WIDTH;
+        const int32_t newlry =  3 * 4 * SCREEN_HEIGHT;
+
+        const float texelsx = (float)(lrs - uls) / (float)(lrx - ulx);
+        const float texelsy = (float)(lrt - ult) / (float)(lry - uly);
+
+        uls = (int16_t)(uls + (newulx - ulx) * texelsx);
+        lrs = (int16_t)(lrs + (newlrx - lrx) * texelsx);
+        ult = (int16_t)(ult + (newuly - uly) * texelsy);
+        lrt = (int16_t)(lrt + (newlry - lry) * texelsy);
+
+        ulx = newulx;
+        uly = newuly;
+        lrx = newlrx;
+        lry = newlry;
+
+        vr_widened = true;
+    }
 
     struct LoadedVertex* ul = &rsp.loaded_vertices[MAX_VERTICES + 0];
     struct LoadedVertex* ll = &rsp.loaded_vertices[MAX_VERTICES + 1];
@@ -2245,8 +2371,10 @@ static void gfx_dp_image_rectangle(int32_t tile, int32_t w, int32_t h,
     rdp.texture_tile[tile].line_size_bytes = w << rdp.texture_tile[tile].siz >> 1;
     rdp.texture_tile[tile].width = w;
     rdp.texture_tile[tile].height = h;
-    rdp.texture_tile[tile].cms = 0;
-    rdp.texture_tile[tile].cmt = 0;
+    // Clamp rather than wrap once widened, so the area past the captured frame
+    // carries its edge pixels outward instead of tiling copies of it.
+    rdp.texture_tile[tile].cms = vr_widened ? G_TX_CLAMP : 0;
+    rdp.texture_tile[tile].cmt = vr_widened ? G_TX_CLAMP : 0;
     rdp.texture_tile[tile].shifts = 0;
     rdp.texture_tile[tile].shiftt = 0;
     auto& loadtex = rdp.loaded_texture[rdp.texture_tile[tile].tmem];
@@ -2277,12 +2405,26 @@ static void gfx_dp_fill_rectangle(int32_t ulx, int32_t uly, int32_t lrx, int32_t
     }
     uint32_t mode = (rdp.other_mode_h & (3U << G_MDSFT_CYCLETYPE));
 
-    // OTRTODO: This is a bit of a hack for widescreen screen fades, but it'll work for now...
-    if (ulx == 0 && uly == 0 && lrx == 319 * 4 && lry == 239 * 4) {
-        ulx = -1024;
-        uly = -1024;
-        lrx = 2048;
-        lry = 2048;
+    // A fill rect covering the whole viewport is a screen-wide effect -- a fade,
+    // a damage flash, a wash -- so widen it well past the viewport. Widescreen
+    // needs that to reach the corners; a headset needs it more, because it sees
+    // past the viewport entirely and a rect stopping there leaves a visible edge
+    // in your periphery.
+    //
+    // These are 10.2 fixed point coordinates that gfx_draw_rectangle maps to NDC
+    // through HALF_SCREEN_WIDTH, so the old fixed -1024..2048 was really "-2.6 to
+    // +2.2 in NDC" only at a 320-wide native viewport. At 576 the same numbers
+    // land the right edge at +0.78 -- inside the screen, hence a strip along the
+    // right that no full-screen effect ever covered. Expressed in screens it
+    // holds at any native size.
+    if ((ulx == 0 && uly == 0 && lrx == 319 * 4 && lry == 239 * 4)
+            || (vr_is_initialized()
+                && ulx <= 0 && uly <= 0
+                && lrx >= (SCREEN_WIDTH - 1) * 4 && lry >= (SCREEN_HEIGHT - 1) * 4)) {
+        ulx = -2 * 4 * SCREEN_WIDTH;
+        uly = -2 * 4 * SCREEN_HEIGHT;
+        lrx =  3 * 4 * SCREEN_WIDTH;
+        lry =  3 * 4 * SCREEN_HEIGHT;
     }
 
     if (mode == G_CYC_COPY || mode == G_CYC_FILL) {
@@ -2374,6 +2516,11 @@ static void gfx_run_dl(Gfx* cmd) {
                 switch (tag_w1) {
                     case 0x56520001: // Menu is open
                         vr_dl_is_pause_or_menu = (tag_w1 & 0xFFFF) != 0; // VR
+                        vr_dl_menu_scope = true;
+                        break;
+
+                    case 0x56520000: // Menu is finished
+                        vr_dl_menu_scope = false;
                         break;
 
                     case VR_MENU_HUD_CAPTURE_BEGIN_L:
@@ -2870,43 +3017,56 @@ extern "C" void gfx_run(Gfx* commands) {
         gfx_rapi->set_eye_offsets(offsets[0], offsets[1], offsets[2], offsets[3],
                                   offsets[4], offsets[5], offsets[6], offsets[7]);
 
+        // Feed the same numbers to the CPU-side clip and backface tests, so they
+        // cull against the frusta the shader actually renders rather than the
+        // centred average frustum the game's projection matrix describes.
+        vr_set_cull_offsets(offsets);
+
 
         // 1) Acquire + attach swapchain to g_multiviewFBO
-        vr_begin_eye_render();              // bind g_multiviewFBO, attache color+depth, clear
+        // Bails out when the runtime has no swapchain to give us (a dead or restarting
+        // session): rendering the display list anyway would just dump a full scene into
+        // whatever framebuffer happened to be bound.
+        if (vr_begin_eye_render()) {         // bind g_multiviewFBO, attache color+depth, clear
 
-        // 2) Tell the backend that "current FBO = index 0"
-        gfx_rapi->start_draw_to_framebuffer(0, 1.0f);
+            // 2) Tell the backend that "current FBO = index 0"
+            gfx_rapi->start_draw_to_framebuffer(0, 1.0f);
 
-        gfx_sp_reset();
-        buf_vbo_len = buf_vbo_num_tris = 0;
-        fbActive = 0;
-        rdp.textures_changed[0] = rdp.textures_changed[1] = true;
-        rdp.viewport_or_scissor_changed = true;
+            gfx_sp_reset();
+            buf_vbo_len = buf_vbo_num_tris = 0;
+            fbActive = 0;
+            rdp.textures_changed[0] = rdp.textures_changed[1] = true;
+            rdp.viewport_or_scissor_changed = true;
 
-        // 3) Render the game directly into the headset texture
-        gfx_run_dl(commands);
-        gfx_flush();
+            // 3) Render the game directly into the headset texture
+            gfx_run_dl(commands);
+            gfx_flush();
 
-        // 4) Release + submit
-        vr_end_eye_render();
-
-        // ─────────────────────────────────────────────────────
-        // 3) MIRROR: Blit the left eye to the desktop back buffer
-        // ─────────────────────────────────────────────────────
+            // ─────────────────────────────────────────────────────
+            // 4) MIRROR: Blit the left eye to the desktop back buffer
+            //
+            // Must happen BEFORE vr_end_eye_render(). That call releases the image back to
+            // the runtime, which then owns it -- under a streaming runtime it is being
+            // copied and fed to the video encoder at that moment, from another process.
+            // Sampling it from our mirror context after the release is a read-write hazard.
+            // ─────────────────────────────────────────────────────
 #ifndef ANDROID // if PC
-        int mw = 0, mh = 0;
-        gfx_sdl_get_mirror_dimensions(&mw, &mh);
+            int mw = 0, mh = 0;
+            gfx_sdl_get_mirror_dimensions(&mw, &mh);
 
-        if (mw > 0 && mh > 0) {
-            gfx_rapi->mirror_to_desktop(
-                    (uint32_t)vr_get_internal_render_width(),   // src_w : résolution VR fixe
-                    (uint32_t)vr_get_internal_render_height(),  // src_h : résolution VR fixe
-                    (uint32_t)mw,                               // dst_w : taille miroir dynamique
-                    (uint32_t)mh                                // dst_h : taille miroir dynamique
-            );
-        }
+            if (mw > 0 && mh > 0) {
+                gfx_rapi->mirror_to_desktop(
+                        (uint32_t)vr_get_internal_render_width(),   // src_w : résolution VR fixe
+                        (uint32_t)vr_get_internal_render_height(),  // src_h : résolution VR fixe
+                        (uint32_t)mw,                               // dst_w : taille miroir dynamique
+                        (uint32_t)mh                                // dst_h : taille miroir dynamique
+                );
+            }
 #endif
-        // ─────────────────────────────────────────────────────
+
+            // 5) Release + submit
+            vr_end_eye_render();
+        }
 
         gfx_rapi->end_frame();
         gfx_wapi->swap_buffers_begin();

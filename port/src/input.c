@@ -36,6 +36,7 @@ extern bool vr_leftHasWeapon;
 int vr_button_R_grip = false;
 int vr_button_L_grip = false;
 extern int vr_invert_hands;
+extern bool VrTwoHandsGun(s32 weaponnum);   // bondgun.c: weapon is held with both hands
 int vr_right_gun_fire;
 int vr_left_gun_fire;
 extern bool vr_grip_for_unarmed;
@@ -1071,6 +1072,14 @@ void inputRumble(s32 idx, f32 strength, f32 time) {
             handLeft  = HAND_RIGHT;
         }
 
+        // Support hand for a two-handed grip, same mapping vrBuildGunRotation uses: the
+        // controller that is not the trigger hand. Only meaningful while it is actually
+        // gripping -- an idle off hand is not touching the weapon and should stay quiet.
+        const s32  supportHand    = vr_invert_hands ? 1 : 0;
+        const bool supportOnWeapon =
+                VrTwoHandsGun(g_Vars.currentplayer->gunctrl.weaponnum)
+                && get_button_state(supportHand, "grip");
+
         if (strength > 0.f) {
             if (strength > 1.f) strength = 1.f;
 
@@ -1083,6 +1092,13 @@ void inputRumble(s32 idx, f32 strength, f32 time) {
 
             if (bgunIsFiring(handRight) && vr_right_gun_fire > 0) {
                 trigger_haptic_vibration_c(1, strength, time);
+                // A two-handed weapon lives in a single hand slot, so only the controller
+                // holding it ever pulsed. A gripping support hand is on the same weapon
+                // taking the same recoil, so mirror the pulse onto it -- driven off the
+                // firing hand's own decay, so a burst reads as one weapon and not two.
+                if (supportOnWeapon) {
+                    trigger_haptic_vibration_c(supportHand, strength, time);
+                }
             }
             if (vr_right_gun_fire > 0) {
                 vr_right_gun_fire--;

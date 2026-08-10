@@ -37,6 +37,9 @@ static struct GfxRenderingAPI *renderingAPI;
 
 static bool initDone = false;
 
+// VR: size of the desktop mirror window, kept in step with the eye render size. Only the
+// centering/fullscreen helpers below read these; the render resolution itself comes from
+// RENDER_SCALE, so they are runtime state and are not persisted to the config.
 s32 vidWidth = -1;
 s32 vidHeight = -1;
 
@@ -75,26 +78,13 @@ extern float RENDER_SCALE;
 static f32 *vidModeScales = NULL;
 extern bool vr_restart_with_new_scale(float scale);
 extern bool vr_configure_resolution();
+extern void vr_request_scale(float scale);
 
 
 
 s32 videoInit(void)
 {
-#ifdef ANDROID
-    // Use SDL2 for Android since we're using SDLActivity
     wmAPI = &gfx_sdl;
-
-    // Get the actual screen dimensions on Android
-    SDL_DisplayMode displayMode;
-    if (SDL_GetCurrentDisplayMode(0, &displayMode) == 0) {
-        if (vidWidth == 0) vidWidth = displayMode.w;
-        if (vidHeight == 0) vidHeight = displayMode.h;
-        LOGI("Android: using screen dimensions %dx%d", vidWidth, vidHeight);
-    }
-#else
-    wmAPI = &gfx_sdl;
-
-#endif
     renderingAPI = &gfx_opengl_api;
 
     gfx_current_native_viewport.width = 320;
@@ -367,6 +357,13 @@ s32 videoInitDisplayModes(void)
     vidModeScales = scaleList;
     vidNumModes   = numModes;
 
+    // VR calls this again once it knows the eye render size; adopt it as the mirror-window
+    // size so the helpers below never run on a placeholder.
+    if (g_internalRenderWidth > 0 && g_internalRenderHeight > 0) {
+        vidWidth  = g_internalRenderWidth;
+        vidHeight = g_internalRenderHeight;
+    }
+
     return true;
 }
 
@@ -388,18 +385,20 @@ void videoSetDisplayMode(const s32 index)
 {
 
     const displaymode dm = vidModes[index];
+    const f32 newScale = (vidModeScales && vidModeScales[index] > 0.f) ? vidModeScales[index] : 1.0f;
+
+    // The menu commits on every selection, so just opening the Resolution dropdown and
+    // confirming the entry that was already active used to tear down and rebuild the whole
+    // OpenXR instance for nothing. Bail out before touching anything.
+    if (newScale == RENDER_SCALE && vidWidth == dm.width && vidHeight == dm.height) {
+        return;
+    }
+
     vidWidth  = dm.width;
     vidHeight = dm.height;
 
-    // Update RENDER_SCALE
-    if (vidModeScales && vidModeScales[index] > 0.f) {
-        RENDER_SCALE = vidModeScales[index];
-    } else {
-        RENDER_SCALE = 1.0f;
-    }
-
-    vr_log("videoSetDisplayMode: index=%d, %dx%d, scale=%.2f",
-           index, vidWidth, vidHeight, RENDER_SCALE);
+    vr_log("videoSetDisplayMode: index=%d, %dx%d, scale=%.2f -> %.2f",
+           index, vidWidth, vidHeight, RENDER_SCALE, newScale);
 
 
     s32 posX = 100;
@@ -418,10 +417,13 @@ void videoSetDisplayMode(const s32 index)
         }
     }
 
-    // Update RENDER_SCALE and restart
-    if (vidModeScales && vidModeScales[index] > 0.f) {
-        vr_restart_with_new_scale(vidModeScales[index]);
-    }
+    // Deliberately NOT restarting VR here. This runs from the options menu, which the game
+    // ticks between xrBeginFrame and xrEndFrame -- destroying the OpenXR instance inside an
+    // open frame leaves an out-of-process runtime holding a half-torn-down session, and a
+    // few of those in a row are enough to make xrCreateSwapchain fail outright. RENDER_SCALE
+    // is left alone too, so the menu keeps reporting the resolution that is actually live.
+    // mainTick applies the request once the frame is closed.
+    vr_request_scale(newScale);
 
 }
 
@@ -590,8 +592,6 @@ PD_CONSTRUCTOR static void videoConfigInit(void)
 {
     configRegisterInt("Video.DefaultFullscreen", &vidFullscreen, 0, 1);
     configRegisterInt("Video.DefaultMaximize", &vidMaximize, 0, 1);
-    configRegisterInt("Video.DefaultWidth", &vidWidth, 0, 32767);
-    configRegisterInt("Video.DefaultHeight", &vidHeight, 0, 32767);
     configRegisterInt("Video.ExclusiveFullscreen", &vidFullscreenExclusive, 0, 1);
     configRegisterInt("Video.CenterWindow", &vidCenter, 0, 1);
     configRegisterInt("Video.AllowHiDpi", &vidAllowHiDpi, 0, 1);
@@ -604,4 +604,9 @@ PD_CONSTRUCTOR static void videoConfigInit(void)
     configRegisterInt("Video.TextureFilter", &texFilter, 0, 2);
     configRegisterInt("Video.TextureFilter2D", &texFilter2D, 0, 1);
     configRegisterInt("Video.DetailTextures", &texDetail, 0, 1);
+    // VR: the eye render resolution is derived from RENDER_SCALE, so this is the key that
+    // makes the Extended menu's Resolution choice survive a restart. configInit() runs long
+    // before vr_initialize(), so the saved scale is already in place when the swapchains are
+    // first sized -- no restart and no resolution pop on startup.
+    configRegisterFloat("Video.VRRenderScale", &RENDER_SCALE, 0.5f, 4.f);
 }

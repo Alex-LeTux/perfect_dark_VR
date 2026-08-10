@@ -55,7 +55,18 @@ float VrYawRot = 0.0f;
 
 extern bool vr_is_duel;
 extern float vr_player_angle;
+extern float VrSetWorldScale;
 static f32 sVrEyeheightClamped = 150.0f; // default for starting game
+
+// VR height settings. See vr_settings.h for what they mean; the menu writes
+// them and pd-vr.ini persists them. The default is an average adult's standing
+// eye height, which is a little under average stature.
+float VrPlayerHeight = 160.0f;
+bool VrMatchCharacterHeight = false;
+
+// Highest head height we will believe, in cm. Only there to swallow tracking
+// spikes; a real head never gets near it.
+#define VR_MAX_HEAD_CM 250.0f
 
 extern void vr_align_with_game_angle(float target_game_angle);
 static bool vr_hoverbike_can_mount = false;
@@ -137,98 +148,314 @@ void joy_for_vr(void) {
 
 static struct coord lastVRHeadPos = { 0.0f, 0.0f, 0.0f };
 
-void vr_player_pos(void) {
+// --- Roomscale: the head is allowed to leave the body ------------------------
+//
+// prop->pos is the BODY: the collision cylinder, what the AI shoots at, what
+// owns the rooms. The camera is the HEAD. Physically leaning moves only the
+// head; the body is dragged after it only once you have leaned far enough that
+// you are plainly walking rather than leaning, and it is that drag -- never the
+// lean -- that gets collision-tested against the body cylinder. This is what
+// lets you put your head over a balcony rail: the rail stops the body, which
+// was not going anywhere, and your head goes over it.
+//
+// Two offsets, because they are different questions. The PHYSICAL one is where
+// your head actually is and never refuses anything -- if it did, motion spent
+// pushing into a wall would be lost, and stepping back out would leave you
+// permanently displaced from your own body. The SHOWN one is where the camera
+// is allowed to be, the physical one clamped against solid geometry. Press into
+// a wall and they diverge; step back and they converge again on their own.
+//
+// Both kept in PLAY space (the headset's own frame) so that turning, stick or
+// snap, rotates them along with the world for free. Everything else wants game
+// space, which is a rotation away and recomputed every frame.
+static struct coord sVrHeadOffsetPlay = { 0.0f, 0.0f, 0.0f };   // physical
+static struct coord sVrShownOffsetPlay = { 0.0f, 0.0f, 0.0f };  // clamped
+static struct coord sVrHeadOffset = { 0.0f, 0.0f, 0.0f };       // clamped, game space
 
-    if(g_Vars.currentplayer->isdead == false
-       && g_Vars.tickmode == TICKMODE_NORMAL
-       && !vr_is_duel
-            ) {
+// How far the two have diverged, i.e. how far into something solid your real
+// head has gone. Drives the comfort fade.
+static f32 sVrHeadClipDist = 0.0f;
 
-        // Variables to store the new position
-        struct coord newPos;
-        struct coord delta;
-        RoomNum rooms[8];
-        f32 radius, ymax, ymin;
-        s32 collisionResult;
-        s32 types;
+// The body chases the head every tick -- roomscale walking is the body walking,
+// and it should be under you whenever it can be. Distance between the two opens
+// up only where the body physically cannot follow (a rail across its waist, a
+// wall at its shoulder) and closes again the moment the way is clear.
+//
+// Capped per tick so that catching up after a long lean stays a series of small
+// collision-tested steps rather than one long jump, which could skip through
+// thin geometry: cdExamCylMove02 only tests the destination. The cap is
+// invisible in play -- the camera is body + offset, so moving the body and
+// shrinking the offset by the same vector leaves the view exactly where it was.
+#define VR_BODY_CATCHUP_MAX 10.0f
 
+// How far your head gets past what the game will follow before the view is
+// fully black. This is comfort feedback, not occlusion: the probe has already
+// stopped the view at the wall, and this says so rather than letting you
+// wonder why the world stopped moving with you.
+#define VR_HEAD_FADE_START 2.0f
+#define VR_HEAD_FADE_FULL  10.0f
 
-        // Calculate the DISPLACEMENT (delta) from the previous frame
-        float deltaX = gHeadPos.x - lastVRHeadPos.x;
-        float deltaY = gHeadPos.y - lastVRHeadPos.y;
-        float deltaZ = gHeadPos.z - lastVRHeadPos.z;
+// The probe that keeps your head out of solid geometry. A head, not a body: it
+// is a short slab at eye level, so a waist-high rail passes underneath it and
+// stops blocking the view, which is the entire point.
+#define VR_HEAD_PROBE_RADIUS 12.0f
+#define VR_HEAD_PROBE_YMAX   10.0f
+#define VR_HEAD_PROBE_YMIN  -10.0f
 
-        // Transform the VR movement according to the joystick rotation
-        delta.x = deltaX;
-        delta.y = deltaY;
-        delta.z = deltaZ;
-        vr_rotate_vector_by_quaternion(&delta, &vr_joy_rot_Q);
+// No single frame can legitimately hold this much head motion (25 cm at 90 Hz
+// is 22 m/s). Anything bigger is a resync rather than a movement: a tracking
+// glitch, or returning from a mode that does not run this code -- a bike ride
+// leaves the last sample stale for as long as you were riding. Swallow it
+// instead of teleporting the body.
+#define VR_MAX_HEAD_STEP 25.0f
 
-        deltaX = delta.x;
-        deltaY = delta.y;
-        deltaZ = delta.z;
+static void vr_rotate_vector_by_quaternion_inv(struct coord *v, const XrQuaternionf *q) {
+    XrQuaternionf inv;
+    inv.x = -q->x;
+    inv.y = -q->y;
+    inv.z = -q->z;
+    inv.w = q->w;
+    vr_rotate_vector_by_quaternion(v, &inv);
+}
 
-        // Calculate the proposed new position
-        newPos.x = g_Vars.currentplayer->prop->pos.x + deltaX;
-        newPos.y = g_Vars.currentplayer->prop->pos.y + deltaY;
-        newPos.z = g_Vars.currentplayer->prop->pos.z + deltaZ;
+// Camera position: the body plus wherever your head has leaned to.
+void vr_get_head_pos(struct coord *out) {
+    out->x = g_Vars.currentplayer->prop->pos.x + sVrHeadOffset.x;
+    out->y = g_Vars.currentplayer->prop->pos.y;
+    out->z = g_Vars.currentplayer->prop->pos.z + sVrHeadOffset.z;
+}
 
-        // Get the player's collision radius
-        playerGetBbox(g_Vars.currentplayer->prop, &radius, &ymax, &ymin);
+// 0 while the view is following your head, rising to 1 as your real head goes
+// further into something the view will not follow you into.
+f32 vr_get_head_clip_frac(void) {
+    f32 frac;
 
-        // Determine the collision types to check
-        types = g_Vars.bondcollisions ? CDTYPE_ALL : CDTYPE_BG;
-
-        // Get the rooms for the new position
-        func0f065e74(&g_Vars.currentplayer->prop->pos, g_Vars.currentplayer->prop->rooms, &newPos,
-                     rooms);
-        bmoveFindEnteredRoomsByPos(g_Vars.currentplayer, &newPos, rooms);
-
-        // Temporarily disable player collision to avoid self-collision
-        propSetPerimEnabled(g_Vars.currentplayer->prop, false);
-
-        // Check cylindrical collision for the new position
-        collisionResult = cdExamCylMove02(
-                &g_Vars.currentplayer->prop->pos,     // Current position
-                &newPos,                              // Destination position
-                radius,                               // Cylinder radius
-                rooms,                                // Rooms to check
-                types,                                           // Collision types
-                true,                                 // Check collisions
-                ymax - g_Vars.currentplayer->prop->pos.y,   // Maximum height
-                ymin - g_Vars.currentplayer->prop->pos.y    // Minimum height
-        );
-
-        // Re-enable player collision
-        propSetPerimEnabled(g_Vars.currentplayer->prop, true);
-
-        // Apply the movement ONLY if there is no collision
-        if (collisionResult == CDRESULT_NOCOLLISION) {
-            // No collision - apply full movement
-            g_Vars.currentplayer->prop->pos.x += deltaX;
-            g_Vars.currentplayer->prop->pos.y += deltaY;
-            g_Vars.currentplayer->prop->pos.z += deltaZ;
-
-            g_Vars.currentplayer->bond2.unk10.x += deltaX;
-            g_Vars.currentplayer->bond2.unk10.y += deltaY;
-            g_Vars.currentplayer->bond2.unk10.z += deltaZ;
-
-        } else {
-            // Collision detected
-            //vr_log("Collision detected");
-        }
-
-        // Save the current position
-        lastVRHeadPos.x = gHeadPos.x;
-        lastVRHeadPos.y = gHeadPos.y;
-        lastVRHeadPos.z = gHeadPos.z;
-
-    }else{
-        lastVRHeadPos.x = gHeadPos.x;
-        lastVRHeadPos.y = gHeadPos.y;
-        lastVRHeadPos.z = gHeadPos.z;
-
+    if (sVrHeadClipDist <= VR_HEAD_FADE_START) {
+        return 0.0f;
     }
+
+    frac = (sVrHeadClipDist - VR_HEAD_FADE_START) / (VR_HEAD_FADE_FULL - VR_HEAD_FADE_START);
+
+    return frac > 1.0f ? 1.0f : frac;
+}
+
+// Can the head sit this far from the body without ending up inside something
+// solid?
+//
+// Solid means "you cannot see through it". GEOFLAG_BLOCK_SIGHT is the level's
+// own answer to that question -- it is what the AI's line-of-sight tests use,
+// so every real wall carries it. The invisible barriers these levels put along
+// balconies and rails to keep the player in do not, because you can plainly
+// see through them, and blocking the head on those is what stopped leaning
+// over a rail from working. Geometry you can see through, your head goes
+// through; geometry you cannot, it does not.
+static bool vr_head_offset_is_clear(f32 offx, f32 offz) {
+    struct collision collisions[21];
+    struct coord headPos;
+    RoomNum rooms[8];
+    s32 types, i;
+
+    headPos.x = g_Vars.currentplayer->prop->pos.x + offx;
+    headPos.y = g_Vars.currentplayer->prop->pos.y;
+    headPos.z = g_Vars.currentplayer->prop->pos.z + offz;
+
+    types = g_Vars.bondcollisions ? CDTYPE_ALL : CDTYPE_BG;
+
+    func0f065e74(&g_Vars.currentplayer->prop->pos, g_Vars.currentplayer->prop->rooms, &headPos, rooms);
+    bmoveFindEnteredRoomsByPos(g_Vars.currentplayer, &headPos, rooms);
+
+    collisions[0].geo = NULL;
+
+    propSetPerimEnabled(g_Vars.currentplayer->prop, false);
+
+    cdCollectGeoForCylMove(&headPos, VR_HEAD_PROBE_RADIUS, rooms, types, GEOFLAG_WALL,
+                           true, VR_HEAD_PROBE_YMAX, VR_HEAD_PROBE_YMIN, collisions, 20);
+
+    propSetPerimEnabled(g_Vars.currentplayer->prop, true);
+
+    for (i = 0; collisions[i].geo != NULL; i++) {
+        if (collisions[i].geo->flags & GEOFLAG_BLOCK_SIGHT) {
+            return false;
+        }
+    }
+
+    // The test above only asks whether the head has ended up inside something,
+    // which a wall thinner than a lean is wide enough to step straight over:
+    // past its far side the destination is clear again and the view pops out
+    // the other side. Asking for line of sight from the body catches the
+    // crossing itself rather than the landing, and it is the same question --
+    // sight -- so invisible barriers stay invisible to it too.
+    if (!cdTestLos05(&g_Vars.currentplayer->prop->pos, g_Vars.currentplayer->prop->rooms,
+                     &headPos, rooms, types, GEOFLAG_BLOCK_SIGHT)) {
+        return false;
+    }
+
+    return true;
+}
+
+// Drag the body, full-body cylinder against the world as usual. Returns whether
+// it actually moved, so the caller can leave what was blocked in the offset.
+static bool vr_try_move_body(f32 dx, f32 dz) {
+    struct coord newPos;
+    RoomNum rooms[8];
+    f32 radius, ymax, ymin;
+    s32 types, result;
+
+    if (dx == 0.0f && dz == 0.0f) {
+        return false;
+    }
+
+    newPos.x = g_Vars.currentplayer->prop->pos.x + dx;
+    newPos.y = g_Vars.currentplayer->prop->pos.y;
+    newPos.z = g_Vars.currentplayer->prop->pos.z + dz;
+
+    playerGetBbox(g_Vars.currentplayer->prop, &radius, &ymax, &ymin);
+    types = g_Vars.bondcollisions ? CDTYPE_ALL : CDTYPE_BG;
+
+    func0f065e74(&g_Vars.currentplayer->prop->pos, g_Vars.currentplayer->prop->rooms, &newPos, rooms);
+    bmoveFindEnteredRoomsByPos(g_Vars.currentplayer, &newPos, rooms);
+
+    propSetPerimEnabled(g_Vars.currentplayer->prop, false);
+
+    result = cdExamCylMove02(&g_Vars.currentplayer->prop->pos, &newPos, radius, rooms, types, true,
+                             ymax - g_Vars.currentplayer->prop->pos.y,
+                             ymin - g_Vars.currentplayer->prop->pos.y);
+
+    propSetPerimEnabled(g_Vars.currentplayer->prop, true);
+
+    if (result != CDRESULT_NOCOLLISION) {
+        return false;
+    }
+
+    g_Vars.currentplayer->prop->pos.x = newPos.x;
+    g_Vars.currentplayer->prop->pos.z = newPos.z;
+
+    return true;
+}
+
+void vr_player_pos(void) {
+    struct coord physical;
+    struct coord shownPrev;
+    struct coord delta;
+    f32 dist;
+
+    if (g_Vars.currentplayer->isdead
+        || g_Vars.tickmode != TICKMODE_NORMAL
+        || vr_is_duel
+        || g_Vars.currentplayer->bondmovemode != MOVEMODE_WALK) {
+        // Riding, grabbing, dead or in a cutscene: glue the head back onto the
+        // body and just keep tracking, so the next live frame sees no jump.
+        sVrHeadOffsetPlay.x = 0.0f;
+        sVrHeadOffsetPlay.z = 0.0f;
+        sVrShownOffsetPlay.x = 0.0f;
+        sVrShownOffsetPlay.z = 0.0f;
+        sVrHeadOffset.x = 0.0f;
+        sVrHeadOffset.z = 0.0f;
+        sVrHeadClipDist = 0.0f;
+
+        lastVRHeadPos.x = gHeadPos.x;
+        lastVRHeadPos.y = gHeadPos.y;
+        lastVRHeadPos.z = gHeadPos.z;
+        return;
+    }
+
+    delta.x = gHeadPos.x - lastVRHeadPos.x;
+    delta.y = 0.0f;   // vertical is mapped absolutely by the eye height; it must not move the body
+    delta.z = gHeadPos.z - lastVRHeadPos.z;
+
+    if (fabsf(delta.x) > VR_MAX_HEAD_STEP || fabsf(delta.z) > VR_MAX_HEAD_STEP) {
+        delta.x = 0.0f;
+        delta.z = 0.0f;
+    }
+
+    lastVRHeadPos.x = gHeadPos.x;
+    lastVRHeadPos.y = gHeadPos.y;
+    lastVRHeadPos.z = gHeadPos.z;
+
+    // The physical offset takes the motion unconditionally: it is a record of
+    // where your head is, and nothing in the game may overrule that.
+    sVrHeadOffsetPlay.x += delta.x;
+    sVrHeadOffsetPlay.z += delta.z;
+
+    // Both offsets into game space. Rotating them separately is the same as
+    // rotating their sum, and both land in the world's current orientation.
+    physical.x = sVrHeadOffsetPlay.x;
+    physical.y = 0.0f;
+    physical.z = sVrHeadOffsetPlay.z;
+    vr_rotate_vector_by_quaternion(&physical, &vr_joy_rot_Q);
+
+    shownPrev.x = sVrShownOffsetPlay.x;
+    shownPrev.y = 0.0f;
+    shownPrev.z = sVrShownOffsetPlay.z;
+    vr_rotate_vector_by_quaternion(&shownPrev, &vr_joy_rot_Q);
+
+    // 1. Lean. The body's cylinder gets no say in where your head goes; the
+    //    only thing that may stop it is the head probe hitting something you
+    //    cannot see through, and then only along the axis that hit.
+    if (vr_head_offset_is_clear(physical.x, physical.z)) {
+        sVrHeadOffset.x = physical.x;
+        sVrHeadOffset.z = physical.z;
+    } else {
+        sVrHeadOffset.x = shownPrev.x;
+        sVrHeadOffset.z = shownPrev.z;
+
+        if (vr_head_offset_is_clear(physical.x, sVrHeadOffset.z)) {
+            sVrHeadOffset.x = physical.x;
+        }
+        if (vr_head_offset_is_clear(sVrHeadOffset.x, physical.z)) {
+            sVrHeadOffset.z = physical.z;
+        }
+    }
+
+    // 2. Walk. The body chases the head all the way back to zero, every tick.
+    //    It gets under you whenever it can; what it cannot do stays in the
+    //    offset, so the gap only ever exists because something solid is in the
+    //    way, and it closes by itself as soon as that stops being true.
+    dist = sqrtf(physical.x * physical.x + physical.z * physical.z);
+
+    if (dist > 0.0f) {
+        f32 rate = (dist > VR_BODY_CATCHUP_MAX) ? (VR_BODY_CATCHUP_MAX / dist) : 1.0f;
+        f32 dragx = physical.x * rate;
+        f32 dragz = physical.z * rate;
+
+        // The body moving under both offsets leaves the head where it is in the
+        // world, so whatever it manages comes off both of them equally.
+        if (vr_try_move_body(dragx, dragz)) {
+            physical.x -= dragx;
+            physical.z -= dragz;
+            sVrHeadOffset.x -= dragx;
+            sVrHeadOffset.z -= dragz;
+        } else {
+            // Blocked: slide along the surface instead of stopping dead, and
+            // consume only the component that actually moved.
+            if (vr_try_move_body(dragx, 0.0f)) {
+                physical.x -= dragx;
+                sVrHeadOffset.x -= dragx;
+            }
+            if (vr_try_move_body(0.0f, dragz)) {
+                physical.z -= dragz;
+                sVrHeadOffset.z -= dragz;
+            }
+        }
+    }
+
+    // What is left between where your head is and where the game will show it.
+    {
+        f32 clipx = physical.x - sVrHeadOffset.x;
+        f32 clipz = physical.z - sVrHeadOffset.z;
+        sVrHeadClipDist = sqrtf(clipx * clipx + clipz * clipz);
+    }
+
+    // Store both back in play space, where turning can rotate them for free.
+    sVrHeadOffsetPlay.x = physical.x;
+    sVrHeadOffsetPlay.y = 0.0f;
+    sVrHeadOffsetPlay.z = physical.z;
+    vr_rotate_vector_by_quaternion_inv(&sVrHeadOffsetPlay, &vr_joy_rot_Q);
+
+    sVrShownOffsetPlay.x = sVrHeadOffset.x;
+    sVrShownOffsetPlay.y = 0.0f;
+    sVrShownOffsetPlay.z = sVrHeadOffset.z;
+    vr_rotate_vector_by_quaternion_inv(&sVrShownOffsetPlay, &vr_joy_rot_Q);
 }
 
 
@@ -1578,16 +1805,32 @@ void bwalkUpdateVertical(void)
 
 
     if(!VrSeatedMode) {
-// VR Height
-        float VrMaxHeight = g_Vars.currentplayer->vv_height +
-                            g_Vars.currentplayer->vv_eyeheight * 0.0062893079593778f;
+// VR height: map the real head height above the physical floor into game units.
+// Nothing is remembered between frames, so a physical jump can no longer latch
+// a reference and leave you shorter for the session.
+//
+//   real height mode      one real cm is one game unit -- the scale the game
+//                         itself is modelled at, Joanna's eye sitting at 159
+//                         units for 1.59 m. The body you are wearing does not
+//                         come into it, so you are your own height in every
+//                         level. World scale applies, as it does to the IPD.
+//   character height mode your standing height maps onto the character's own
+//                         standing eye height (vv_eyeheight -- 159 for Joanna,
+//                         106 for Elvis, 175 for Mr Blonde), so standing up
+//                         puts your eye exactly where theirs is. World scale is
+//                         deliberately left out: the promise here is the
+//                         character's height relative to the level, and scaling
+//                         it would break that.
+        float unitsPerCm = VrMatchCharacterHeight
+                           ? (g_Vars.currentplayer->vv_eyeheight / VrPlayerHeight)
+                           : VrSetWorldScale;
 
-// Linear remapping: real world → game
-        float refHeight = (gStandingHeadHeight > 0.0f) ? gStandingHeadHeight : VrMaxHeight;
-        eyeheight = (gHeadPos.y / refHeight) * VrMaxHeight;
+        eyeheight = gVrHeadHeightCm * unitsPerCm;
 
-// Safety clamp (floor/ceiling)
-        if (eyeheight > VrMaxHeight) eyeheight = VrMaxHeight;
+// Sanity clamp against tracking glitches, not a height cap -- VR_MAX_HEAD_CM is
+// above any real tracked head. The ceiling check below is what keeps the view
+// out of level geometry.
+        if (eyeheight > VR_MAX_HEAD_CM * unitsPerCm) eyeheight = VR_MAX_HEAD_CM * unitsPerCm;
         if (eyeheight < 0.0f) eyeheight = 0.0f;
 
 // --- VR EYEHEIGHT DIVIDER TOGGLE (thumbstick click) ---
@@ -2484,7 +2727,11 @@ void bwalkTick(void)
         bmove0f0cc19c(&coord);
     }
     else {
-        bmove0f0cc19c(&g_Vars.currentplayer->prop->pos);
+        // VR: the camera sits at the head, which is the body plus however far
+        // you have physically leaned away from it.
+        struct coord headpos;
+        vr_get_head_pos(&headpos);
+        bmove0f0cc19c(&headpos);
     }
 
     playerUpdatePerimInfo();
