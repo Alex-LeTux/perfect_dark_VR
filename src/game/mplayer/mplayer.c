@@ -33,7 +33,7 @@
 #include "mpsetups.h"
 
 extern bool vr_dl_is_pause_or_menu; // VR
-extern int vr_MpPause; // VR
+extern int VrIsPaused; // VR
 // bss
 struct chrdata *g_MpAllChrPtrs[MAX_MPCHRS];
 struct mpchrconfig *g_MpAllChrConfigPtrs[MAX_MPCHRS];
@@ -1303,7 +1303,7 @@ s32 mpGetWeaponSet(void)
 
 bool mpIsPaused(void)
 {
-    vr_MpPause = 1;
+    VrIsPaused = 1;
     vr_dl_is_pause_or_menu = true; // VR
 	if (PLAYERCOUNT() == 1
 			&& g_Vars.mplayerisrunning
@@ -1313,7 +1313,7 @@ bool mpIsPaused(void)
 
 	if (g_MpSetup.paused == PAUSEMODE_UNPAUSED) {
         vr_dl_is_pause_or_menu = false; // VR
-        vr_MpPause = 0;
+        VrIsPaused = 0;
 		return false;
 	}
 
