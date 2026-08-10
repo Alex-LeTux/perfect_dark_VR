@@ -214,10 +214,12 @@ void bheadUpdate(f32 arg0, f32 arg1)
             VrMaxHeight.y = (g_Vars.currentplayer->bondheadmatrices[0].m[3][1] -
                              g_Vars.currentplayer->standheight) *
                             g_Vars.currentplayer->headamplitude + g_Vars.currentplayer->standheight;
-            if (gHeadPos.y > VrMaxHeight.y) {
+            // Ceiling on the game body's head bone only -- it no longer feeds
+            // any height reference, so it cannot shrink the player.
+            if (gVrHeadHeightCm > VrMaxHeight.y) {
                 headpos.y = VrMaxHeight.y;
             } else {
-                headpos.y = gHeadPos.y;
+                headpos.y = gVrHeadHeightCm;
             }
         }
         else{
@@ -268,10 +270,10 @@ void bheadUpdate(f32 arg0, f32 arg1)
             struct coord VrMaxHeight = {0, 0, 0};
             VrMaxHeight.y = g_Vars.currentplayer->standheight;
 
-            if (gHeadPos.y > VrMaxHeight.y) {
+            if (gVrHeadHeightCm > VrMaxHeight.y) {
                 headpos.y = VrMaxHeight.y;
             } else {
-                headpos.y = gHeadPos.y;
+                headpos.y = gVrHeadHeightCm;
             }
         }
         else

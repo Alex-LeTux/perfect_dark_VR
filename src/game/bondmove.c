@@ -61,6 +61,7 @@ extern XrQuaternionf vr_joy_rot_Q;
 extern void vr_rotate_vector_by_quaternion(struct coord* v, const XrQuaternionf* q);
 static bool Prev_VR_BUTTON_X = false;
 extern VrEyeheightMode sVrEyeheightMode;
+extern float VrPlayerHeight;
 
 static bool sPrevGripState = false;
 bool g_DisableGrabViaB = true;
@@ -2563,11 +2564,14 @@ void bmoveTick(bool allowc1x, bool allowc1y, bool allowc1buttons, bool ignorec2)
 
     bmoveProcessInput(allowc1x, allowc1y, allowc1buttons, ignorec2);
 
-    // VR
+    // VR: duck/squat from how far your head is below your own standing height,
+    // measured against the physical floor. The reference is a setting, not a
+    // running maximum, so a physical jump can no longer raise it and leave you
+    // spuriously ducking afterwards.
     if(!VrSeatedMode){
-        if (gHeadPos.y < gStandingHeadHeight / 1.6f || sVrEyeheightMode == VR_EYEHEIGHT_SQUAT) {
+        if (gVrHeadHeightCm < VrPlayerHeight / 1.6f || sVrEyeheightMode == VR_EYEHEIGHT_SQUAT) {
             g_Vars.currentplayer->crouchpos = CROUCHPOS_SQUAT;
-        } else if (gHeadPos.y < gStandingHeadHeight / 1.3f  || sVrEyeheightMode == VR_EYEHEIGHT_DUCK) {
+        } else if (gVrHeadHeightCm < VrPlayerHeight / 1.3f  || sVrEyeheightMode == VR_EYEHEIGHT_DUCK) {
             g_Vars.currentplayer->crouchpos = CROUCHPOS_DUCK;
         } else {
             g_Vars.currentplayer->crouchpos = CROUCHPOS_STAND;

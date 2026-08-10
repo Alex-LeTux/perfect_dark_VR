@@ -66,12 +66,17 @@ extern bool VRDebugMtxPos;
 //---
 static char gExtendedGameFovLabel[80];
 extern void vrSettingsSave();
+extern float gVrHeadHeightCm;   // live head height above the floor, cm
 //---
 #define HUD_STEREO_DEPTH_STEP  0.05f
 #define HUD_STEREO_DEPTH_STEPS ((s32)((HUD_STEREO_DEPTH_MAX - HUD_STEREO_DEPTH_MIN) / HUD_STEREO_DEPTH_STEP))
 //---
 #define WORLDSCALE_STEP   0.01f
 #define WORLDSCALE_STEPS  (s32)((WORLDSCALE_MAX - WORLDSCALE_MIN) / WORLDSCALE_STEP)
+
+// Your height slider steps in whole centimetres.
+#define PLAYERHEIGHT_STEPS (s32)(PLAYERHEIGHT_MAX - PLAYERHEIGHT_MIN)
+
 //--
 //---
 #define HUD_DISTANCE_STEP 0.05f
@@ -180,6 +185,61 @@ MenuItemHandlerResult menuhandlerVRWorldScale(s32 operation, struct menuitem *it
     return 0;
 }
 
+
+MenuItemHandlerResult menuhandlerVRCharacterHeight(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+    switch (operation) {
+        case MENUOP_GET:
+            return VrMatchCharacterHeight ? true : false;
+        case MENUOP_SET:
+            VrMatchCharacterHeight = data->checkbox.value ? true : false;
+            g_Vars.modifiedfiles |= MODFILE_GAME;
+            break;
+    }
+
+    return 0;
+}
+
+MenuItemHandlerResult menuhandlerVRPlayerHeight(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+    static u8 lastRawValue = 0xFF;
+
+    switch (operation) {
+        case MENUOP_GETSLIDER:
+        {
+            s32 stepIndex = (s32)roundf(VrPlayerHeight - PLAYERHEIGHT_MIN);
+            data->slider.value = (u8)roundf((f32)stepIndex / (f32)PLAYERHEIGHT_STEPS * 255.0f);
+            lastRawValue = data->slider.value;
+        }
+            break;
+        case MENUOP_SET:
+        {
+            s32 delta = (s32)data->slider.value - (s32)lastRawValue;
+            if (delta != 0) {
+                s32 currentStep = (s32)roundf(VrPlayerHeight - PLAYERHEIGHT_MIN);
+                currentStep += delta > 0 ? 1 : -1;
+                if (currentStep < 0) currentStep = 0;
+                if (currentStep > PLAYERHEIGHT_STEPS) currentStep = PLAYERHEIGHT_STEPS;
+                VrPlayerHeight = PLAYERHEIGHT_MIN + (f32)currentStep;
+                g_Vars.modifiedfiles |= MODFILE_GAME;
+                lastRawValue = data->slider.value;
+            }
+        }
+            break;
+        case MENUOP_GETSLIDERLABEL:
+        {
+            // "now" is what the headset is reading this instant, so you can set
+            // the slider by standing up straight and matching it.
+            s32 measured = (s32)roundf(gVrHeadHeightCm);
+            if (measured < 0) measured = 0;
+            if (measured > 999) measured = 999;
+            sprintf(data->slider.label, "%d (now %d)", (s32)roundf(VrPlayerHeight), measured);
+        }
+            break;
+    }
+
+    return 0;
+}
 
 MenuItemHandlerResult menuhandlerVRWeaponRecoil(s32 operation, struct menuitem *item, union handlerdata *data)
 {
@@ -454,6 +514,26 @@ struct menuitem gVROptionsMenuItems[] = {
         (uintptr_t)"World Scale",
         0xff,
         menuhandlerVRWorldScale
+        },
+
+        // Your standing eye height, in cm
+        {
+        MENUITEMTYPE_SLIDER,
+        0,
+        MENUITEMFLAG_LITERAL_TEXT,
+        (uintptr_t)"Your Eye Height (cm)",
+        0xff,
+        menuhandlerVRPlayerHeight,
+        },
+
+        // Be the character's height instead of your own
+        {
+        MENUITEMTYPE_CHECKBOX,
+        0,
+        MENUITEMFLAG_LITERAL_TEXT,
+        (uintptr_t)"Match Character Height",
+        0,
+        menuhandlerVRCharacterHeight,
         },
 
         // VR Weapon Recoil
