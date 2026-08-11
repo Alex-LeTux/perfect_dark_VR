@@ -2602,43 +2602,14 @@ Gfx* playerDrawFade(Gfx* gdl, u32 r, u32 g, u32 b, f32 frac)
         gDPSetRenderMode(gdl++, G_RM_CLD_SURF, G_RM_CLD_SURF2);
         gDPSetCombineMode(gdl++, G_CC_PRIMITIVE, G_CC_PRIMITIVE);
         gDPSetPrimColor(gdl++, 0, 0, r, g, b, (s32)(frac * 255));
+        // Every caller here is a screen-wide effect, so this asks for the whole
+        // viewport. In VR gfx_dp_fill_rectangle widens a full-viewport rect well
+        // past the viewport, because the headset sees past it and an effect that
+        // stops there leaves its edge in your periphery. The cost is that a
+        // split-screen player's fade covers the whole screen rather than their
+        // own viewport.
         gDPFillRectangle(gdl++, viGetViewLeft(), viGetViewTop(),
                          viGetViewLeft() + viGetViewWidth(), viGetViewTop() + viGetViewHeight());
-        gDPPipeSync(gdl++);
-        gDPSetColorDither(gdl++, G_CD_BAYER);
-        gDPSetTexturePersp(gdl++, G_TP_PERSP);
-        gDPSetTextureLOD(gdl++, G_TL_LOD);
-    }
-
-    return gdl;
-}
-
-// playerDrawFade, but covering the whole field of view rather than the
-// viewport, which in a headset falls well short of the edges.
-//
-// 319x239 is not a typo and not the screen size: gfx_dp_fill_rectangle watches
-// for exactly that rect and widens it to roughly twice the screen in every
-// direction, a hack it already carries for widescreen fades. Going through
-// that instead of emitting the wide opcode directly matters -- the wide opcode
-// is two display list words, and however it is being consumed it only ever
-// reaches one eye, while ordinary fill rects (the damage flash, the death
-// wash) reach both.
-static Gfx* playerDrawFadeWide(Gfx* gdl, u32 r, u32 g, u32 b, f32 frac)
-{
-    if (frac > 0) {
-        gDPPipeSync(gdl++);
-        gDPSetCycleType(gdl++, G_CYC_1CYCLE);
-        gDPSetColorDither(gdl++, G_CD_DISABLE);
-        gDPSetTexturePersp(gdl++, G_TP_NONE);
-        gDPSetAlphaCompare(gdl++, G_AC_NONE);
-        gDPSetTextureLOD(gdl++, G_TL_TILE);
-        gDPSetTextureFilter(gdl++, G_TF_BILERP);
-        gDPSetTextureConvert(gdl++, G_TC_FILT);
-        gDPSetTextureLUT(gdl++, G_TT_NONE);
-        gDPSetRenderMode(gdl++, G_RM_CLD_SURF, G_RM_CLD_SURF2);
-        gDPSetCombineMode(gdl++, G_CC_PRIMITIVE, G_CC_PRIMITIVE);
-        gDPSetPrimColor(gdl++, 0, 0, r, g, b, (s32)(frac * 255));
-        gDPFillRectangle(gdl++, 0, 0, 319, 239);
         gDPPipeSync(gdl++);
         gDPSetColorDither(gdl++, G_CD_BAYER);
         gDPSetTexturePersp(gdl++, G_TP_PERSP);
@@ -5434,7 +5405,7 @@ Gfx* playerRenderHud(Gfx* gdl)
             f32 headclip = vr_get_head_clip_frac();
 
             if (headclip > 0.0f) {
-                gdl = playerDrawFadeWide(gdl, 0, 0, 0, headclip);
+                gdl = playerDrawFade(gdl, 0, 0, 0, headclip);
             }
         }
 

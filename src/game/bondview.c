@@ -327,10 +327,27 @@ Gfx *bviewDrawMotionBlur(Gfx *gdl, u32 colour, u32 alpha)
 	}
 #else
     gDPSetFramebufferTextureEXT(gdl++, 0, 0, 0, g_BlurFb);
-    gSPImageRectangleEXT(gdl++,
-                         viewleft << 2, viewtop << 2, viewleft, viewtop,
-                         (viewleft + viewwidth) << 2, (viewtop + viewheight) << 2, viewleft + viewwidth, viewtop + viewheight,
-                         0, videoGetNativeWidth(), videoGetNativeHeight());
+
+    // VR: draw the captured frame a whole view wider than the viewport in every
+    // direction, because the headset sees well past the viewport and a blur that
+    // stops there leaves its edge in your periphery. Source and destination grow
+    // by the same margin in the same units, so the frame stays registered pixel
+    // for pixel with the scene under it rather than being scaled up to fit.
+    // Sampling then runs off the capture, which gfx_dp_image_rectangle answers
+    // by clamping so the edge pixels carry outward.
+    {
+        const s32 marginx = vr_init_done ? viewwidth : 0;
+        const s32 marginy = vr_init_done ? viewheight : 0;
+        const s32 left = viewleft - marginx;
+        const s32 top = viewtop - marginy;
+        const s32 right = viewleft + viewwidth + marginx;
+        const s32 bottom = viewtop + viewheight + marginy;
+
+        gSPImageRectangleEXT(gdl++,
+                             left << 2, top << 2, left, top,
+                             right << 2, bottom << 2, right, bottom,
+                             0, videoGetNativeWidth(), videoGetNativeHeight());
+    }
 #endif
 
     return gdl;

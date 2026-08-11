@@ -87,12 +87,6 @@ void   vr_end_eye_render();
 float* vr_get_eye_proj_mtx(int eye);
 void   vr_get_eye_view_offset(int eye, float* out_tx, float* out_ty, float* out_tz, float *out_tx_HUD);
 bool vr_dl_is_pause_or_menu = false;
-// True only between the menu's begin and end tags, unlike vr_dl_is_pause_or_menu
-// which latches on at the first menu and never clears (the game emits an end tag
-// for it, 0x56520000, that nothing handles). Left that alone deliberately: it
-// drives uIsMenu in the shader, so unlatching it would move the HUD parallax
-// mid-session. This is the flag to use for "menu content is being drawn now".
-static bool vr_dl_menu_scope = false;
 int VrIsPaused = 0;
 static float s_vr_proj_col_major[16] = {};
 extern "C" int vr_get_internal_render_width();
@@ -2312,47 +2306,13 @@ static void gfx_dp_image_rectangle(int32_t tile, int32_t w, int32_t h,
                                    int32_t lrx, int32_t lry, int16_t lrs, int16_t lrt) {
     uint64_t saved_combine_mode = rdp.combine_mode;
 
-    // Widen a full-viewport image rect exactly as gfx_dp_fill_rectangle widens a
-    // full-viewport fill rect, and for the same reason: the headset sees past
-    // the viewport, so the motion blur and the cutscene wash that ride on this
-    // opcode stopped short and left strips down the sides. The difference is
-    // that the source coordinates have to grow by the same proportion, or the
-    // captured frame would be stretched across the bigger rect rather than
-    // extended past it -- the blur has to stay registered with the scene under
-    // it. Sampling then runs off the edge of the capture, so the tile is
-    // clamped below and the edge pixels carry outward.
-    //
-    // Not for menus. The blurred backdrop behind the pause and title menus is
-    // the same opcode over the same captured frame, but it is a deliberate
-    // treatment of that image rather than an overlay on the world, and widening
-    // it garbles the backdrop.
-    bool vr_widened = false;
-
-    if (vr_is_initialized()
-            && !vr_dl_menu_scope
-            && ulx <= 0 && uly <= 0
-            && lrx >= (SCREEN_WIDTH - 1) * 4 && lry >= (SCREEN_HEIGHT - 1) * 4
-            && lrx > ulx && lry > uly) {
-        const int32_t newulx = -2 * 4 * SCREEN_WIDTH;
-        const int32_t newuly = -2 * 4 * SCREEN_HEIGHT;
-        const int32_t newlrx =  3 * 4 * SCREEN_WIDTH;
-        const int32_t newlry =  3 * 4 * SCREEN_HEIGHT;
-
-        const float texelsx = (float)(lrs - uls) / (float)(lrx - ulx);
-        const float texelsy = (float)(lrt - ult) / (float)(lry - uly);
-
-        uls = (int16_t)(uls + (newulx - ulx) * texelsx);
-        lrs = (int16_t)(lrs + (newlrx - lrx) * texelsx);
-        ult = (int16_t)(ult + (newuly - uly) * texelsy);
-        lrt = (int16_t)(lrt + (newlry - lry) * texelsy);
-
-        ulx = newulx;
-        uly = newuly;
-        lrx = newlrx;
-        lry = newlry;
-
-        vr_widened = true;
-    }
+    // The captured frame this opcode draws is sampled over whatever source
+    // region the caller asks for. When that region runs past the edge of the
+    // capture -- which it does when a VR caller deliberately draws the frame
+    // wider than the viewport, to cover a field of view the viewport falls
+    // short of -- wrapping would tile visible copies of the scene into the
+    // margins. Clamp instead, so the frame's edge pixels carry outward.
+    const bool sampling_past_capture = (uls < 0 || ult < 0 || lrs > w || lrt > h);
 
     struct LoadedVertex* ul = &rsp.loaded_vertices[MAX_VERTICES + 0];
     struct LoadedVertex* ll = &rsp.loaded_vertices[MAX_VERTICES + 1];
@@ -2371,10 +2331,8 @@ static void gfx_dp_image_rectangle(int32_t tile, int32_t w, int32_t h,
     rdp.texture_tile[tile].line_size_bytes = w << rdp.texture_tile[tile].siz >> 1;
     rdp.texture_tile[tile].width = w;
     rdp.texture_tile[tile].height = h;
-    // Clamp rather than wrap once widened, so the area past the captured frame
-    // carries its edge pixels outward instead of tiling copies of it.
-    rdp.texture_tile[tile].cms = vr_widened ? G_TX_CLAMP : 0;
-    rdp.texture_tile[tile].cmt = vr_widened ? G_TX_CLAMP : 0;
+    rdp.texture_tile[tile].cms = sampling_past_capture ? G_TX_CLAMP : 0;
+    rdp.texture_tile[tile].cmt = sampling_past_capture ? G_TX_CLAMP : 0;
     rdp.texture_tile[tile].shifts = 0;
     rdp.texture_tile[tile].shiftt = 0;
     auto& loadtex = rdp.loaded_texture[rdp.texture_tile[tile].tmem];
@@ -2516,11 +2474,6 @@ static void gfx_run_dl(Gfx* cmd) {
                 switch (tag_w1) {
                     case 0x56520001: // Menu is open
                         vr_dl_is_pause_or_menu = (tag_w1 & 0xFFFF) != 0; // VR
-                        vr_dl_menu_scope = true;
-                        break;
-
-                    case 0x56520000: // Menu is finished
-                        vr_dl_menu_scope = false;
                         break;
 
                     case VR_MENU_HUD_CAPTURE_BEGIN_L:

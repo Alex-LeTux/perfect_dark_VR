@@ -67,7 +67,6 @@ extern float vr_ctrl_quat_play[2][4];     // {w,x,y,z}
 extern float vr_ctrl_velocity_play[2][3]; // m/s
 extern float vr_head_velocity_play[3];    // m/s
 
-extern float gStandingHeadHeight;
 // A plausible standing head (HMD) height in centimetres, used only until real
 // tracking arrives. Everything that cares about the player's actual height uses
 // the VrPlayerHeight setting.
