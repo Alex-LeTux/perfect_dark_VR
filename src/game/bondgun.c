@@ -576,6 +576,10 @@ static bool isHandIndex(s32 mtxindex) {
 
 void vrBuildMtxPartsList(struct hand *hand, struct modeldef *modeldef, bool filterHands) {
     s_gunMovableCount = 0;
+    // VR: reset the hidden-part state whenever the movable-part list is rebuilt.
+    // Otherwise stale "hidden" flags from a previous weapon/reload/throw persist
+    // into the new list, making the gun and hands disappear (issue #43).
+    for (s32 i = 0; i < VR_MAX_GUN_PARTS; i++) s_vrPartHidden[i] = false;
     if (!modeldef) return;
 
     struct modelnode *node = modeldef->rootnode;
@@ -11457,9 +11461,13 @@ void bgun0f0a5550(s32 handnum) {
                 VrTwoHandGrip = get_button_state(0, "grip");
             }
 
-            if (weaponnum == WEAPON_REMOTEMINE || weaponnum == WEAPON_LASER
-                || (VrTwoHandGrip && VrTwoHandsGun(g_Vars.currentplayer->gunctrl.weaponnum))) {
+            if (weaponnum == WEAPON_REMOTEMINE || weaponnum == WEAPON_LASER) {
                 // Nothing
+            } else if (VrTwoHandGrip && VrTwoHandsGun(g_Vars.currentplayer->gunctrl.weaponnum)) {
+                // VR: two-handed grip - keep the gun visible even if the copy-weapon
+                // path left parts hidden (e.g. after a reload or weapon switch, issue #43).
+                for (s32 i = 0; i < s_gunMovableCount; i++) s_vrPartHidden[i] = false;
+                vrHideGunParts(hand->gunmodel.matrices);
             } else {
                 if (hand->state != HANDSTATE_RELOAD) {
                     vrHideOnly(LeftHandMtx);
