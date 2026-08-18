@@ -61,7 +61,7 @@
 #include "vr_openxr.h"
 #include "vr_input.h"
 #include "vr_log.h"
-
+#include "vr_hub.h"
 
 extern "C" struct GfxRenderingAPI* gfx_get_current_rendering_api(void);
 
@@ -99,6 +99,7 @@ extern "C" void vr_shutdown();
 // GLOBAL STATE - others
 // ============================================================================
 extern bool vr_dl_is_pause_or_menu;
+extern int VrIsPaused;
 extern bool copy_fbo_menu;
 // ============================================================================
 // GLOBAL STATE - Platform-specific context
@@ -1400,7 +1401,7 @@ static void vr_update_head_tracking(XrTime predictedDisplayTime)
 // ============================================================================
 // PC miroir - Layers
 // ============================================================================
-#ifndef ANDROID
+
 static void QuatToMat4(const XrQuaternionf& q, float* m) {
     float x = q.x, y = q.y, z = q.z, w = q.w;
 
@@ -1448,7 +1449,6 @@ static void Mat4Mul(const float* a, const float* b, float* out) {
     memcpy(out, r, sizeof(r));
 }
 
-
 static void ProjectionFromFov(const XrFovf& fov, float nearZ, float farZ, float* m) {
     float l = tanf(fov.angleLeft);
     float r = tanf(fov.angleRight);
@@ -1481,6 +1481,8 @@ static void InvertRigidMat4(const float* m, float* out) {
     out[13] = -(out[1] * tx + out[5] * ty + out[9]  * tz);
     out[14] = -(out[2] * tx + out[6] * ty + out[10] * tz);
 }
+
+#ifndef ANDROID
 
 enum VrMirrorMenuSource {
     VR_MIRROR_MENU_L = 0,
@@ -2258,6 +2260,29 @@ extern "C" bool vr_begin_frame_and_update_poses()
 
 float* vr_get_eye_proj_mtx(int eye) { return g_eyeProjMtx[eye]; }
 
+// Standard OpenGL-convention combined Proj*View for one eye, in play space.
+// Used by anything that draws with plain GLSL (mat4 * vec4) instead of the
+// game's own fast3d vertex shader convention — e.g. the pause-menu hub.
+extern "C" void vr_get_eye_view_proj_gl(int eye, float outVP[16]) {
+    if (eye < 0 || eye > 1) { std::memset(outVP, 0, 16 * sizeof(float)); outVP[0]=outVP[5]=outVP[10]=outVP[15]=1.0f; return; }
+
+    const XrView& view = g_frameViews[eye];
+
+    float proj[16];
+    ProjectionFromFov(view.fov, 0.05f, 2000.0f, proj);   // <-- far: 100 -> 2000
+
+    float rot[16];
+    QuatToMat4(view.pose.orientation, rot);
+    rot[12] = view.pose.position.x;
+    rot[13] = view.pose.position.y;
+    rot[14] = view.pose.position.z;
+
+    float viewMat[16];
+    InvertRigidMat4(rot, viewMat);
+
+    Mat4Mul(proj, viewMat, outVP);
+}
+
 extern "C" GLuint vr_get_current_multiview_swapchain_tex() {
     return g_currentMultiviewSwapchainTex;
 }
@@ -2288,7 +2313,6 @@ bool vr_begin_eye_render()
     if (is_meta_runtime && copy_fbo_menu) {
         gfx_copy_framebuffer(25, 0, 0, 0, true);
     }
-
 
     glBindFramebuffer(GL_FRAMEBUFFER, g_multiviewFBO);
 

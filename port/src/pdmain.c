@@ -3,11 +3,15 @@
 #include <ultra64.h>
 #include <PR/ultrasched.h>
 
+#include "../vr/vr_input.h"
 #include "../vr/vr_log.h"
+
 
 #ifdef ANDROID
 #include <android/log.h>
 #include <EGL/egl.h>
+//#include <ext_tex.h>
+
 #endif
 
 #include "lib/sched.h"
@@ -81,9 +85,13 @@
 #include "data.h"
 #include "types.h"
 #include "system.h"
+#include "video.h"
+#include "input.h"
+
 
 extern u8 *g_MempHeap;
 extern u32 g_MempHeapSize;
+extern bool gfx_external_textures_enabled;
 
 
 extern void vr_initialize();
@@ -575,23 +583,32 @@ void mainTick(void)
     OSScMsg msg = {OS_SC_DONE_MSG};
     s32 i;
 
+    if (g_MainChangeToStageNum < 0) {
+        static bool wasPressed = false;
+        bool pressed = get_button_state(1, "thumbstick_click"); // VR: Toggle external textures
+
+        if (pressed && !wasPressed) {
+            bool enabled = videoGetExternalTextures();
+            videoSetExternalTextures(!enabled);
+        }
+        wasPressed = pressed;
 
 #ifdef ANDROID
-    // Retry VR initialization every frame until g_activity and g_window are available
-    if (!vr_init_done) {
-        EGLDisplay display = eglGetCurrentDisplay();
-        EGLContext ctx    = eglGetCurrentContext();
-        if (display != EGL_NO_DISPLAY && ctx != EGL_NO_CONTEXT) {
-            vr_initialize();
-            if (vr_is_initialized()) {
-                vr_poll_events();
-                vrSettingsLoad();
-                vr_init_done = true;
+        // Retry VR initialization every frame until g_activity and g_window are available
+        if (!vr_init_done) {
+            EGLDisplay display = eglGetCurrentDisplay();
+            EGLContext ctx    = eglGetCurrentContext();
+            if (display != EGL_NO_DISPLAY && ctx != EGL_NO_CONTEXT) {
+                vr_initialize();
+                if (vr_is_initialized()) {
+                    vr_poll_events();
+                    vrSettingsLoad();
+                    vr_init_done = true;
+                }
             }
         }
-    }
 #else
-    if (!vr_init_done) {
+        if (!vr_init_done) {
         vr_initialize();
         if (vr_is_initialized()) {
             vr_poll_events();
@@ -601,8 +618,6 @@ void mainTick(void)
     }
 #endif
 
-
-    if (g_MainChangeToStageNum < 0) {
         frametimeCalculate();
         profileReset();
         profileSetMarker(PROFILE_MAINTICK_START);

@@ -14,6 +14,7 @@ extern bool VrWeaponRecoil;
 #define WORLDSCALE_MIN    0.50f
 #define WORLDSCALE_MAX    1.50f
 extern float VrSetWorldScale;
+extern int VrPauseHub;
 
 // Your standing EYE height in cm -- where your eyes are off the floor, roughly
 // 13 cm below the top of your head, not your stature. That is what the headset

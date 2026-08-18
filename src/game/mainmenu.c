@@ -125,6 +125,19 @@ MenuItemHandlerResult menuhandlerVRHudDistance(s32 operation, struct menuitem *i
     return 0;
 }
 
+MenuItemHandlerResult menuhandlerVRPauseHub(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+    switch (operation) {
+        case MENUOP_GET:
+            return VrPauseHub ? true : false;
+        case MENUOP_SET:
+            VrPauseHub = data->checkbox.value ? true : false;
+            g_Vars.modifiedfiles |= MODFILE_GAME;
+            break;
+    }
+    return 0;
+}
+
 MenuItemHandlerResult menuhandlerVRStickClickToCrouch(s32 operation, struct menuitem *item, union handlerdata *data)
 {
     switch (operation) {
@@ -574,6 +587,16 @@ struct menuitem gVROptionsMenuItems[] = {
         (uintptr_t)"Lasers for all weapons",
         0,
         menuhandlerVRLaserDotForAll,
+        },
+
+        // VR Pause Hub Environment (replace blurred background menu pause)
+        {
+        MENUITEMTYPE_CHECKBOX,
+        0,
+        MENUITEMFLAG_LITERAL_TEXT,
+        (uintptr_t)"VR Pause Environment",
+        0,
+        menuhandlerVRPauseHub,
         },
 
         // VR Seated Mode

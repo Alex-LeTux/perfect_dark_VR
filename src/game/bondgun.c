@@ -576,6 +576,7 @@ static bool isHandIndex(s32 mtxindex) {
 
 void vrBuildMtxPartsList(struct hand *hand, struct modeldef *modeldef, bool filterHands) {
     s_gunMovableCount = 0;
+
     if (!modeldef) return;
 
     struct modelnode *node = modeldef->rootnode;
@@ -6848,12 +6849,7 @@ u32 bgunCalculateGunMemCapacity(void)
 
 void bgunFreeGunMem(void)
 {
-    g_Vars.currentplayer->gunctrl.gunmemowner = GUNMEMOWNER_FREE;
-#ifndef PLATFORM_N64
-    // gunmem is stale and so are the textures in it
-    // TODO: figure out how to purge only those textures
-    videoResetTextureCache();
-#endif
+	g_Vars.currentplayer->gunctrl.gunmemowner = GUNMEMOWNER_FREE;
 }
 
 void bgunSetGunMemWeapon(s32 weaponnum)

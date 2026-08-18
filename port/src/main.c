@@ -19,6 +19,7 @@
 #include "mod.h"
 #include "system.h"
 #include "utils.h"
+#include "ext_tex.h"
 
 #include "../vr/vr_log.h"
 
@@ -251,6 +252,8 @@ int main(int argc, const char **argv)
     __android_log_print(ANDROID_LOG_INFO, "PerfectDark", "romdataInit starting");
     romdataInit();
     __android_log_print(ANDROID_LOG_INFO, "PerfectDark", "romdataInit complete");
+    extTexInit();
+    __android_log_print(ANDROID_LOG_INFO, "PerfectDark", "extTexInit complete");
 
     g_ValidGbcRomFound = romdataCheckGbcRom();
     __android_log_print(ANDROID_LOG_INFO, "PerfectDark", "GBC ROM check complete");
@@ -425,27 +428,19 @@ static void cleanup(void)
 
 int main(int argc, const char** argv)
 {
-            vr_log("main.c 1");
         vrShowWaitingWindow("logo.bmp"); // VR
- vr_log("main.c 2");
 		sysInitArgs(argc, argv);
- vr_log("main.c 3");
 		if (!sysArgCheck("--no-crash-handler")) {
 				crashInit();
 		}
- vr_log("main.c 4");
 		sysInit();
 		fsInit();
 		configInit();
- vr_log("main.c 5");
-
 		videoInit();
-         vr_log("main.c 6");
 		inputInit();
-         vr_log("main.c 7");
 		audioInit();
 		romdataInit();
-
+        extTexInit();
 
 		g_ValidGbcRomFound = romdataCheckGbcRom();
 
@@ -493,7 +488,6 @@ int main(int argc, const char** argv)
 				sysLogPrintf(LOG_NOTE, "player profile set to %d", g_FileAutoSelect);
 		}
 
-        vr_log("main.c OK");
 		mainProc();
 
 		return 0;
@@ -501,33 +495,32 @@ int main(int argc, const char** argv)
 
 PD_CONSTRUCTOR static void gameConfigInit(void)
 {
-		configRegisterInt("Game.MemorySize", &g_OsMemSizeMb, 4, 2048);
-		configRegisterInt("Game.CenterHUD", &g_HudCenter, 0, 2);
-		configRegisterInt("Game.MenuMouseControl", &g_MenuMouseControl, 0, 1);
-		configRegisterFloat("Game.ScreenShakeIntensity", &g_ViShakeIntensityMult, 0.f, 10.f);
-		configRegisterInt("Game.TickRateDivisor", &g_TickRateDiv, 0, 10);
-		configRegisterInt("Game.ExtraSleep", &g_TickExtraSleep, 0, 1);
-		configRegisterInt("Game.SkipIntro", &g_SkipIntro, 0, 1);
-		configRegisterInt("Game.DisableMpDeathMusic", &g_MusicDisableMpDeath, 0, 1);
-		configRegisterInt("Game.GEMuzzleFlashes", &g_BgunGeMuzzleFlashes, 0, 1);
-		configRegisterInt("Game.MaxExplosions", &g_MaxExplosions, 6, 96);
-		for (s32 j = 0; j < MAX_PLAYERS; ++j) {
-				const s32 i = j + 1;
-
-				configRegisterFloat(strFmt("Game.Player%d.FovY", i), &g_PlayerExtCfg[j].fovy, 5.f, 175.f);
-				configRegisterInt(strFmt("Game.Player%d.FovAffectsZoom", i), &g_PlayerExtCfg[j].fovzoom, 0, 1);
-				configRegisterInt(strFmt("Game.Player%d.MouseAimMode", i), &g_PlayerExtCfg[j].mouseaimmode, 0, 1);
-				configRegisterFloat(strFmt("Game.Player%d.MouseAimSpeedX", i), &g_PlayerExtCfg[j].mouseaimspeedx, 0.f, 10.f);
-				configRegisterFloat(strFmt("Game.Player%d.MouseAimSpeedY", i), &g_PlayerExtCfg[j].mouseaimspeedy, 0.f, 10.f);
-				configRegisterFloat(strFmt("Game.Player%d.RadialMenuSpeed", i), &g_PlayerExtCfg[j].radialmenuspeed, 0.f, 10.f);
-				configRegisterFloat(strFmt("Game.Player%d.CrosshairSway", i), &g_PlayerExtCfg[j].crosshairsway, 0.f, 10.f);
-				//configRegisterFloat(strFmt("Game.Player%d.CrosshairEdgeBoundary", i), &g_PlayerExtCfg[j].crosshairedgeboundary, 0.0f, 1.0f); //?
-				configRegisterInt(strFmt("Game.Player%d.CrouchMode", i), &g_PlayerExtCfg[j].crouchmode, 0, CROUCHMODE_TOGGLE_ANALOG);
-				configRegisterInt(strFmt("Game.Player%d.ExtendedControls", i), &g_PlayerExtCfg[j].extcontrols, 0, 1);
-				configRegisterUInt(strFmt("Game.Player%d.CrosshairColour", i), &g_PlayerExtCfg[j].crosshaircolour, 0, 0xFFFFFFFF);
-				configRegisterUInt(strFmt("Game.Player%d.CrosshairSize", i), &g_PlayerExtCfg[j].crosshairsize, 0, 4);
-				configRegisterInt(strFmt("Game.Player%d.CrosshairHealth", i), &g_PlayerExtCfg[j].crosshairhealth, 0, CROSSHAIR_HEALTH_ON_WHITE);
-				configRegisterInt(strFmt("Game.Player%d.UseKeyReloads", i), &g_PlayerExtCfg[j].usereloads, 0, false);
-		}
+	configRegisterInt("Game.MemorySize", &g_OsMemSizeMb, 4, 2048);
+	configRegisterInt("Game.CenterHUD", &g_HudCenter, 0, 2);
+	configRegisterInt("Game.MenuMouseControl", &g_MenuMouseControl, 0, 1);
+	configRegisterFloat("Game.ScreenShakeIntensity", &g_ViShakeIntensityMult, 0.f, 10.f);
+	configRegisterInt("Game.TickRateDivisor", &g_TickRateDiv, 0, 10);
+	configRegisterInt("Game.ExtraSleep", &g_TickExtraSleep, 0, 1);
+	configRegisterInt("Game.SkipIntro", &g_SkipIntro, 0, 1);
+	configRegisterInt("Game.DisableMpDeathMusic", &g_MusicDisableMpDeath, 0, 1);
+	configRegisterInt("Game.GEMuzzleFlashes", &g_BgunGeMuzzleFlashes, 0, 1);
+	configRegisterInt("Game.MaxExplosions", &g_MaxExplosions, 6, 96);
+	for (s32 j = 0; j < MAX_PLAYERS; ++j) {
+		const s32 i = j + 1;
+		configRegisterFloat(strFmt("Game.Player%d.FovY", i), &g_PlayerExtCfg[j].fovy, 5.f, 175.f);
+		configRegisterInt(strFmt("Game.Player%d.FovAffectsZoom", i), &g_PlayerExtCfg[j].fovzoom, 0, 1);
+		configRegisterInt(strFmt("Game.Player%d.MouseAimMode", i), &g_PlayerExtCfg[j].mouseaimmode, 0, 1);
+		configRegisterFloat(strFmt("Game.Player%d.MouseAimSpeedX", i), &g_PlayerExtCfg[j].mouseaimspeedx, 0.f, 10.f);
+		configRegisterFloat(strFmt("Game.Player%d.MouseAimSpeedY", i), &g_PlayerExtCfg[j].mouseaimspeedy, 0.f, 10.f);
+		configRegisterFloat(strFmt("Game.Player%d.RadialMenuSpeed", i), &g_PlayerExtCfg[j].radialmenuspeed, 0.f, 10.f);
+		configRegisterFloat(strFmt("Game.Player%d.CrosshairSway", i), &g_PlayerExtCfg[j].crosshairsway, 0.f, 10.f);
+		//configRegisterFloat(strFmt("Game.Player%d.CrosshairEdgeBoundary", i), &g_PlayerExtCfg[j].crosshairedgeboundary, 0.0f, 1.0f);
+		configRegisterInt(strFmt("Game.Player%d.CrouchMode", i), &g_PlayerExtCfg[j].crouchmode, 0, CROUCHMODE_TOGGLE_ANALOG);
+		configRegisterInt(strFmt("Game.Player%d.ExtendedControls", i), &g_PlayerExtCfg[j].extcontrols, 0, 1);
+		configRegisterUInt(strFmt("Game.Player%d.CrosshairColour", i), &g_PlayerExtCfg[j].crosshaircolour, 0, 0xFFFFFFFF);
+		configRegisterUInt(strFmt("Game.Player%d.CrosshairSize", i), &g_PlayerExtCfg[j].crosshairsize, 0, 4);
+		configRegisterInt(strFmt("Game.Player%d.CrosshairHealth", i), &g_PlayerExtCfg[j].crosshairhealth, 0, CROSSHAIR_HEALTH_ON_WHITE);
+		configRegisterInt(strFmt("Game.Player%d.UseKeyReloads", i), &g_PlayerExtCfg[j].usereloads, 0, false);
+	}
 }
 #endif

@@ -924,6 +924,19 @@ static MenuItemHandlerResult menuhandlerTexDetail(s32 operation, struct menuitem
     return 0;
 }
 
+static MenuItemHandlerResult menuhandlerExternalTex(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	switch (operation) {
+	case MENUOP_GET:
+		return (videoGetExternalTextures() != 0);
+	case MENUOP_SET:
+		videoSetExternalTextures(data->checkbox.value);
+		break;
+	}
+
+	return 0;
+}
+
 static MenuItemHandlerResult menuhandlerTexFilter2D(s32 operation, struct menuitem *item, union handlerdata *data)
 {
     switch (operation) {
@@ -1141,6 +1154,14 @@ struct menuitem g_ExtendedVideoMenuItems[] = {
                 menuhandlerTexDetail,
         },
         {
+                MENUITEMTYPE_CHECKBOX,
+                0,
+                MENUITEMFLAG_LITERAL_TEXT,
+                (uintptr_t)"External Textures",
+                0,
+                menuhandlerExternalTex,
+	    },
+        {
                 MENUITEMTYPE_SEPARATOR,
                 0,
                 0,
@@ -1324,6 +1345,22 @@ static MenuItemHandlerResult menuhandlerCrosshairSway(s32 operation, struct menu
 
     return 0;
 }
+
+//static MenuItemHandlerResult menuhandlerCrosshairEdgeBoundary(s32 operation, struct menuitem* item, union handlerdata *data)
+//{
+//	switch (operation) {
+//	case MENUOP_GETSLIDER:
+//		data->slider.value = (s32)(g_PlayerExtCfg[g_ExtMenuPlayer].crosshairedgeboundary * 10.f + 0.5f);
+//		break;
+//	case MENUOP_SET:
+//		g_PlayerExtCfg[g_ExtMenuPlayer].crosshairedgeboundary = (f32)data->slider.value / 10.f;
+//		break;
+//	case MENUOP_GETSLIDERLABEL:
+//		sprintf(data->slider.label, "%d", (s32)data->slider.value);
+//		break;
+//	}
+//	return 0;
+//}
 
 static MenuItemHandlerResult menuhandlerCrosshairR(s32 operation, struct menuitem* item, union handlerdata* data)
 {

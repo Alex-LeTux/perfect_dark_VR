@@ -21,6 +21,7 @@ extern "C" void vrSettingsSave(void)
     fprintf(f, "HudDistance=%.4f\n", VrHudDistance);
     fprintf(f, "WeaponRecoil=%d\n", VrWeaponRecoil ? 1 : 0);
     fprintf(f, "WorldScale=%.4f\n", VrSetWorldScale);
+    fprintf(f, "PauseHub=%d\n", VrPauseHub ? 1 : 0);
     fprintf(f, "StickClickToCrouch=%d\n", VrStickClickToCrouch ? 1 : 0);
     fprintf(f, "UseSnapTurn=%d\n", VrUseSnapTurn ? 1 : 0);
     fprintf(f, "TwoHandedAiming=%d\n", VrTwoHandAim ? 1 : 0);
@@ -80,6 +81,7 @@ extern "C" void vrSettingsLoad(void)
             else if (strcmp(key, "WeaponRecoil") == 0) VrWeaponRecoil = (ival != 0);
             else if (strcmp(key, "StickClickToCrouch") == 0) VrStickClickToCrouch = (ival != 0);
             else if (strcmp(key, "UseSnapTurn") == 0) VrUseSnapTurn = (ival != 0);
+            else if (strcmp(key, "PauseHub") == 0) VrPauseHub = (ival != 0);
             else if (strcmp(key, "TwoHandedAiming") == 0) VrTwoHandAim = (ival != 0);
             else if (strcmp(key, "MatchCharacterHeight") == 0) VrMatchCharacterHeight = (ival != 0);
             else if (strcmp(key, "FistClench") == 0) VrFistClench = ival;

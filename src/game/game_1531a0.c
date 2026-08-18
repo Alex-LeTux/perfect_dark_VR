@@ -14,6 +14,7 @@
 #include "data.h"
 #include "types.h"
 #include "platform.h"
+#include "ext_tex.h"
 
 #define SPACE_WIDTH 5
 
@@ -1412,10 +1413,9 @@ Gfx *text0f154f38(Gfx *gdl, s32 *arg1, struct fontchar *curchar, struct fontchar
 	}
 #endif
 
-    gDPSetTextureImage(gdl++, G_IM_FMT_CI, G_IM_SIZ_16b, 1, curchar->pixeldata);
-    gDPLoadSync(gdl++);
-    gDPLoadBlock(gdl++, G_TX_LOADTILE, 0, 0, ((curchar->height * 8 + 17) >> 1) - 1, 2048);
-    gDPPipeSync(gdl++);
+	gDPLoadSync(gdl++);
+	gDPLoadBlock(gdl++, G_TX_LOADTILE, 0, 0, ((curchar->height * 8 + 17) >> 1) - 1, 2048);
+	gDPPipeSync(gdl++);
 
     tmp1 = var8007fadc;
     tmp2 = var8007fae0;
@@ -1570,21 +1570,23 @@ Gfx *text0f1552d4(Gfx *gdl, f32 x, f32 y, f32 widthscale, f32 heightscale,
                 prevchar = 'H';
                 text += 1;
 
-                if (var8007fad4 >= 0 && relx == 0) {
-                    totalheight += var8007fad4;
-                    relx = 0;
-                } else {
-                    totalheight += lineheight;
-                    relx = 0;
-                }
-            } else if (*text < 0x80) {
-                gdl = text0f154f38(gdl, &relx, &chars[*text - 0x21], &chars[prevchar - 0x21], font,
-                                   widthscale, heightscale, fx, fy);
-                prevchar = *text;
-                text += 1;
-            } else {
-                u16 codepoint = (text[0] & 0x7f) << 7 | (text[1] & 0x7f);
-                struct fontchar tmpchar = {0, 0, 12, 11};
+				if (var8007fad4 >= 0 && relx == 0) {
+					totalheight += var8007fad4;
+					relx = 0;
+				} else {
+					totalheight += lineheight;
+					relx = 0;
+				}
+			} else if (*text < 0x80) {
+				u8 fontID = extTexFontID(font);
+				gDPSetTextureInfoEXT(gdl++, G_TEXTYPE_FONT, fontID, *text - 0x21, 0);
+				gdl = text0f154f38(gdl, &relx, &chars[*text - 0x21], &chars[prevchar - 0x21], font,
+						widthscale, heightscale, fx, fy);
+				prevchar = *text;
+				text += 1;
+			} else {
+				u16 codepoint = (text[0] & 0x7f) << 7 | (text[1] & 0x7f);
+				struct fontchar tmpchar = {0, 0, 12, 11};
 
                 if (1);
 
@@ -2077,14 +2079,16 @@ Gfx *textRenderProjected(Gfx *gdl, s32 *x, s32 *y, char *text, struct fontchar *
                     *y += lineheight;
                 }
 
-                *x = savedx;
-            } else if (*text < 0x80) {
-                gdl = text0f15568c(gdl, x, y, &chars[*text - 0x21], &chars[prevchar - 0x21], font, savedx, savedy, width, height, arg9);
-                prevchar = *text;
-                text++;
-            } else {
-                u16 codepoint = ((*text & 0x7f) << 7) | (text[1] & 0x7f);
-                struct fontchar tmpchar = {0, 0, 12, 11};
+				*x = savedx;
+			} else if (*text < 0x80) {
+				u8 fontID = extTexFontID(font);
+				gDPSetTextureInfoEXT(gdl++, G_TEXTYPE_FONT, fontID, *text - 0x21, 0);
+				gdl = text0f15568c(gdl, x, y, &chars[*text - 0x21], &chars[prevchar - 0x21], font, savedx, savedy, width, height, arg9);
+				prevchar = *text;
+				text++;
+			} else {
+				u16 codepoint = ((*text & 0x7f) << 7) | (text[1] & 0x7f);
+				struct fontchar tmpchar = {0, 0, 12, 11};
 
                 if (codepoint & 0x2000) {
                     tmpchar.width = 15;
@@ -2326,24 +2330,26 @@ Gfx *textRender(Gfx *gdl, s32 *x, s32 *y, char *text,
 		}
 	}
 #else
-    while (*text != '\0') {
-        if (*text == ' ') {
-            *x += var8007fad0 * 5;
-            prevchar = 'H';
-            text++;
-        } else if (*text == '\n') {
-            *x = savedx;
-            *y += lineheight;
-            prevchar = 'H';
-            text++;
-        } else if (*text < 0x80) {
-            gdl = textRenderChar(gdl, x, y, &chars[*text - 0x21], &chars[prevchar - 0x21],
-                                 font, savedx, savedy, width * var8007fad0, height, arg10);
-            prevchar = *text;
-            text++;
-        } else {
-            u16 codepoint = ((*text & 0x7f) << 7) | (text[1] & 0x7f);
-            struct fontchar sp74 = {0, 0, 12, 11};
+	while (*text != '\0') {
+		if (*text == ' ') {
+			*x += var8007fad0 * 5;
+			prevchar = 'H';
+			text++;
+		} else if (*text == '\n') {
+			*x = savedx;
+			*y += lineheight;
+			prevchar = 'H';
+			text++;
+		} else if (*text < 0x80) {
+			u8 fontID = extTexFontID(font);
+			gDPSetTextureInfoEXT(gdl++, G_TEXTYPE_FONT, fontID, *text - 0x21, MASK_FONT_OUTLINE);
+			gdl = textRenderChar(gdl, x, y, &chars[*text - 0x21], &chars[prevchar - 0x21],
+					font, savedx, savedy, width * var8007fad0, height, arg10);
+			prevchar = *text;
+			text++;
+		} else {
+			u16 codepoint = ((*text & 0x7f) << 7) | (text[1] & 0x7f);
+			struct fontchar sp74 = {0, 0, 12, 11};
 
             if (codepoint & 0x2000) {
                 sp74.width = 15;
@@ -2357,7 +2363,9 @@ Gfx *textRender(Gfx *gdl, s32 *x, s32 *y, char *text,
             sp74.index = codepoint + 0x80;
             sp74.pixeldata = (void *)langGetJpnCharPixels(codepoint);
 
-            gdl = textRenderChar(gdl, x, y, &sp74, &sp74, font, savedx, savedy, width * var8007fad0, height, arg10);
+			u8 fontID = extTexFontID(font);
+			gDPSetTextureInfoEXT(gdl++, G_TEXTYPE_FONT, fontID, *text - 0x21, MASK_FONT_OUTLINE);
+			gdl = textRenderChar(gdl, x, y, &sp74, &sp74, font, savedx, savedy, width * var8007fad0, height, arg10);
 
             text += 2;
         }

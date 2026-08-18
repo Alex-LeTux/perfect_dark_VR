@@ -64,6 +64,7 @@ static displaymode *vidModes = &vidModeDefault;
 static s32 texFilter = FILTER_LINEAR;
 static s32 texFilter2D = true;
 static s32 texDetail = false;
+static s32 texExternal = false;
 
 static u32 dlcount = 0;
 static u32 frames = 0;
@@ -87,12 +88,13 @@ s32 videoInit(void)
     wmAPI = &gfx_sdl;
     renderingAPI = &gfx_opengl_api;
 
-    gfx_current_native_viewport.width = 320;
-    gfx_current_native_viewport.height = 220;
-    gfx_current_native_aspect = 320.f / 220.f;
-    gfx_framebuffers_enabled = (bool)vidFramebuffers;
-    gfx_detail_textures_enabled = (bool)texDetail;
-    gfx_msaa_level = vidMSAA;
+	gfx_current_native_viewport.width = 320;
+	gfx_current_native_viewport.height = 220;
+	gfx_current_native_aspect = 320.f / 220.f;
+	gfx_framebuffers_enabled = (bool)vidFramebuffers;
+	gfx_detail_textures_enabled = (bool)texDetail;
+	gfx_external_textures_enabled = (bool)texExternal;
+	gfx_msaa_level = vidMSAA;
 
     struct GfxInitSettings set = {
             .wapi = wmAPI,
@@ -442,6 +444,11 @@ s32 videoGetDetailTextures(void)
     return texDetail;
 }
 
+s32 videoGetExternalTextures(void)
+{
+	return texExternal;
+}
+
 void videoSetWindowOffset(s32 x, s32 y)
 {
     gfx_current_game_window_viewport.x = x;
@@ -513,6 +520,12 @@ void videoSetDetailTextures(s32 detail)
 {
     texDetail = !!detail;
     gfx_detail_textures_enabled = (bool)texDetail;
+}
+
+void videoSetExternalTextures(s32 external)
+{
+	texExternal = !!external;
+	gfx_external_textures_enabled = (bool)texExternal;
 }
 
 s32 videoCreateFramebuffer(u32 w, u32 h, s32 upscale, s32 autoresize)
@@ -590,21 +603,24 @@ void videoShutdown(void)
 
 PD_CONSTRUCTOR static void videoConfigInit(void)
 {
-    configRegisterInt("Video.DefaultFullscreen", &vidFullscreen, 0, 1);
-    configRegisterInt("Video.DefaultMaximize", &vidMaximize, 0, 1);
-    configRegisterInt("Video.ExclusiveFullscreen", &vidFullscreenExclusive, 0, 1);
-    configRegisterInt("Video.CenterWindow", &vidCenter, 0, 1);
-    configRegisterInt("Video.AllowHiDpi", &vidAllowHiDpi, 0, 1);
-    configRegisterInt("Video.VSync", &vidVsync, -1, 10);
-    configRegisterInt("Video.FramebufferEffects", &vidFramebuffers, 0, 1);
-    configRegisterInt("Video.FramerateLimit", &vidFramerateLimit, 0, VIDEO_MAX_FPS);
-    configRegisterInt("Video.DisplayFPS", &vidDisplayFPS, 0, 1);
-    configRegisterFloat("Video.DisplayFPSInterval", &vidDisplayFPSInterval, 0.01f, 32.f);
-    configRegisterInt("Video.MSAA", &vidMSAA, 1, 16);
-    configRegisterInt("Video.TextureFilter", &texFilter, 0, 2);
-    configRegisterInt("Video.TextureFilter2D", &texFilter2D, 0, 1);
-    configRegisterInt("Video.DetailTextures", &texDetail, 0, 1);
-    // VR: the eye render resolution is derived from RENDER_SCALE, so this is the key that
+	configRegisterInt("Video.DefaultFullscreen", &vidFullscreen, 0, 1);
+	configRegisterInt("Video.DefaultMaximize", &vidMaximize, 0, 1);
+	configRegisterInt("Video.DefaultWidth", &vidWidth, 0, 32767);
+	configRegisterInt("Video.DefaultHeight", &vidHeight, 0, 32767);
+	configRegisterInt("Video.ExclusiveFullscreen", &vidFullscreenExclusive, 0, 1);
+	configRegisterInt("Video.CenterWindow", &vidCenter, 0, 1);
+	configRegisterInt("Video.AllowHiDpi", &vidAllowHiDpi, 0, 1);
+	configRegisterInt("Video.VSync", &vidVsync, -1, 10);
+	configRegisterInt("Video.FramebufferEffects", &vidFramebuffers, 0, 1);
+	configRegisterInt("Video.FramerateLimit", &vidFramerateLimit, 0, VIDEO_MAX_FPS);
+	configRegisterInt("Video.DisplayFPS", &vidDisplayFPS, 0, 1);
+	configRegisterFloat("Video.DisplayFPSInterval", &vidDisplayFPSInterval, 0.01f, 32.f);
+	configRegisterInt("Video.MSAA", &vidMSAA, 1, 16);
+	configRegisterInt("Video.TextureFilter", &texFilter, 0, 2);
+	configRegisterInt("Video.TextureFilter2D", &texFilter2D, 0, 1);
+	configRegisterInt("Video.DetailTextures", &texDetail, 0, 1);
+	configRegisterInt("Video.ExternalTextures", &texExternal, 0, 1);
+        // VR: the eye render resolution is derived from RENDER_SCALE, so this is the key that
     // makes the Extended menu's Resolution choice survive a restart. configInit() runs long
     // before vr_initialize(), so the saved scale is already in place when the swapchains are
     // first sized -- no restart and no resolution pop on startup.

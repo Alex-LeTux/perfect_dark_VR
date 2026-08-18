@@ -10,6 +10,12 @@ import java.io.File;
 public class MainActivity extends SDLActivity {
     private static final String TAG = "PerfectDark";
 
+    // Extra used to indicate that MainActivity was explicitly launched
+    // by LauncherActivity (via the "Start" button), rather than by the
+    // Android launcher / Meta Store. Without this flag, we always redirect
+    // to LauncherActivity first.
+    public static final String EXTRA_FROM_LAUNCHER = "com.perfectdark.port.FROM_LAUNCHER";
+
     private static native void nativeSetVrJavaContext(android.app.Activity activity, android.view.Surface surface);
 
     static {
@@ -22,26 +28,27 @@ public class MainActivity extends SDLActivity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
-        Log.i(TAG, "MainActivity onCreate - checking ROM");
+        Log.i(TAG, "MainActivity onCreate");
 
-        // Vérifier si ROM existe
-        File dataDir = new File(getExternalFilesDir(null), "data");
-        File romFile = new File(dataDir, "pd.ntsc-final.z64");
-        if (!romFile.exists() || romFile.length() == 0) {
-            // No ROM found -> launch LauncherActivity for ROM selection
-            Log.i(TAG, "ROM not found, launching LauncherActivity");
+        boolean fromLauncher = getIntent() != null
+                && getIntent().getBooleanExtra(EXTRA_FROM_LAUNCHER, false);
+
+        if (!fromLauncher) {
+        // MainActivity was started directly (Android launcher, Meta Store,
+        // adb shell am start, etc.): always redirect to LauncherActivity,
+        // which will display the ROM selection window and handle the Start button.
+            Log.i(TAG, "Not launched from LauncherActivity, redirecting to LauncherActivity");
             Intent intent = new Intent(this, LauncherActivity.class);
             startActivity(intent);
             finish();
             return;
         }
 
-        // ROM found -> continue in VR mode
-        Log.i(TAG, "ROM found, starting VR mode");
+    // Explicitly launched from LauncherActivity after ROM validation
+    // (Start button) -> start the game directly in VR.
+        Log.i(TAG, "Launched from LauncherActivity, starting VR mode");
         initializeGame();
     }
-
-
 
     @Override
     public void onWindowFocusChanged(boolean hasFocus) {
@@ -51,7 +58,6 @@ public class MainActivity extends SDLActivity {
             getWindow().getDecorView().post(this::hideSystemUI);
         }
     }
-
 
     private void hideSystemUI() {
         View decorView = getWindow().getDecorView();
@@ -67,7 +73,6 @@ public class MainActivity extends SDLActivity {
     private void initializeGame() {
         Log.i(TAG, "initializeGame start");
 
-        // Create data directory in external storage
         File dataDir = new File(getExternalFilesDir(null), "data");
         Log.i(TAG, "Data dir: " + dataDir.getAbsolutePath());
 
@@ -75,7 +80,6 @@ public class MainActivity extends SDLActivity {
             dataDir.mkdirs();
         }
 
-        // Initialize native game
         Log.i(TAG, "Calling nativeInit");
         nativeInit(dataDir.getAbsolutePath());
         Log.i(TAG, "initializeGame complete");

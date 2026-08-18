@@ -1,27 +1,75 @@
 <?xml version="1.0" encoding="utf-8"?>
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
     android:id="@+id/missingRomContainer"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
+    android:background="#000000"
+    android:gravity="center|top"
     android:orientation="vertical"
-    android:gravity="center"
-    android:padding="24dp"
-    android:background="#000000">
+    android:padding="24dp">
+
+    <ImageView
+        android:id="@+id/imageView3"
+        android:layout_width="wrap_content"
+        android:layout_height="200dp"
+        app:srcCompat="@drawable/logo" />
+
+    <Space
+        android:layout_width="match_parent"
+        android:layout_height="50dp" />
 
     <TextView
         android:id="@+id/infoText"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
+        android:gravity="center"
+        android:text="ROM not found. Select your ROM to continue."
         android:textColor="#FFFFFF"
-        android:textSize="16sp"
-        android:text="ROM not found. Select your ROM to continue."/>
+        android:textSize="16sp" />
 
     <Button
         android:id="@+id/pickRomButton"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
+        android:layout_marginTop="16dp"
+        android:background="#1E5FA8"
+        android:paddingLeft="30dp"
+        android:paddingRight="30dp"
         android:text="Select ROM"
-        android:layout_marginTop="16dp"/>
+        android:textColor="#FFFFFF" />
+
+    <Button
+        android:id="@+id/startButton"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="24dp"
+        android:alpha="0.5"
+        android:background="#2873C2"
+        android:enabled="false"
+        android:paddingLeft="150dp"
+        android:paddingTop="30dp"
+        android:paddingRight="150dp"
+        android:paddingBottom="30dp"
+        android:text="Start"
+        android:textColor="#FFFFFF"
+        android:textSize="20sp" />
+
+    <FrameLayout
+        android:layout_width="match_parent"
+        android:layout_height="match_parent">
+
+        <Button
+            android:id="@+id/resetGraphicsButton"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="bottom|end"
+            android:background="#1E5FA8"
+            android:paddingLeft="30dp"
+            android:paddingRight="30dp"
+            android:text="Reset graphics settings"
+            android:textColor="#FFFFFF" />
+    </FrameLayout>
 
 </LinearLayout>
-

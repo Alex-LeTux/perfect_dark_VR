@@ -136,6 +136,9 @@ s32 g_BgMostAttemptedDrawSlots = 0;
 s32 g_BgNumRoomLoadCandidates = 0;
 u16 g_BgFrameCount = 0xfffe;
 s32 g_BgNumPortalCameraCacheItems = 0;
+#ifndef PLATFORM_N64
+bool g_BgHitXluDisabled = false;
+#endif
 
 void bgUnpausePropsInRoom(u32 roomnum, bool tintedglassonly)
 {
@@ -4603,6 +4606,10 @@ bool bgTestHitInRoom(struct coord *frompos, struct coord *topos, s32 roomnum, st
 	numbatches = g_Rooms[roomnum].numvtxbatches;
 
 	for (i = 0; i < numbatches; batch++, i++) {
+#ifndef PLATFORM_N64
+		if (g_BgHitXluDisabled && batch->type == VTXBATCHTYPE_XLU)
+			continue;
+#endif
 		j = bg0f1612e4(&batch->bbmin, &batch->bbmax, &from, &dist, &sp94, &hitthing->pos);
 
 		if (j == 0) {
@@ -6435,6 +6442,10 @@ void bgCalculateGlaresForVisibleRooms(void)
 
 	g_NumRoomsWithGlares = 0;
 
+	// disable line-of-sight hits for transparent background
+	// surfaces before testing for light obstructions
+	g_BgHitXluDisabled = true;
+
 	if (!g_Vars.mplayerisrunning) {
 		for (i = 1; i < g_Vars.roomcount; i++) {
 			if (g_Rooms[i].flags & ROOMFLAG_ONSCREEN) {
@@ -6445,6 +6456,9 @@ void bgCalculateGlaresForVisibleRooms(void)
 			}
 		}
 	}
+
+	// re-enable background hits for transparent surfaces
+	g_BgHitXluDisabled = false;
 }
 
 #endif
