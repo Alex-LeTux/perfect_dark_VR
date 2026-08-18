@@ -5,6 +5,11 @@
 #include "lib/vi.h"
 #include "data.h"
 #include "types.h"
+#include "gbiex.h"
+
+#ifndef PLATFORM_N64
+#include "../../port/vr/vr_openxr.h"
+#endif
 
 /**
  * With this function stubbed, light glares do not render,
@@ -27,6 +32,28 @@ void func0f0b2150(Gfx **gdlptr, f32 *arg1, f32 *arg2, s32 width, s32 height, s32
 		s32 sp20 = 0;
 		s32 sp1c = 0;
 
+		/**
+		 * The sprite is clipped to the viewport below, because a texture
+		 * rectangle's coordinates are packed into unsigned 12 bit fields and
+		 * cannot address anything outside it.
+		 *
+		 * In VR the viewport only covers the middle of the eye's field of
+		 * view, so that clip leaves a hard rectangular edge sitting in the
+		 * player's periphery. It shows up most on a light glare, which is one
+		 * big soft sprite that is meant to fade out rather than stop dead.
+		 *
+		 * The wide texrect opcode takes signed 24 bit coordinates, so under VR
+		 * the clip box grows by a viewport in every direction instead. That is
+		 * past the edge of the eye, so the sprite runs out on its own texture.
+		 */
+#ifndef PLATFORM_N64
+		const bool wide = vr_init_done;
+#else
+		const bool wide = false;
+#endif
+		const s32 marginx = wide ? viGetWidth() * 4 : 0;
+		const s32 marginy = wide ? viGetHeight() * 4 : 0;
+
 		gDPSetTexturePersp(gdl++, G_TP_NONE);
 
 		xl = (arg1[0] - arg2[0]) * 4.0f;
@@ -41,7 +68,7 @@ void func0f0b2150(Gfx **gdlptr, f32 *arg1, f32 *arg2, s32 width, s32 height, s32
 			yl -= sp1c;
 		}
 
-		if (xh >= 0 && yh >= 0) {
+		if (xh >= -marginx && yh >= -marginy) {
 			if (arg8) {
 				width *= 2;
 				height *= 2;
@@ -49,28 +76,28 @@ void func0f0b2150(Gfx **gdlptr, f32 *arg1, f32 *arg2, s32 width, s32 height, s32
 				t = -(height * 16);
 			}
 
-			if (xl < 0) {
+			if (xl < -marginx) {
 				if (arg5) {
-					t += ((-xl * height) << 5) / (xh - xl);
+					t += (((-marginx - xl) * height) << 5) / (xh - xl);
 				} else {
-					s += ((-xl * width) << 5) / (xh - xl);
+					s += (((-marginx - xl) * width) << 5) / (xh - xl);
 				}
 
-				xl = 0;
+				xl = -marginx;
 			}
 
-			if (yl < 0) {
+			if (yl < -marginy) {
 				if (arg5) {
-					s += ((-yl * width) << 5) / (yh - yl);
+					s += (((-marginy - yl) * width) << 5) / (yh - yl);
 				} else {
-					t += ((-yl * height) << 5) / (yh - yl);
+					t += (((-marginy - yl) * height) << 5) / (yh - yl);
 				}
 
-				yl = 0;
+				yl = -marginy;
 			}
 
-			widthx4 = viGetWidth() * 4;
-			heightx4 = viGetHeight() * 4;
+			widthx4 = viGetWidth() * 4 + marginx;
+			heightx4 = viGetHeight() * 4 + marginy;
 
 			if (widthx4 < xh) {
 				xh = widthx4;
@@ -113,7 +140,11 @@ void func0f0b2150(Gfx **gdlptr, f32 *arg1, f32 *arg2, s32 width, s32 height, s32
 				}
 			}
 
-			if (arg5) {
+			if (wide) {
+#ifndef PLATFORM_N64
+				gSPTextureRectangleWideEXT(gdl++, xl, yl, xh, yh, tile, s, t, dsdx, dtdy, arg5 ? G_ON : G_OFF);
+#endif
+			} else if (arg5) {
 				gSPTextureRectangleFlip(gdl++, xl, yl, xh, yh, tile, s, t, dsdx, dtdy);
 			} else {
 				gSPTextureRectangle(gdl++, xl, yl, xh, yh, tile, s, t, dsdx, dtdy);

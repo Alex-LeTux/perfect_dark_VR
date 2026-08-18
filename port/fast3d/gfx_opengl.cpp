@@ -1478,9 +1478,27 @@ static void gfx_opengl_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_
     // printf("flushing %d tris\n", buf_vbo_num_tris);
     glBufferData(GL_ARRAY_BUFFER, sizeof(float) * buf_vbo_len, buf_vbo, GL_STREAM_DRAW);
 
-    if (gForceFlatShaderForMenu) {
-        if (gCurEyeOffsetLeftLoc  >= 0) glUniform4f(gCurEyeOffsetLeftLoc,  0.0f, 0.0f, 0.0f, 0.0f);
-        if (gCurEyeOffsetRightLoc >= 0) glUniform4f(gCurEyeOffsetRightLoc, 0.0f, 0.0f, 0.0f, 1000.0f); // hide
+    // A HUD capture draws into a single 2D texture, so it hides the right eye by
+    // pushing that eye's geometry far away. That is correct while capturing --
+    // but these uniforms are per shader program, and the real values are only
+    // uploaded when a program is bound. Setting them here and never putting them
+    // back left every later draw that reused the same program still hiding the
+    // right eye, until some unrelated program switch happened to restore them.
+    // That is how a full-screen effect could come out left-eye-only after a menu
+    // had been opened, and why it looked intermittent. Always write the state
+    // this draw actually wants.
+    if (use_multiview) {
+        if (gForceFlatShaderForMenu) {
+            if (gCurEyeOffsetLeftLoc  >= 0) glUniform4f(gCurEyeOffsetLeftLoc,  0.0f, 0.0f, 0.0f, 0.0f);
+            if (gCurEyeOffsetRightLoc >= 0) glUniform4f(gCurEyeOffsetRightLoc, 0.0f, 0.0f, 0.0f, 1000.0f); // hide
+        } else {
+            if (gCurEyeOffsetLeftLoc >= 0)
+                glUniform4f(gCurEyeOffsetLeftLoc,
+                            s_eye_offsets[0], s_eye_offsets[1], s_eye_offsets[2], s_eye_offsets[3]);
+            if (gCurEyeOffsetRightLoc >= 0)
+                glUniform4f(gCurEyeOffsetRightLoc,
+                            s_eye_offsets[4], s_eye_offsets[5], s_eye_offsets[6], s_eye_offsets[7]);
+        }
     }
 
     glDrawArrays(GL_TRIANGLES, 0, 3 * buf_vbo_num_tris);
