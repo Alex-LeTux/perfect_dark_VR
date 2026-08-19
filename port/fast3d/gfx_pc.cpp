@@ -2863,7 +2863,6 @@ extern "C" void gfx_init(const GfxInitSettings *settings) {
     rsp.lookat[0].dir[0] = rsp.lookat[1].dir[1] = 0x7F;
     rsp.current_lookat_coeffs[0][0] = rsp.current_lookat_coeffs[1][1] = 1.f;
     rsp.lookat_enabled = true;
-    extTexAsyncInit();
 
 }
 

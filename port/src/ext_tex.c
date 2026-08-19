@@ -36,14 +36,26 @@ struct PendingLoad {
 
 static struct PendingLoad pendingLoads[MAX_PENDING_LOADS];
 static pthread_mutex_t pendingMutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t  pendingCond  = PTHREAD_COND_INITIALIZER;
 static pthread_t decodeThreadHandle;
 static _Atomic(int) decodeThreadRunning = 0;
+static _Atomic(int) decodeThreadStarted = 0;
 
+static void *extTexDecodeThreadFunc(void *arg);
 
 void extTexAsyncShutdown()
 {
+    if (!atomic_load(&decodeThreadStarted))
+        return;
+
     atomic_store(&decodeThreadRunning, 0);
+/* Wake up the thread if it is waiting on the condition variable */
+    pthread_mutex_lock(&pendingMutex);
+    pthread_cond_broadcast(&pendingCond);
+    pthread_mutex_unlock(&pendingMutex);
+
     pthread_join(decodeThreadHandle, NULL);
+    atomic_store(&decodeThreadStarted, 0);
 }
 
 
@@ -65,8 +77,20 @@ s32 extTexPollReady(u8 *outType, u16 *outId, s32 *outTexnum, s32 maxOut)
     return count;
 }
 
+static void extTexEnsureThreadStarted(void)
+{
+    if (atomic_exchange(&decodeThreadStarted, 1) == 0) {
+        atomic_store(&decodeThreadRunning, 1);
+        for (int i = 0; i < MAX_PENDING_LOADS; ++i)
+            atomic_store(&pendingLoads[i].state, 0);
+        pthread_create(&decodeThreadHandle, NULL, extTexDecodeThreadFunc, NULL);
+    }
+}
+
 static void extTexEnqueueLoad(u8 type, u16 id, s32 texnum)
 {
+    extTexEnsureThreadStarted();
+
     pthread_mutex_lock(&pendingMutex);
     for (int i = 0; i < MAX_PENDING_LOADS; ++i) {
         if (atomic_load(&pendingLoads[i].state) == 0) {
@@ -74,6 +98,7 @@ static void extTexEnqueueLoad(u8 type, u16 id, s32 texnum)
             pendingLoads[i].id = id;
             pendingLoads[i].texnum = texnum;
             atomic_store(&pendingLoads[i].state, 1);
+            pthread_cond_signal(&pendingCond);
             break;
         }
     }
@@ -280,16 +305,20 @@ static void *extTexDecodeThreadFunc(void *arg)
 {
     while (atomic_load(&decodeThreadRunning)) {
         int found = -1;
+
         pthread_mutex_lock(&pendingMutex);
-        for (int i = 0; i < MAX_PENDING_LOADS; ++i) {
-            if (atomic_load(&pendingLoads[i].state) == 1) { found = i; break; }
+        for (;;) {
+            for (int i = 0; i < MAX_PENDING_LOADS; ++i) {
+                if (atomic_load(&pendingLoads[i].state) == 1) { found = i; break; }
+            }
+            if (found >= 0 || !atomic_load(&decodeThreadRunning))
+                break;
+            pthread_cond_wait(&pendingCond, &pendingMutex);
         }
         pthread_mutex_unlock(&pendingMutex);
 
-        if (found < 0) {
-            usleep(1000);
-            continue;
-        }
+        if (found < 0)
+            break; /* arrêt demandé */
 
         struct PendingLoad *job = &pendingLoads[found];
         char path[FS_MAXPATH];
@@ -299,22 +328,17 @@ static void *extTexDecodeThreadFunc(void *arg)
                 u32 w, h, channels;
                 u8 *pixels = stbi_load(path, (int*)&w, (int*)&h, (int*)&channels, 4);
                 if (pixels) {
-                    tex->texdata = pixels; // written once, read by the main thread
+                    tex->texdata = pixels;
                 }
             }
         }
-        atomic_store(&job->state, 2); // ready, pending consumption
+        atomic_store(&job->state, 2);
     }
     return NULL;
 }
 
-void extTexAsyncInit()
-{
-    atomic_store(&decodeThreadRunning, 1);
-    for (int i = 0; i < MAX_PENDING_LOADS; ++i)
-        atomic_store(&pendingLoads[i].state, 0);
-    pthread_create(&decodeThreadHandle, NULL, extTexDecodeThreadFunc, NULL);
-}
+
+
 
 
 u8 extTexFontID(struct font *font) {
@@ -357,88 +381,107 @@ void setTex(struct ExtTexture *texlist, s32 index, s32 texNum, char extension[5]
 
 void readModelTextures(const char *path, s16 fileNum, s32 *modelOffset, struct ModelTextures *modelTex)
 {
-	DIR *dr = opendir(path);
-	struct dirent *de;
+    DIR *dr = opendir(path);
+    struct dirent *de;
 
-	s32 MAX_TEX = 16;
-	modelTex->textures = sysMemAlloc(MAX_TEX * sizeof(struct ExtTexture));
-	modelTex->numTextures = 0;
-	modelTex->fileNum = fileNum;
+    s32 MAX_TEX = 16;
+    modelTex->textures = sysMemAlloc(MAX_TEX * sizeof(struct ExtTexture));
+    modelTex->numTextures = 0;
+    modelTex->fileNum = fileNum;
 
-	char extension[5] = { 0 };
+    char extension[5] = { 0 };
 
-	while ((de = readdir(dr)) != NULL) {
-		const char *name = de->d_name;
-		if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0) continue;
+/* The model's directory may not exist (no HD textures
+ * are provided for this model): this is not an error, we
+ * simply return with 0 textures. */
+    if (dr == NULL) {
+        return;
+    }
 
-		s32 texNum;
-		s32 err = fileInfo(name, &texNum, extension);
-		// no extension: skip
-		if (err) continue;
+    while ((de = readdir(dr)) != NULL) {
+        const char *name = de->d_name;
+        if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0) continue;
 
-		setTex(modelTex->textures, modelTex->numTextures, texNum, extension);
-		modelTex->numTextures++;
+        s32 texNum;
+        s32 err = fileInfo(name, &texNum, extension);
+        // no extension: skip
+        if (err) continue;
 
-		// allocate more memory for model textures if needed
-		if (modelTex->numTextures > MAX_TEX) {
-			MAX_TEX *= 2;
-			modelTex->textures = sysMemRealloc(modelTex->textures, MAX_TEX * sizeof(struct ExtTexture));
-		}
-	}
-	closedir(dr);
+        setTex(modelTex->textures, modelTex->numTextures, texNum, extension);
+        modelTex->numTextures++;
 
-	// shrink the textures array to the actual number of textures found
-	s32 numTex = modelTex->numTextures;
+        // allocate more memory for model textures if needed
+        if (modelTex->numTextures > MAX_TEX) {
+            MAX_TEX *= 2;
+            modelTex->textures = sysMemRealloc(modelTex->textures, MAX_TEX * sizeof(struct ExtTexture));
+        }
+    }
+    closedir(dr);
 
-	if (numTex > 0)
-		modelTex->textures = sysMemRealloc(modelTex->textures, numTex * sizeof(struct ExtTexture));
+    // shrink the textures array to the actual number of textures found
+    s32 numTex = modelTex->numTextures;
 
-	for (int i = 0; i < modelTex->numTextures; ++i) {
-		modelTex->textures[i].texdata = 0;
-	}
+    if (numTex > 0)
+        modelTex->textures = sysMemRealloc(modelTex->textures, numTex * sizeof(struct ExtTexture));
+
+    for (int i = 0; i < modelTex->numTextures; ++i) {
+        modelTex->textures[i].texdata = 0;
+    }
 }
 
 void readFontTextures(const char *path, const char *fontName)
 {
-	DIR *dr = opendir(path);
-	struct dirent *de;
+    DIR *dr = opendir(path);
+    struct dirent *de;
 
-	u8 fontID = resolveFontID(fontName);
-	char extension[5] = { 0 };
+    u8 fontID = resolveFontID(fontName);
+    char extension[5] = { 0 };
 
-	char outlinesPath[FS_MAXPATH];
-	sprintf(outlinesPath , "%s/" FONT_OUTLINES_DIR, path);
-	u8 outlines = false;
+    char outlinesPath[FS_MAXPATH];
+    sprintf(outlinesPath, "%s/" FONT_OUTLINES_DIR, path);
+    u8 outlines = false;
 
-	while (true) {
-		de = readdir(dr);
-		// after done processing the font folder, do the same for the outlines folder if any
-		if (de == NULL) {
-			if (outlines) break;
+/* The font's directory itself is missing: nothing to read. */
+    if (dr == NULL) {
+        return;
+    }
 
-			outlines = true;
-			closedir(dr);
-			dr = opendir(outlinesPath);
-			de = readdir(dr);
+    while (true) {
+        de = readdir(dr);
+        // after done processing the font folder, do the same for the outlines folder if any
+        if (de == NULL) {
+            if (outlines) break;
 
-			if (de == NULL) break;
-		}
+            outlines = true;
+            closedir(dr);
+            dr = opendir(outlinesPath);
 
-		const char *name = de->d_name;
-		if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0) continue;
+            /* The "outlines" subdirectory is optional: if it doesn't exist,
+             * stop cleanly instead of calling readdir(NULL). */
+            if (dr == NULL) break;
 
-		s32 texNum;
-		s32 err = fileInfo(name, &texNum, extension);
-		// no extension: skip
-		if (err) continue;
+            de = readdir(dr);
+            if (de == NULL) break;
+        }
 
-		if (outlines)
-			setTex(fontOutlineExtTextures[fontID], texNum, texNum, extension);
-		else
-			setTex(fontExtTextures[fontID], texNum, texNum, extension);
-	}
+        const char *name = de->d_name;
+        if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0) continue;
 
-	closedir(dr);
+        s32 texNum;
+        s32 err = fileInfo(name, &texNum, extension);
+        // no extension: skip
+        if (err) continue;
+
+        if (outlines)
+            setTex(fontOutlineExtTextures[fontID], texNum, texNum, extension);
+        else
+            setTex(fontExtTextures[fontID], texNum, texNum, extension);
+    }
+
+        /* dr may be NULL here if opening the outlines directory failed:
+         * do not call closedir(NULL). */
+    if (dr != NULL)
+        closedir(dr);
 }
 
 void extTexFree()
@@ -476,88 +519,101 @@ void extTexFree()
 
 s32 extTexInit()
 {
+    const char *path = fsFullPath(EXT_TEX_DIRNAME);
+    strcpy(extTexPath, path);
 
-	const char *path = fsFullPath(EXT_TEX_DIRNAME);
-	strcpy(extTexPath, path);
+    for (int i = 0; i < MAX_EXT_TEX; ++i) {
+        extTextures[i].texnum = -1;
+        extTextures[i].texdata = 0;
+    }
 
-	for (int i = 0; i < MAX_EXT_TEX; ++i) {
-		extTextures[i].texnum = -1;
-		extTextures[i].texdata = 0;
-	}
+    for (int i = 0; i < NUM_FONTS; ++i) {
+        for (int j = 0; j < NCHARS; ++j) {
+            fontExtTextures[i][j].texnum = -1;
+            fontExtTextures[i][j].texdata = 0;
 
-	for (int i = 0; i < NUM_FONTS; ++i) {
-		for (int j = 0; j < NCHARS; ++j) {
-			fontExtTextures[i][j].texnum = -1;
-			fontExtTextures[i][j].texdata = 0;
+            fontOutlineExtTextures[i][j].texnum = -1;
+            fontOutlineExtTextures[i][j].texdata = 0;
+        }
+    }
 
-			fontOutlineExtTextures[i][j].texnum = -1;
-			fontOutlineExtTextures[i][j].texdata = 0;
-		}
-	}
+    struct dirent *de;
+    DIR *dr = opendir(extTexPath);
 
-	struct dirent *de;
-	DIR *dr = opendir(extTexPath);
+    char filepath[FS_MAXPATH];
+    s32 modelOffset = 0;
 
-	char filepath[FS_MAXPATH];
-	s32 modelOffset = 0;
+    s32 MAX_MODELS = 16;
+    numModels = 0;
+    modelTextures = sysMemAlloc(MAX_MODELS * sizeof(struct ModelTextures));
 
-	s32 MAX_MODELS = 16;
-	numModels = 0;
-	modelTextures = sysMemAlloc(MAX_MODELS * sizeof(struct ModelTextures));
+    /*
+     * FIX (v1.7.1 Quest boot crash): ./ext_tex does not exist until
+     * the user manually creates the directory and adds HD textures
+     * to it. opendir() then returns NULL, and the old code called
+     * readdir(NULL) without checking -> SIGSEGV under bionic (Android).
+     * mingw (PCVR) tolerated this case, which masked the bug during
+     * PC development.
+     *
+     * Simply skip the scan if the directory is missing: this is the
+     * normal state when no external textures have been installed,
+     * regardless of the "external HD textures" toggle in the options.
+     */
+    if (dr != NULL) {
+        while ((de = readdir(dr)) != NULL) {
+            const char *name = de->d_name;
+            if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0) continue;
 
-	while ((de = readdir(dr)) != NULL) {
-		const char *name = de->d_name;
-		if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0) continue;
+            struct stat stbuf;
+            sprintf(filepath, "%s/%s", extTexPath, de->d_name);
+            if (stat(filepath, &stbuf) == -1) {
+                sysLogPrintf(LOG_WARNING, "Unable to stat file: %s\n", filepath);
+                continue;
+            }
 
-		struct stat stbuf;
-		sprintf(filepath , "%s/%s", extTexPath, de->d_name);
-		if (stat(filepath, &stbuf) == -1) {
-			sysLogPrintf(LOG_WARNING, "Unable to stat file: %s\n", filepath);
-			continue;
-		}
+            // is a directory
+            if (S_ISDIR(stbuf.st_mode)) {
+                // models
+                char s = name[0];
+                if (s == 'P' || s == 'C' || s == 'G') {
+                    s16 fileNum = (s16)romdataFileGetNumForName(name);
+                    if (fileNum < 0) {
+                        sysLogPrintf(LOG_WARNING, "extTexInit invalid file: %s\n", name);
+                        continue;
+                    }
 
-		// is a directory
-		if (S_ISDIR(stbuf.st_mode)) {
-			// models
-			char s = name[0];
-			if (s == 'P' || s == 'C' || s == 'G') {
-				s16 fileNum = (s16)romdataFileGetNumForName(name);
-				if (fileNum < 0) {
-					sysLogPrintf(LOG_WARNING, "extTexInit invalid file: %s\n", name);
-					continue;
-				}
+                    struct ModelTextures *modelTex = &modelTextures[numModels++];
+                    readModelTextures(filepath, fileNum, &modelOffset, modelTex);
 
-				struct ModelTextures *modelTex = &modelTextures[numModels++];
-				readModelTextures(filepath, fileNum, &modelOffset, modelTex);
+                    // allocate more memory if necessary
+                    if (numModels > MAX_MODELS) {
+                        MAX_MODELS *= 2;
+                        modelTextures = sysMemRealloc(modelTextures, MAX_MODELS);
+                    }
 
-				// allocate more memory if necessary
-				if (numModels > MAX_MODELS) {
-					MAX_MODELS *= 2;
-					modelTextures = sysMemRealloc(modelTextures, MAX_MODELS);
-				}
+                }
+                    // fonts
+                else if (s == 'f') {
+                    readFontTextures(filepath, name);
+                }
+            } else {
+                s32 texNum = 0;
+                char extension[5] = { 0 };
+                s32 err = fileInfo(name, &texNum, extension);
 
-			}
-			// fonts
-			else if (s == 'f') {
-				readFontTextures(filepath, name);
-			}
-		} else {
-			s32 texNum = 0;
-			char extension[5] = { 0 };
-			s32 err = fileInfo(name, &texNum, extension);
+                // no extension: skip
+                if (err) continue;
 
-			// no extension: skip
-			if (err) continue;
+                setTex(extTextures, texNum, texNum, extension);
+            }
+        }
 
-			setTex(extTextures, texNum, texNum, extension);
-		}
-	}
+        closedir(dr);
+    }
 
-	closedir(dr);
+    // shrink this array to the actual number of model folders found
+    if (numModels > 0)
+        modelTextures = sysMemRealloc(modelTextures, numModels * sizeof(struct ModelTextures));
 
-	// shrink this array to the actual number of model folders found
-	if (numModels > 0)
-		modelTextures = sysMemRealloc(modelTextures, numModels * sizeof(struct ModelTextures));
-
-	return 0;
+    return 0;
 }
