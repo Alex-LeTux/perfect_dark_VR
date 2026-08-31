@@ -3059,7 +3059,6 @@ extern "C" void gfx_run(Gfx* commands) {
 
                 GLint fboBeforeHub = 0;
                 glGetIntegerv(GL_FRAMEBUFFER_BINDING, &fboBeforeHub);
-                LOGE("[gfx_pc] FBO just before vr_hub_render: %d", fboBeforeHub);
 
                 vr_hub_render(vp);
             }

@@ -25,7 +25,7 @@
 #include <stdatomic.h>
 #include <unistd.h>
 
-#define MAX_PENDING_LOADS 64
+#define MAX_PENDING_LOADS 256
 
 struct PendingLoad {
     u8 type;
@@ -318,7 +318,7 @@ static void *extTexDecodeThreadFunc(void *arg)
         pthread_mutex_unlock(&pendingMutex);
 
         if (found < 0)
-            break; /* arrêt demandé */
+            break;
 
         struct PendingLoad *job = &pendingLoads[found];
         char path[FS_MAXPATH];
