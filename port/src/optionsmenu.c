@@ -1040,6 +1040,37 @@ static MenuItemHandlerResult menuhandlerScreenShake(s32 operation, struct menuit
     return 0;
 }
 
+
+static MenuItemHandlerResult menuhandlerGlareBrightness(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+    switch (operation) {
+        case MENUOP_GETSLIDER:
+            data->slider.value = videoGetGlareBrightness() * 10.f + 0.5f;
+            break;
+        case MENUOP_SET:
+            videoSetGlareBrightness((f32)data->slider.value / 10.f);
+            break;
+    }
+
+    return 0;
+}
+
+static MenuItemHandlerResult menuhandlerOverexposureScale(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+    switch (operation) {
+        case MENUOP_GETSLIDER:
+            data->slider.value = videoGetOverexposureScale() * 10.f + 0.5f;
+            break;
+        case MENUOP_SET:
+            videoSetOverexposureScale((f32)data->slider.value / 10.f);
+            break;
+    }
+
+    return 0;
+}
+
+
+
 struct menuitem g_ExtendedVideoMenuItems[] = {
         {
                 MENUITEMTYPE_CHECKBOX,
@@ -1201,6 +1232,32 @@ struct menuitem g_ExtendedVideoMenuItems[] = {
                 0,
                 NULL,
         },
+
+        {
+                MENUITEMTYPE_SLIDER,
+                0,
+                MENUITEMFLAG_LITERAL_TEXT | MENUITEMFLAG_SLIDER_WIDE,
+                (uintptr_t)"Glare Brightness",
+                10,
+                menuhandlerGlareBrightness,
+        },
+        {
+                MENUITEMTYPE_SLIDER,
+                0,
+                MENUITEMFLAG_LITERAL_TEXT | MENUITEMFLAG_SLIDER_WIDE,
+                (uintptr_t)"Overexposure Scale",
+                10,
+                menuhandlerOverexposureScale,
+        },
+        {
+                MENUITEMTYPE_SEPARATOR,
+                0,
+                0,
+                0,
+                0,
+                NULL,
+        },
+
         {
                 MENUITEMTYPE_SELECTABLE,
                 0,

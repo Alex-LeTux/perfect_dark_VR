@@ -98,11 +98,10 @@ void vr_rotate_vector_by_quaternion(struct coord* v, const XrQuaternionf* q) {
 
 
 #define VR_JOY_TURN_SPEED   (120.0f / 360.0f / 60.0f) // continuous turn speed (deg/frame @60hz)
-#define VR_SNAP_ANGLE_DEG   45.0f    // snap turn amplitude (30 or 45 degrees is common)
 #define VR_SNAP_ACTIVATE    0.9f     // trigger threshold
 #define VR_SNAP_DEACTIVATE  0.0001f     // re-arm threshold (hysteresis)
 static bool vr_snapArmed = true;
-int VrUseSnapTurn = false;   // true = snap turn, false = continuous turn
+float VrUseSnapTurn = 0.0f;   // true = snap turn, false = continuous turn
 
 
 void joy_for_vr(void) {
@@ -110,7 +109,7 @@ void joy_for_vr(void) {
 
     if (get_2d_input(1, "thumbstick", &rightThumbstick)) {
 
-        if (VrUseSnapTurn && g_Vars.currentplayer->bondmovemode != MOVEMODE_GRAB) {
+        if (VrUseSnapTurn != 0.0f && g_Vars.currentplayer->bondmovemode != MOVEMODE_GRAB) {
             // --- SNAP TURN MODE ---
 
             // Re-arm as soon as the stick returns close to center
@@ -121,7 +120,7 @@ void joy_for_vr(void) {
             // Trigger a snap if armed and threshold exceeded
             if (vr_snapArmed && fabsf(rightThumbstick.x) > VR_SNAP_ACTIVATE) {
                 float direction = (rightThumbstick.x > 0.0f) ? 1.0f : -1.0f;
-                vr_joyAccum -= direction * (VR_SNAP_ANGLE_DEG / 360.0f);
+                vr_joyAccum -= direction * (VrUseSnapTurn / 360.0f);
                 vr_snapArmed = false; // lock until stick returns to center
             }
 

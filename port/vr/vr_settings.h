@@ -29,9 +29,10 @@ extern float VrPlayerHeight;
 // eyes are whatever body you are wearing. true: you take the height of the
 // character you are playing, so Elvis is short and Mr Blonde towers.
 extern bool VrMatchCharacterHeight;
-extern int VrUseSnapTurn;
+extern float VrUseSnapTurn;
 extern bool VrTwoHandAim;       // two-handed weapons aim along the line between both controllers
 extern int VrStickClickToCrouch;
+extern int VrLeftHandedMode;
 
 extern float VrHudDistance;
 #define HUD_DISTANCE_MIN 0.30f

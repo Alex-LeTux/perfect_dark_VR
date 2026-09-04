@@ -132,6 +132,7 @@ float XrAspect = 1.0f;
 float g_eyeTanHalfFov[2];
 float ipd_meters = 0.0f;;
 float VrStereoCrosshair = 0.70f;
+extern int VrLeftHandedMode;
 
 uint32_t VrRecommendedW = 0;
 uint32_t VrRecommendedH = 0;
@@ -1603,8 +1604,7 @@ struct VrMenuResult {
     bool facingPlayer;
 };
 
-// Computes the pose (position + orientation) and visibility of a weapon HUD
-// mirror=true for the left hand (inverted yaw)
+
 static VrMenuResult vr_compute_weapon_menu(int ctrlIndex, bool mirror,
                                            float offsetX, float offsetY, float offsetZ) {
 
@@ -1614,7 +1614,14 @@ static VrMenuResult vr_compute_weapon_menu(int ctrlIndex, bool mirror,
     qRaw.z = -gCtrlQuatRaw[ctrlIndex][3];
     qRaw.w =  gCtrlQuatRaw[ctrlIndex][0];
 
-    float yawAngle = mirror ? M_PI : -M_PI;
+    float yawAngle = 0.0f;
+    if(!VrLeftHandedMode) {
+         yawAngle = mirror ? M_PI : -M_PI;
+    }
+    else{
+         yawAngle = mirror ? -M_PI : M_PI;
+    }
+
     XrQuaternionf qYaw = {0.0f, sinf(yawAngle * 0.25f), 0.0f, cosf(yawAngle * 0.25f)};
     XrQuaternionf qFinal;
     quaternionMul_XR(&qRaw, &qYaw, &qFinal);
@@ -1638,6 +1645,9 @@ static VrMenuResult vr_compute_weapon_menu(int ctrlIndex, bool mirror,
     r.facingPlayer = dot > VR_MENU_FACING_THRESHOLD;
     return r;
 }
+
+
+
 
 // Initialize the common fields of a menu quad (everything except pose/size/facing)
 static XrCompositionLayerQuad vr_init_menu_quad(XrSwapchain swapchain) {

@@ -61,6 +61,9 @@ static s32 vidNumModes = 1;
 static displaymode vidModeDefault;
 static displaymode *vidModes = &vidModeDefault;
 
+static f32 vidGlareBrightness = 1.f;
+static f32 vidOverexposureScale = 1.f;
+
 static s32 texFilter = FILTER_LINEAR;
 static s32 texFilter2D = true;
 static s32 texDetail = false;
@@ -444,6 +447,17 @@ s32 videoGetDetailTextures(void)
     return texDetail;
 }
 
+f32 videoGetGlareBrightness(void)
+{
+    return vidGlareBrightness;
+}
+
+f32 videoGetOverexposureScale(void)
+{
+    return vidOverexposureScale;
+}
+
+
 s32 videoGetExternalTextures(void)
 {
 	return texExternal;
@@ -521,6 +535,17 @@ void videoSetDetailTextures(s32 detail)
     texDetail = !!detail;
     gfx_detail_textures_enabled = (bool)texDetail;
 }
+
+void videoSetGlareBrightness(f32 bright)
+{
+    vidGlareBrightness = (bright < 0.f ? 0.f : (bright > 1.f ? 1.f : bright));
+}
+
+void videoSetOverexposureScale(f32 scale)
+{
+    vidOverexposureScale = (scale < 0.f ? 0.f : (scale > 1.f ? 1.f : scale));
+}
+
 
 void videoSetExternalTextures(s32 external)
 {
@@ -620,9 +645,12 @@ PD_CONSTRUCTOR static void videoConfigInit(void)
 	configRegisterInt("Video.TextureFilter2D", &texFilter2D, 0, 1);
 	configRegisterInt("Video.DetailTextures", &texDetail, 0, 1);
 	configRegisterInt("Video.ExternalTextures", &texExternal, 0, 1);
+    configRegisterFloat("Video.GlareBrightness", &vidGlareBrightness, 0.f, 1.f);
+    configRegisterFloat("Video.OverexposureScale", &vidOverexposureScale, 0.f, 1.f);
         // VR: the eye render resolution is derived from RENDER_SCALE, so this is the key that
     // makes the Extended menu's Resolution choice survive a restart. configInit() runs long
     // before vr_initialize(), so the saved scale is already in place when the swapchains are
     // first sized -- no restart and no resolution pop on startup.
     configRegisterFloat("Video.VRRenderScale", &RENDER_SCALE, 0.5f, 4.f);
+
 }

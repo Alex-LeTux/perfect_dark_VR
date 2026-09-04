@@ -78,11 +78,14 @@ extern float gVrHeadHeightCm;   // live head height above the floor, cm
 #define PLAYERHEIGHT_STEPS (s32)(PLAYERHEIGHT_MAX - PLAYERHEIGHT_MIN)
 
 //--
-//---
 #define HUD_DISTANCE_STEP 0.05f
 #define HUD_DISTANCE_STEPS ((s32)((HUD_DISTANCE_MAX - HUD_DISTANCE_MIN) / HUD_DISTANCE_STEP))
 
-
+//..
+#define SNAP_TURN_MIN 0.0f
+#define SNAP_TURN_MAX 90.0f
+#define SNAP_TURN_STEP 10.0f
+#define SNAP_TURN_STEPS ((s32)((SNAP_TURN_MAX - SNAP_TURN_MIN) / SNAP_TURN_STEP))
 
 
 MenuItemHandlerResult menuhandlerVRHudDistance(s32 operation, struct menuitem *item, union handlerdata *data)
@@ -125,6 +128,21 @@ MenuItemHandlerResult menuhandlerVRHudDistance(s32 operation, struct menuitem *i
     return 0;
 }
 
+
+MenuItemHandlerResult menuhandlerVRLeftHandedMode(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+    switch (operation) {
+        case MENUOP_GET:
+            return VrLeftHandedMode ? true : false;
+        case MENUOP_SET:
+            VrLeftHandedMode = data->checkbox.value ? true : false;
+            g_Vars.modifiedfiles |= MODFILE_GAME;
+            break;
+    }
+
+    return 0;
+}
+
 MenuItemHandlerResult menuhandlerVRPauseHub(s32 operation, struct menuitem *item, union handlerdata *data)
 {
     switch (operation) {
@@ -152,12 +170,39 @@ MenuItemHandlerResult menuhandlerVRStickClickToCrouch(s32 operation, struct menu
 }
 
 MenuItemHandlerResult menuhandlerVRSnapTurn(s32 operation, struct menuitem *item, union handlerdata *data) {
+    static u8 lastRawValue = 0xFF;
+
     switch (operation) {
-        case MENUOP_GET:
-            return VrUseSnapTurn ? true : false;
+        case MENUOP_GETSLIDER:
+        {
+            s32 stepIndex = (s32)roundf((VrUseSnapTurn - SNAP_TURN_MIN) / SNAP_TURN_STEP);
+            data->slider.value = (u8)roundf((f32)stepIndex * 255.0f / (f32)SNAP_TURN_STEPS);
+            lastRawValue = data->slider.value;
+            break;
+        }
         case MENUOP_SET:
-            VrUseSnapTurn = data->checkbox.value ? true : false;
-            g_Vars.modifiedfiles |= MODFILE_GAME;
+        {
+            s32 delta = (s32)data->slider.value - (s32)lastRawValue;
+            if (delta != 0) {
+                s32 currentStep = (s32)roundf((VrUseSnapTurn - SNAP_TURN_MIN) / SNAP_TURN_STEP);
+                s32 stepDelta = (delta > 0) ? 1 : -1;
+
+                currentStep += stepDelta;
+                if (currentStep < 0) currentStep = 0;
+                if (currentStep > SNAP_TURN_STEPS) currentStep = SNAP_TURN_STEPS;
+
+                VrUseSnapTurn = SNAP_TURN_MIN + (f32)currentStep * SNAP_TURN_STEP;
+                g_Vars.modifiedfiles |= MODFILE_GAME;
+            }
+            lastRawValue = data->slider.value;
+            break;
+        }
+        case MENUOP_GETSLIDERLABEL:
+            if (VrUseSnapTurn <= 0.0f) {
+                sprintf(data->slider.label, "OFF");
+            } else {
+                sprintf(data->slider.label, "%.0f", VrUseSnapTurn);
+            }
             break;
     }
     return 0;
@@ -458,213 +503,326 @@ MenuDialogHandlerResult menudialogVROptions(s32 operation, struct menudialogdef 
     return 0;
 }
 
+// ======================================
+// VR SUB-MENUS
+// ======================================
+
+// --- 1. Comfort & Movement ---
+struct menuitem g_VRComfortOptionsMenuItems[] = {
+        {
+                MENUITEMTYPE_CHECKBOX,
+                0,
+                MENUITEMFLAG_LITERAL_TEXT,
+                (uintptr_t)"Seated Mode",
+                0,
+                menuhandlerVRSeatedMode,
+        },
+        {
+                MENUITEMTYPE_SLIDER,
+                0,
+                MENUITEMFLAG_LITERAL_TEXT,
+                (uintptr_t)"Your Eye Height (cm)",
+                0xff,
+                menuhandlerVRPlayerHeight,
+        },
+        {
+                MENUITEMTYPE_CHECKBOX,
+                0,
+                MENUITEMFLAG_LITERAL_TEXT,
+                (uintptr_t)"Match Character Height",
+                0,
+                menuhandlerVRCharacterHeight,
+        },
+        {
+                MENUITEMTYPE_SLIDER,
+                0,
+                MENUITEMFLAG_LITERAL_TEXT,
+                (uintptr_t)"Snap Turn",
+                0xff,
+                menuhandlerVRSnapTurn,
+        },
+        {
+                MENUITEMTYPE_SEPARATOR,
+                0,
+                0,
+                0x000000c8,
+                0,
+                NULL,
+        },
+        {
+                MENUITEMTYPE_SELECTABLE,
+                0,
+                MENUITEMFLAG_SELECTABLE_CLOSESDIALOG,
+                L_OPTIONS_219,   // "Back"
+                0,
+                NULL,
+        },
+        { MENUITEMTYPE_END },
+};
+
+struct menudialogdef g_VRComfortOptionsMenuDialog = {
+        MENUDIALOGTYPE_DEFAULT,
+        (uintptr_t)"Comfort & Movement",
+        g_VRComfortOptionsMenuItems,
+        menudialogVROptions,
+        MENUDIALOGFLAG_LITERAL_TEXT,
+        NULL,
+};
+
+// --- 2. Display & HUD ---
+struct menuitem g_VRDisplayOptionsMenuItems[] = {
+        {
+                MENUITEMTYPE_LABEL,
+                0,
+                MENUITEMFLAG_SELECTABLE_CENTRE,
+                (uintptr_t)menutextGameFov,
+                0,
+                NULL,
+        },
+        {
+                MENUITEMTYPE_SLIDER,
+                0,
+                MENUITEMFLAG_LITERAL_TEXT,
+                (uintptr_t)"Vert FOV",
+                170,
+                menuhandlerFieldOfView,
+        },
+        {
+                MENUITEMTYPE_SLIDER,
+                0,
+                MENUITEMFLAG_LITERAL_TEXT,
+                (uintptr_t)"World Scale",
+                0xff,
+                menuhandlerVRWorldScale
+        },
+        {
+                MENUITEMTYPE_SLIDER,
+                0,
+                MENUITEMFLAG_LITERAL_TEXT,
+                (uintptr_t)"HUD/Crosshair Depth",
+                0xff,
+                menuhandlerStereoCrosshair,
+        },
+        {
+                MENUITEMTYPE_SLIDER,
+                0,
+                MENUITEMFLAG_LITERAL_TEXT,
+                (uintptr_t)"HUD Distance",
+                0xff,
+                menuhandlerVRHudDistance,
+        },
+        {
+                MENUITEMTYPE_CHECKBOX,
+                0,
+                MENUITEMFLAG_LITERAL_TEXT,
+                (uintptr_t)"VR Pause Environment",
+                0,
+                menuhandlerVRPauseHub,
+        },
+        {
+                MENUITEMTYPE_SEPARATOR,
+                0,
+                0,
+                0x000000c8,
+                0,
+                NULL,
+        },
+        {
+                MENUITEMTYPE_SELECTABLE,
+                0,
+                MENUITEMFLAG_SELECTABLE_CLOSESDIALOG,
+                L_OPTIONS_219,   // "Back"
+                0,
+                NULL,
+        },
+        { MENUITEMTYPE_END },
+};
+
+struct menudialogdef g_VRDisplayOptionsMenuDialog = {
+        MENUDIALOGTYPE_DEFAULT,
+        (uintptr_t)"Display & HUD",
+        g_VRDisplayOptionsMenuItems,
+        menudialogVROptions,
+        MENUDIALOGFLAG_LITERAL_TEXT,
+        NULL,
+};
+
+// --- 3. Weapons & Gameplay ---
+struct menuitem g_VRWeaponsOptionsMenuItems[] = {
+        {
+                MENUITEMTYPE_CHECKBOX,
+                0,
+                MENUITEMFLAG_LITERAL_TEXT,
+                (uintptr_t)"Two-Handed Aiming",
+                0,
+                menuhandlerVRTwoHandedAiming,
+        },
+        {
+                MENUITEMTYPE_CHECKBOX,
+                0,
+                MENUITEMFLAG_LITERAL_TEXT,
+                (uintptr_t)"Manual Reloading [WIP]Only Falcon2",
+                0,
+                menuhandlerVRManualReloading,
+        },
+        {
+                MENUITEMTYPE_CHECKBOX,
+                0,
+                MENUITEMFLAG_LITERAL_TEXT,
+                (uintptr_t)"Motion Combat & Throwing",
+                0,
+                menuhandlerVRMotionThrowing,
+        },
+        {
+                MENUITEMTYPE_CHECKBOX,
+                0,
+                MENUITEMFLAG_LITERAL_TEXT,
+                (uintptr_t)"Weapon Recoil",
+                0,
+                menuhandlerVRWeaponRecoil,
+        },
+        {
+                MENUITEMTYPE_CHECKBOX,
+                0,
+                MENUITEMFLAG_LITERAL_TEXT,
+                (uintptr_t)"Lasers for all weapons",
+                0,
+                menuhandlerVRLaserDotForAll,
+        },
+        {
+                MENUITEMTYPE_SEPARATOR,
+                0,
+                0,
+                0x000000c8,
+                0,
+                NULL,
+        },
+        {
+                MENUITEMTYPE_SELECTABLE,
+                0,
+                MENUITEMFLAG_SELECTABLE_CLOSESDIALOG,
+                L_OPTIONS_219,   // "Back"
+                0,
+                NULL,
+        },
+        { MENUITEMTYPE_END },
+};
+
+struct menudialogdef g_VRWeaponsOptionsMenuDialog = {
+        MENUDIALOGTYPE_DEFAULT,
+        (uintptr_t)"Weapons & Gameplay",
+        g_VRWeaponsOptionsMenuItems,
+        menudialogVROptions,
+        MENUDIALOGFLAG_LITERAL_TEXT,
+        NULL,
+};
+
+// --- 4. Controls ---
+struct menuitem g_VRControlsOptionsMenuItems[] = {
+        {
+                MENUITEMTYPE_CHECKBOX,
+                0,
+                MENUITEMFLAG_LITERAL_TEXT,
+                (uintptr_t)"Left-Handed Mode",
+                0,
+                menuhandlerVRLeftHandedMode,
+        },
+        {
+                MENUITEMTYPE_CHECKBOX,
+                0,
+                MENUITEMFLAG_LITERAL_TEXT,
+                (uintptr_t)"Left Stick Click to Crouch",
+                0,
+                menuhandlerVRStickClickToCrouch,
+        },
+        {
+                MENUITEMTYPE_SLIDER,
+                0,
+                MENUITEMFLAG_LITERAL_TEXT,
+                (uintptr_t)"Controllers vibration",
+                10,
+                menuhandlerVRVibration,
+        },
+        {
+                MENUITEMTYPE_SEPARATOR,
+                0,
+                0,
+                0x000000c8,
+                0,
+                NULL,
+        },
+        {
+                MENUITEMTYPE_SELECTABLE,
+                0,
+                MENUITEMFLAG_SELECTABLE_CLOSESDIALOG,
+                L_OPTIONS_219,   // "Back"
+                0,
+                NULL,
+        },
+        { MENUITEMTYPE_END },
+};
+
+struct menudialogdef g_VRControlsOptionsMenuDialog = {
+        MENUDIALOGTYPE_DEFAULT,
+        (uintptr_t)"Controls",
+        g_VRControlsOptionsMenuItems,
+        menudialogVROptions,
+        MENUDIALOGFLAG_LITERAL_TEXT,
+        NULL,
+};
+
+// ======================================
+// ROOT VR MENU
+// ======================================
 
 struct menuitem gVROptionsMenuItems[] = {
-
-//        {
-//                // Debug Matrix Position
-//                MENUITEMTYPE_CHECKBOX,
-//                0,
-//                MENUITEMFLAG_LITERAL_TEXT,
-//                (uintptr_t)"VRDebugMtxPos",
-//                0,
-//                menuhandlerVRDebugMtxPos,
-//        },
-
-    {
-        MENUITEMTYPE_LABEL,
-        0,
-        MENUITEMFLAG_SELECTABLE_CENTRE,
-        (uintptr_t)menutextGameFov,
-        0,
-        NULL,
-        },
-
-        // FOV from optionmenu
         {
-        MENUITEMTYPE_SLIDER,
-        0,
-        MENUITEMFLAG_LITERAL_TEXT,
-        (uintptr_t)"Vert FOV",
-        170,
-        menuhandlerFieldOfView,
-        },
-
-        {
-        MENUITEMTYPE_SEPARATOR,
-        0,
-        0,
-        0,
-        0,
-        NULL,
-        },
-
-        // VR Slider Crosshair/Menu/HUD distance
-        {
-        MENUITEMTYPE_SLIDER,
-        0,
-        MENUITEMFLAG_LITERAL_TEXT,
-        (uintptr_t)"HUD/Crosshair Depth",
-        0xff,
-        menuhandlerStereoCrosshair,
-        },
-
-        // VR HUD Distance
-    {
-            MENUITEMTYPE_SLIDER,
-            0,
-            MENUITEMFLAG_LITERAL_TEXT,
-            (uintptr_t)"HUD Distance",
-            0xff,
-            menuhandlerVRHudDistance,
-    },
-
-        // VR World Scale
-        {
-        MENUITEMTYPE_SLIDER,
-        0,
-        MENUITEMFLAG_LITERAL_TEXT,
-        (uintptr_t)"World Scale",
-        0xff,
-        menuhandlerVRWorldScale
-        },
-
-        // Your standing eye height, in cm
-        {
-        MENUITEMTYPE_SLIDER,
-        0,
-        MENUITEMFLAG_LITERAL_TEXT,
-        (uintptr_t)"Your Eye Height (cm)",
-        0xff,
-        menuhandlerVRPlayerHeight,
-        },
-
-        // Be the character's height instead of your own
-        {
-        MENUITEMTYPE_CHECKBOX,
-        0,
-        MENUITEMFLAG_LITERAL_TEXT,
-        (uintptr_t)"Match Character Height",
-        0,
-        menuhandlerVRCharacterHeight,
-        },
-
-        // VR Weapon Recoil
-        {
-        MENUITEMTYPE_CHECKBOX,
-        0,
-        MENUITEMFLAG_LITERAL_TEXT,
-        (uintptr_t)"Weapon Recoil",
-        0,
-        menuhandlerVRWeaponRecoil,
-        },
-
-        // Two-Handed Aiming
-        {
-        MENUITEMTYPE_CHECKBOX,
-        0,
-        MENUITEMFLAG_LITERAL_TEXT,
-        (uintptr_t)"Two-Handed Aiming",
-        0,
-        menuhandlerVRTwoHandedAiming,
-        },
-
-        // VR Motion Throwing
-        {
-        MENUITEMTYPE_CHECKBOX,
-        0,
-        MENUITEMFLAG_LITERAL_TEXT,
-        (uintptr_t)"Motion Combat & Throwing",
-        0,
-        menuhandlerVRMotionThrowing,
-        },
-
-        // Lasers for all weapons
-        {
-        MENUITEMTYPE_CHECKBOX,
-        0,
-        MENUITEMFLAG_LITERAL_TEXT,
-        (uintptr_t)"Lasers for all weapons",
-        0,
-        menuhandlerVRLaserDotForAll,
-        },
-
-        // VR Pause Hub Environment (replace blurred background menu pause)
-        {
-        MENUITEMTYPE_CHECKBOX,
-        0,
-        MENUITEMFLAG_LITERAL_TEXT,
-        (uintptr_t)"VR Pause Environment",
-        0,
-        menuhandlerVRPauseHub,
-        },
-
-        // VR Seated Mode
-        {
-        MENUITEMTYPE_CHECKBOX,
-        0,
-        MENUITEMFLAG_LITERAL_TEXT,
-        (uintptr_t)"Seated Mode",
-        0,
-        menuhandlerVRSeatedMode,
-        },
-
-        // Left Stick Click to Crouch
-        {
-        MENUITEMTYPE_CHECKBOX,
-        0,
-        MENUITEMFLAG_LITERAL_TEXT,
-        (uintptr_t)"Left Stick Click to Crouch",
-        0,
-        menuhandlerVRStickClickToCrouch,
-        },
-
-        // Snap Turn
-        {
-        MENUITEMTYPE_CHECKBOX,
-        0,
-        MENUITEMFLAG_LITERAL_TEXT,
-        (uintptr_t)"Snap Turn",
-        0,
-        menuhandlerVRSnapTurn,
-        },
-
-        // Manual Reloading
-        {
-        MENUITEMTYPE_CHECKBOX,
-        0,
-        MENUITEMFLAG_LITERAL_TEXT,
-        (uintptr_t)"Manual Reloading [WIP]Only Falcon2",
-        0,
-        menuhandlerVRManualReloading,
-        },
-
-        // VR Vibration
-        {
-        MENUITEMTYPE_SLIDER,
-        0,
-        MENUITEMFLAG_LITERAL_TEXT,
-        (uintptr_t)"Controllers vibration",
-        10,
-        menuhandlerVRVibration,
-        },
-
-        // SEPARATOR + Back
-        {
-        MENUITEMTYPE_SEPARATOR,
-        0,
-        0,
-        0x000000c8,
-        0,
-        NULL,
+                MENUITEMTYPE_SELECTABLE,
+                0,
+                MENUITEMFLAG_SELECTABLE_OPENSDIALOG | MENUITEMFLAG_BIGFONT | MENUITEMFLAG_LITERAL_TEXT,
+                (uintptr_t)"Comfort & Movement\n",
+                0,
+                (void *)&g_VRComfortOptionsMenuDialog,
         },
         {
-        MENUITEMTYPE_SELECTABLE,
-        0,
-        MENUITEMFLAG_SELECTABLE_CLOSESDIALOG,
-        L_OPTIONS_219,   // "Back"
-        0,
-        NULL,
+                MENUITEMTYPE_SELECTABLE,
+                0,
+                MENUITEMFLAG_SELECTABLE_OPENSDIALOG | MENUITEMFLAG_BIGFONT | MENUITEMFLAG_LITERAL_TEXT,
+                (uintptr_t)"Display & HUD\n",
+                0,
+                (void *)&g_VRDisplayOptionsMenuDialog,
+        },
+        {
+                MENUITEMTYPE_SELECTABLE,
+                0,
+                MENUITEMFLAG_SELECTABLE_OPENSDIALOG | MENUITEMFLAG_BIGFONT | MENUITEMFLAG_LITERAL_TEXT,
+                (uintptr_t)"Weapons & Gameplay\n",
+                0,
+                (void *)&g_VRWeaponsOptionsMenuDialog,
+        },
+        {
+                MENUITEMTYPE_SELECTABLE,
+                0,
+                MENUITEMFLAG_SELECTABLE_OPENSDIALOG | MENUITEMFLAG_BIGFONT | MENUITEMFLAG_LITERAL_TEXT,
+                (uintptr_t)"Controls\n",
+                0,
+                (void *)&g_VRControlsOptionsMenuDialog,
+        },
+        {
+                MENUITEMTYPE_SEPARATOR,
+                0,
+                0,
+                0x000000c8,
+                0,
+                NULL,
+        },
+        {
+                MENUITEMTYPE_SELECTABLE,
+                0,
+                MENUITEMFLAG_SELECTABLE_CLOSESDIALOG,
+                L_OPTIONS_219,   // "Back"
+                0,
+                NULL,
         },
         { MENUITEMTYPE_END },
 };
@@ -677,6 +835,7 @@ struct menudialogdef gVROptionsMenuDialog = {
         MENUDIALOGFLAG_LITERAL_TEXT,
         NULL,
 };
+// ======================================
 // ======================================
 
 

@@ -23,8 +23,9 @@ extern "C" void vrSettingsSave(void)
     fprintf(f, "WorldScale=%.4f\n", VrSetWorldScale);
     fprintf(f, "PauseHub=%d\n", VrPauseHub ? 1 : 0);
     fprintf(f, "StickClickToCrouch=%d\n", VrStickClickToCrouch ? 1 : 0);
-    fprintf(f, "UseSnapTurn=%d\n", VrUseSnapTurn ? 1 : 0);
+    fprintf(f, "SnapTurn=%.1f\n", VrUseSnapTurn);
     fprintf(f, "TwoHandedAiming=%d\n", VrTwoHandAim ? 1 : 0);
+    fprintf(f, "LeftHandedMode=%d\n", VrLeftHandedMode ? 1 : 0);
     fprintf(f, "; Your standing EYE height in cm -- where your eyes are off the floor, which is\n");
     fprintf(f, "; what the headset reports, roughly 13 cm below the top of your head. Set it from\n");
     fprintf(f, "; the live reading beside the menu slider rather than from your stature.\n");
@@ -80,9 +81,9 @@ extern "C" void vrSettingsLoad(void)
             else if (strcmp(key, "MotionThrowing") == 0) VrMotionThrowing = ival != 0;
             else if (strcmp(key, "WeaponRecoil") == 0) VrWeaponRecoil = (ival != 0);
             else if (strcmp(key, "StickClickToCrouch") == 0) VrStickClickToCrouch = (ival != 0);
-            else if (strcmp(key, "UseSnapTurn") == 0) VrUseSnapTurn = (ival != 0);
             else if (strcmp(key, "PauseHub") == 0) VrPauseHub = (ival != 0);
             else if (strcmp(key, "TwoHandedAiming") == 0) VrTwoHandAim = (ival != 0);
+            else if (strcmp(key, "LeftHandedMode") == 0) VrLeftHandedMode = (ival != 0);
             else if (strcmp(key, "MatchCharacterHeight") == 0) VrMatchCharacterHeight = (ival != 0);
             else if (strcmp(key, "FistClench") == 0) VrFistClench = ival;
         }
@@ -108,6 +109,11 @@ extern "C" void vrSettingsLoad(void)
                 if (fval < PLAYERHEIGHT_MIN) fval = PLAYERHEIGHT_MIN;
                 if (fval > PLAYERHEIGHT_MAX) fval = PLAYERHEIGHT_MAX;
                 VrPlayerHeight = fval;
+            }
+            else if (strcmp(key, "SnapTurn") == 0) {
+                if (fval < 0.0f) fval = 0.0f;
+                if (fval > 90.0f) fval = 90.0f;
+                VrUseSnapTurn = fval;
             }
             else if (strcmp(key, "ArmElbowTuck") == 0) VrArmElbowTuck = fval;
             else if (strcmp(key, "ArmBodyFollow") == 0) VrArmBodyFollow = fval;

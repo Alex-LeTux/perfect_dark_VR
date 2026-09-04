@@ -40,7 +40,7 @@ extern bool VrTwoHandsGun(s32 weaponnum);   // bondgun.c: weapon is held with bo
 int vr_right_gun_fire;
 int vr_left_gun_fire;
 extern bool vr_grip_for_unarmed;
-
+extern int VrLeftHandedMode;
 
 #if !SDL_VERSION_ATLEAST(2, 0, 14)
 // this was added in 2.0.14
@@ -925,14 +925,24 @@ s32 inputReadController(s32 idx, OSContPad *npad)
 //            if (get_button_state(0, "y")) {... Not here, in lv.c file for reloading left gun
 
 #ifdef ANDROID
-            if (get_button_state(0, "menu")) {
-                npad->button |= CONT_START;    // START_BUTTON
+            if(!VrLeftHandedMode){
+                if (get_button_state(0, "menu")) {
+                    npad->button |= CONT_START;    // START_BUTTON
+                }
             }
+            else
+            {
+                if (get_button_state(1, "menu")) {
+                    npad->button |= CONT_START;    // START_BUTTON
+                }
+            }
+
 #else
             if (get_button_state(0, "x")) {
                 npad->button |= CONT_START;   // START_BUTTON
             }
 #endif
+
 
             // VR: C-Buttons mapped to the left thumbstick (directional mapping)
             XrVector2f leftThumbstick;
@@ -944,20 +954,22 @@ s32 inputReadController(s32 idx, OSContPad *npad)
             }
 
 
-            if (g_Vars.currentplayer->pausemode != PAUSEMODE_PAUSED && !get_button_state(1, "a")) {
+            if (g_Vars.currentplayer->pausemode != PAUSEMODE_PAUSED &&
+                !get_button_state(1, "a")) {
                 XrVector2f rightThumbstick;
                 if (get_2d_input(1, "thumbstick", &rightThumbstick)) {
                     if (fabsf(rightThumbstick.x) > 0.1f) {
-                        npad->stick_x = (s32) (rightThumbstick.x * 127.0f);
+                        npad->stick_x = (s32)(rightThumbstick.x * 127.0f);
                     }
                     if (fabsf(rightThumbstick.y) > 0.1f) {
-                        npad->stick_y = (s32) (rightThumbstick.y * 127.0f);
+                        npad->stick_y = (s32)(rightThumbstick.y * 127.0f);
                     }
                 }
             } else {
                 npad->stick_x = 0.0f;
                 npad->stick_y = 0.0f;
             }
+
 
             if (cfg->cancelCButtons) {
                 // opposite C buttons cancel each other out
@@ -968,6 +980,7 @@ s32 inputReadController(s32 idx, OSContPad *npad)
                     npad->button &= ~(U_CBUTTONS | D_CBUTTONS);
                 }
             }
+
         }
     }
 

@@ -42,6 +42,7 @@ bool WepCanZoom = false;
 bool VrWeaponRecoil = true;
 extern "C" bool VrTwoHandsGun(int weaponnum);
 bool gripPressed = false;
+int VrLeftHandedMode = 0;
 
 // ===== VR CODE EXTENSION WITH FULL CONTROLLER SUPPORT =====
 
@@ -581,16 +582,6 @@ XrResult update_vr_controllers(XrTime predicted_time) {
 
 
 
-// Get a controller pose
-/*bool get_controller_pose(int hand_index, XrPosef* pose) {
-    if (hand_index < 0 || hand_index > 1) return false;
-    if (!gControllerStates[hand_index].is_active) return false;
-
-    *pose = gControllerStates[hand_index].controller_pose;
-    return true;
-}*/
-
-
 // Get a button state
 extern "C" bool get_button_state(int hand_index, const char* button_name) {
     if (hand_index < 0 || hand_index > 1) return false;
@@ -600,6 +591,10 @@ extern "C" bool get_button_state(int hand_index, const char* button_name) {
     if (hand_index < 0 || hand_index > 1) {
         vr_log("[VR_INPUT] Invalid hand index: %d", hand_index);
         return false;
+    }
+
+    if (VrLeftHandedMode){
+        hand_index = 1 - hand_index;
     }
 
     const auto& state = gControllerStates[hand_index];
@@ -629,15 +624,26 @@ extern "C" bool get_button_state(int hand_index, const char* button_name) {
         return state.grip_click.currentState;
     }
 
-    if (strcmp(button_name, "menu") == 0) return state.menu.currentState;
-    if (strcmp(button_name, "a") == 0) return state.button_a.currentState;
-    if (strcmp(button_name, "b") == 0) return state.button_b.currentState;
-    if (strcmp(button_name, "x") == 0) return state.button_x.currentState;
-    if (strcmp(button_name, "y") == 0) return state.button_y.currentState;
-    if (strcmp(button_name, "thumbstick_click") == 0) return state.thumbstick_click.currentState;
-    if (strcmp(button_name, "trackpad_click") == 0) return state.trackpad_click.currentState;
-    if (strcmp(button_name, "trackpad_touch") == 0) return state.trackpad_touch.currentState;
-
+    if (!VrLeftHandedMode) {
+        if (strcmp(button_name, "menu") == 0) return state.menu.currentState;
+        if (strcmp(button_name, "a") == 0) return state.button_a.currentState;
+        if (strcmp(button_name, "b") == 0) return state.button_b.currentState;
+        if (strcmp(button_name, "x") == 0) return state.button_x.currentState;
+        if (strcmp(button_name, "y") == 0) return state.button_y.currentState;
+        if (strcmp(button_name, "thumbstick_click") == 0) return state.thumbstick_click.currentState;
+        if (strcmp(button_name, "trackpad_click") == 0) return state.trackpad_click.currentState;
+        if (strcmp(button_name, "trackpad_touch") == 0) return state.trackpad_touch.currentState;
+    }else{
+        if (strcmp(button_name, "menu") == 0) return state.menu.currentState;
+        // inverted... hacky fix
+        if (strcmp(button_name, "a") == 0) return state.button_x.currentState;
+        if (strcmp(button_name, "b") == 0) return state.button_y.currentState;
+        if (strcmp(button_name, "x") == 0) return state.button_a.currentState;
+        if (strcmp(button_name, "y") == 0) return state.button_b.currentState;
+        if (strcmp(button_name, "thumbstick_click") == 0) return state.thumbstick_click.currentState;
+        if (strcmp(button_name, "trackpad_click") == 0) return state.trackpad_click.currentState;
+        if (strcmp(button_name, "trackpad_touch") == 0) return state.trackpad_touch.currentState;
+    }
     return false;
 }
 
@@ -645,6 +651,10 @@ extern "C" bool get_button_state(int hand_index, const char* button_name) {
 
 /*float get_analog_value(int hand_index, const char* input_name) {
     if (hand_index < 0 || hand_index > 1) return 0.0f;
+
+    if (VrLeftHandedMode){
+        hand_index = 1 - hand_index;
+    }
 
     const auto& state = gControllerStates[hand_index];
 
@@ -660,6 +670,10 @@ extern "C" bool get_button_state(int hand_index, const char* button_name) {
 
 extern "C" bool get_2d_input(int hand_index, const char* input_name, XrVector2f* value) {
     if (hand_index < 0 || hand_index > 1 || !value) return false;
+
+    if (VrLeftHandedMode){
+        hand_index = 1 - hand_index;
+    }
 
     const auto& state = gControllerStates[hand_index];
 
@@ -678,6 +692,10 @@ extern "C" bool get_2d_input(int hand_index, const char* input_name, XrVector2f*
 // === HAPTIC VIBRATION ===
 XrResult trigger_haptic_vibration(int hand_index, float amplitude, float duration, float frequency) {
     if (hand_index < 0 || hand_index > 1) return XR_ERROR_VALIDATION_FAILURE;
+
+    if (VrLeftHandedMode){
+        hand_index = 1 - hand_index;
+    }
 
     XrHapticVibration vibration{XR_TYPE_HAPTIC_VIBRATION};
     vibration.amplitude = std::min(1.0f, std::max(0.0f, amplitude)); // Clamp 0-1
@@ -937,11 +955,7 @@ static WeaponRecoilProfile GetRecoilProfileForWeapon(int wnum)
         case WEAPON_RCP45:
         case WEAPON_KF7SPECIAL:
         case WEAPON_AR53:
-            if (isTwoHandsGrip) {
-                return { 0.0015f, 0.0010f, -0.100f, 160.0f, 24.0f };
-            } else {
-                return { 0.005f, 0.004f, -0.300f, 130.0f, 18.0f };
-            }
+                return { 0.003f, 0.004f, -0.500f, 130.0f, 18.0f };
 
             // --- CYCLONE / KL01313 (no lateral YAW recoil, reinforced push) ---
         case WEAPON_CYCLONE:
@@ -954,19 +968,14 @@ static WeaponRecoilProfile GetRecoilProfileForWeapon(int wnum)
 
             // --- CMP150 (separated, reinforced push, no YAW) ---
         case WEAPON_CMP150:
-            if (isTwoHandsGrip) {
-                return { 0.0025f, 0.000f, -0.150f, 150.0f, 22.0f };
-            } else {
-                return { 0.008f, 0.000f, -0.400f, 120.0f, 16.0f };
-            }
+                return { 0.006f, 0.000f, -0.400f, 120.0f, 16.0f };
 
-            // --- HEAVY CALIBER RIFLES (almost motionless with two hands, massive push) ---
         case WEAPON_RCP120:
             if(VR_FUNC_SECONDARY){
                 return { 0.0f, 0.0f, 0.0f, 100.0f, 10.0f };
             }
             else if (isTwoHandsGrip) {
-                return { 0.003f, 0.001f, -0.350f, 140.0f, 20.0f };
+                return { 0.001f, 0.001f, -0.150f, 140.0f, 20.0f };
             } else {
                 return { 0.030f, 0.015f, -1.000f, 95.0f, 13.0f };
             }
@@ -974,7 +983,7 @@ static WeaponRecoilProfile GetRecoilProfileForWeapon(int wnum)
         case WEAPON_AR34:
         case WEAPON_K7AVENGER:
             if (isTwoHandsGrip) {
-                return { 0.003f, 0.001f, -0.350f, 140.0f, 20.0f };
+                return { 0.001f, 0.001f, -0.150f, 140.0f, 20.0f };
             } else {
                 return { 0.030f, 0.015f, -1.000f, 95.0f, 13.0f };
             }
@@ -983,7 +992,7 @@ static WeaponRecoilProfile GetRecoilProfileForWeapon(int wnum)
             if(VR_FUNC_SECONDARY && !isTwoHandsGrip){
                 return { 0.140f, 0.020f, -7.000f, 33.0f, 6.0f };
             }else if (isTwoHandsGrip) {
-                return { 0.003f, 0.001f, -0.350f, 140.0f, 20.0f };
+                return { 0.003f, 0.001f, -0.150f, 140.0f, 20.0f };
             } else {
                 return { 0.030f, 0.015f, -1.000f, 95.0f, 13.0f };
             }
@@ -992,7 +1001,7 @@ static WeaponRecoilProfile GetRecoilProfileForWeapon(int wnum)
         case WEAPON_LAPTOPGUN:
         case WEAPON_CALLISTO:
             if (isTwoHandsGrip) {
-                return { 0.003f, 0.001f, -0.350f, 140.0f, 20.0f };
+                return { 0.002f, 0.001f, -0.150f, 140.0f, 20.0f };
             } else {
                 return { 0.030f, 0.015f, -1.000f, 95.0f, 13.0f };
             }
@@ -1009,14 +1018,14 @@ static WeaponRecoilProfile GetRecoilProfileForWeapon(int wnum)
         case WEAPON_SNIPERRIFLE:
         case WEAPON_FARSIGHT:
             if (isTwoHandsGrip) {
-                return { 0.025f, 0.008f, -3.000f, 60.0f, 12.0f };
+                return { 0.01f, 0.01f, -0.150f, 100.0f, 15.0f };
             } else {
                 return { 0.140f, 0.020f, -7.000f, 33.0f, 6.0f };
             }
 
             // --- CROSSBOW (silent single shot, moderate push) ---
         case WEAPON_CROSSBOW:
-            return { 0.015f, 0.005f, -0.25f, 90.0f, 25.0f };
+            return { 0.015f, 0.005f, -0.15f, 90.0f, 25.0f };
 
             // --- DEVASTATOR / ROCKET LAUNCHER / SLAYER (HUGE backward recoil) ---
         case WEAPON_DEVASTATOR:
@@ -1066,7 +1075,7 @@ static WeaponRecoilProfile GetRecoilProfileForWeapon(int wnum)
             return { 0.0f, 0.0f, 0.0f, 100.0f, 10.0f };
 
         default:
-            return { 0.040f, 0.020f, -0.70f, 50.0f, 9.0f }; // generic fallback
+            return { 0.010f, 0.0f, -0.15f, 50.0f, 9.0f }; // generic fallback
     }
 
 
@@ -1186,29 +1195,34 @@ void controller_pose() {
     }
 
     for (int i = 0; i < 2; i++) {
-        const auto& state = gControllerStates[i];
-        const char* handname = (i == 0) ? "LEFT" : "RIGHT";
+        // --- INVERSION LOGIC HERE ---
+        // If left-handed mode is ON:
+        // i=0 (logical Left Hand) will read sourceIndex=1 (physical Right Controller)
+        // i=1 (logical Right Hand) will read sourceIndex=0 (physical Left Controller)
+        int sourceIndex = VrLeftHandedMode ? (1 - i) : i;
+
+        const auto& state = gControllerStates[sourceIndex]; // On utilise sourceIndex
+        const char *handname = (i == 0) ? "LEFT" : "RIGHT";
 
         if (!state.is_active) {
-//             vr_log("[VR_DEBUG] %s controller INACTIVE", handname);
-            // Reset smoothing if the controller becomes inactive
             sSmoothedInit[i] = false;
             continue;
         }
+
 
         // --- Gesture frame: publish the play-space pose/velocity verbatim ---
         // Deliberately none of the conditioning applied below. Gesture maths
         // needs the rotation and the velocity to live in the same basis, and
         // the mirror/offset/recoil that the weapon pose needs would break that.
-        vr_ctrl_quat_play[i][0] = gCtrlPosePlay[i].orientation.w;
-        vr_ctrl_quat_play[i][1] = gCtrlPosePlay[i].orientation.x;
-        vr_ctrl_quat_play[i][2] = gCtrlPosePlay[i].orientation.y;
-        vr_ctrl_quat_play[i][3] = gCtrlPosePlay[i].orientation.z;
+        vr_ctrl_quat_play[i][0] = gCtrlPosePlay[sourceIndex].orientation.w;
+        vr_ctrl_quat_play[i][1] = gCtrlPosePlay[sourceIndex].orientation.x;
+        vr_ctrl_quat_play[i][2] = gCtrlPosePlay[sourceIndex].orientation.y;
+        vr_ctrl_quat_play[i][3] = gCtrlPosePlay[sourceIndex].orientation.z;
 
-        if (gCachedVelocityPlay[i].velocityFlags & XR_SPACE_VELOCITY_LINEAR_VALID_BIT) {
-            vr_ctrl_velocity_play[i][0] = gCachedVelocityPlay[i].linearVelocity.x;
-            vr_ctrl_velocity_play[i][1] = gCachedVelocityPlay[i].linearVelocity.y;
-            vr_ctrl_velocity_play[i][2] = gCachedVelocityPlay[i].linearVelocity.z;
+        if (gCachedVelocityPlay[sourceIndex].velocityFlags & XR_SPACE_VELOCITY_LINEAR_VALID_BIT) {
+            vr_ctrl_velocity_play[i][0] = gCachedVelocityPlay[sourceIndex].linearVelocity.x;
+            vr_ctrl_velocity_play[i][1] = gCachedVelocityPlay[sourceIndex].linearVelocity.y;
+            vr_ctrl_velocity_play[i][2] = gCachedVelocityPlay[sourceIndex].linearVelocity.z;
         }
 
         // --- Raw OpenXR position ---
@@ -1233,7 +1247,7 @@ void controller_pose() {
         gCtrlQuatRaw[i][3] = rawQuat[3];
 
         // --- Determine whether grip is pressed for THIS controller ---
-        gripPressed = (i == 1) ? (vr_button_R_grip != 0) : (vr_button_L_grip != 0);
+        gripPressed = (sourceIndex == 1) ? (vr_button_R_grip != 0) : (vr_button_L_grip != 0);
         WepCanZoom = weaponnum == WEAPON_SNIPERRIFLE
                      || weaponnum == WEAPON_MAGSEC4
                      || weaponnum == WEAPON_LAPTOPGUN

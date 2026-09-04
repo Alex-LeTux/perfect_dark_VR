@@ -1314,6 +1314,21 @@ static inline float gfx_tri_signed_area(const struct LoadedVertex* v1, const str
     return cross;
 }
 
+
+// Detects whether the current model has a negative scale (mirroring) by checking
+// the determinant of the active 3x3 rotation/scale matrix.
+static inline bool gfx_is_matrix_inverted() {
+    if (rsp.modelview_matrix_stack_size == 0) return false;
+
+    const float (*m)[4] = rsp.modelview_matrix_stack[rsp.modelview_matrix_stack_size - 1];
+
+    float det = m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1])
+                - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
+                + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
+
+    return det < 0.0f;
+}
+
 static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bool is_rect) {
     struct LoadedVertex* v1 = &rsp.loaded_vertices[vtx1_idx];
     struct LoadedVertex* v2 = &rsp.loaded_vertices[vtx2_idx];
@@ -1342,17 +1357,22 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bo
         // keep it if either eye sees its front. Where the eyes disagree the other
         // one is looking at a degenerate sliver, so drawing it there costs nothing.
         float cross = gfx_tri_signed_area(v1, v2, v3, vr_cull_eye_dx[0]);
+
+        if (gfx_is_matrix_inverted()) {
+            cross = -cross;
+        }
+
         bool cull = cull_front ? (cross <= 0) : (cross >= 0);
 
         if (cull && vr_cull_stereo) {
             cross = gfx_tri_signed_area(v1, v2, v3, vr_cull_eye_dx[1]);
+
+            if (gfx_is_matrix_inverted()) {
+                cross = -cross;
+            }
+
             cull = cull_front ? (cross <= 0) : (cross >= 0);
         }
-
-        // If inverted culling is requested, negate the cross
-        // if ((rsp.extra_geometry_mode & G_EX_INVERT_CULLING) == 1) {
-        //     cross = -cross;
-        // }
 
         if (cull) {
             return;

@@ -6,6 +6,7 @@ pd.*.z64
 build
 .flatpak-builder
 extracted
+/android/app/.cxx/
 src/assets/*/*.bin
 src/assets/*/*.ctl
 src/assets/*/*.tbl
