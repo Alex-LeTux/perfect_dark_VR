@@ -103,7 +103,7 @@ int weaponnum = 0;
 int handnum = 0;
 struct coord velocity = { 0, 0, 0 };
 extern int VrLeftHandedMode;
-
+int VrHideArms = 0;
 
 // VR Left crosshair HUD -------------------------
 float vr_LeftCrossX = 0.0f;
@@ -210,7 +210,7 @@ extern bool VrWeaponRecoil;
 bool VR_FUNC_SECONDARY = false; // For vr_input.cpp / recoil
 //---
 float zRollAngle = 0.0f;
-extern bool gripPressed;
+extern int gripPressed;
 //----
 
 #define GUNLOADSTATE_FLUX     0
@@ -445,24 +445,32 @@ static s32 s_gunMovableCount = 0;
 static bool s_vrPartHidden[VR_MAX_GUN_PARTS] = {false};
 static bool MtxReplacePart = false;
 
-void vrHideGunParts(Mtxf *matrices)
+
+void vrHideGunParts(Mtxf *matrices, s32 handnum)
 {
     for (s32 i = 0; i < s_gunMovableCount; i++) {
         if (!s_vrPartHidden[i]) continue;
 
         s32 mtxindex = s_gunMovableMtxIndices[i];
-        Mtxf *mtx = &matrices[mtxindex];
 
-        // Scale is zero on all three axes → geometry is invisible
-        // Overwrite the three rotation/scale columns
-        mtx->m[0][0] = 0.0f; mtx->m[0][1] = 0.0f; mtx->m[0][2] = 0.0f;
-        mtx->m[1][0] = 0.0f; mtx->m[1][1] = 0.0f; mtx->m[1][2] = 0.0f;
-        mtx->m[2][0] = 0.0f; mtx->m[2][1] = 0.0f; mtx->m[2][2] = 0.0f;
-        // m[3] = translation : We can also move it very far away as a backup
-        mtx->m[3][0] = 99999.0f;
+        // --- MIRROR MODE HANDLING (DUAL WIELD / UNARMED) ---
+        if (handnum == 1 && weaponnum != WEAPON_REMOTEMINE) {
+        // If we were asked to hide right-hand matrices (1 to 16),
+        // ignore them to avoid accidentally amputating the right hand.
+            if (mtxindex >= 1 && mtxindex <= 16) {
+                continue;
+            }
+        // If we were asked to hide left-hand matrices (17 to 32),
+        // redirect them to the recycled right hand (1 to 16).
+            if (mtxindex >= 17 && mtxindex <= 32) {
+                mtxindex -= 16; // 17 becomes 1, 18 becomes 2 ... 32 becomes 16
+            }
+        }
+
+        // Send the secret signal so that gfx_pc.cpp can hide the matrix
+        matrices[mtxindex].m[0][3] = 2.0f;
     }
 }
-
 
 
 s32 HideAll[] = { -1};
@@ -506,6 +514,13 @@ s32 LeftMagMtx[] = {
         42, // Magazine Lhand
         -1 // End of the list
 };
+
+s32 ArmsMtx[] = {
+        1, 17,// Arms
+        -1 // End of the list
+};
+
+
 
 void vrHideAllExcept(const s32 *keepList)
 {
@@ -885,6 +900,8 @@ static void tuck_elbow(Mtxf *armMtx, Mtxf *handMtx, float ax, float ay, float az
 // primarySide: +1 when matrices[1]/[2] is the RIGHT hand (main gun), -1 when it's the LEFT hand
 // (dual-wield copy weapon) -- mirrors the elbow-tuck outboard direction so left/right stay symmetric.
 void vr_wrist_rot(struct hand *hand, struct modeldef *modeldef, Mtxf *matrices, float bg_scale, float primarySide) {
+
+    if (VrHideArms) return;
 
     const float t = VR_ARM_ELBOW_SWING;   // legacy aim-follow; the elbow tuck below replaced it
     bool grip = false;
@@ -6301,58 +6318,70 @@ void vr_gun_pos_rot(int handnum, struct hand* hand) {
     // Applying it here preserves every per-weapon relationship the original author dialled in, so a
     // single global trim serves all weapons and none of them need individual hand-tuning.
     struct coord off;
-    switch (g_Vars.currentplayer->gunctrl.weaponnum){
+    switch (g_Vars.currentplayer->gunctrl.weaponnum) {
         case WEAPON_DRAGON:
         case WEAPON_SUPERDRAGON:
             // Y was 20 here; measured 4 units too high against the controller, so it matches the
             // 16 every other rifle-class weapon uses.
-            if(!VrLeftHandedMode){
-                off.x = -4.0f; off.y = 16.0f; off.z = 4.0f;  break;
-            }else{
-                off.x = 4.0f; off.y = 16.0f; off.z = 4.0f;  break;
+            if (!VrLeftHandedMode) {
+                off.x = -4.0f; off.y = 16.0f; off.z = 4.0f;
+            } else {
+                off.x = 4.0f; off.y = 16.0f; off.z = 4.0f;
             }
+            break;
+
         case WEAPON_RCP120:
         case WEAPON_AR34:
         case WEAPON_SHOTGUN:
         case WEAPON_SNIPERRIFLE:
         case WEAPON_FARSIGHT:
-            if(!VrLeftHandedMode){
-                off.x = -4.0f; off.y = 16.0f; off.z = 8.0f;  break;
-            }else {
-                off.x = 4.0f; off.y = 16.0f; off.z = 8.0f;  break;
+            if (!VrLeftHandedMode) {
+                off.x = -4.0f; off.y = 16.0f; off.z = 8.0f;
+            } else {
+                off.x = 4.0f; off.y = 16.0f; off.z = 8.0f;
             }
+            break;
+
         case WEAPON_CALLISTO:
         case WEAPON_ROCKETLAUNCHER:
-            if(!VrLeftHandedMode){
-                off.x = -8.0f; off.y = 14.0f; off.z = -4.0f; break;
-            }else{
-                off.x = 8.0f; off.y = 14.0f; off.z = -4.0f; break;
+            if (!VrLeftHandedMode) {
+                off.x = -8.0f; off.y = 14.0f; off.z = -4.0f;
+            } else {
+                off.x = 8.0f; off.y = 14.0f; off.z = -4.0f;
             }
+            break;
+
         case WEAPON_REAPER:
-            if(!VrLeftHandedMode){
-                off.x = 8.0f;  off.y = 12.0f; off.z = -4.0f; break;
-            }else{
-                off.x = -8.0f;  off.y = 12.0f; off.z = -4.0f; break;
+            if (!VrLeftHandedMode) {
+                off.x = 8.0f;  off.y = 12.0f; off.z = -4.0f;
+            } else {
+                off.x = -8.0f;  off.y = 12.0f; off.z = -4.0f;
             }
+            break;
+
         case WEAPON_DEVASTATOR:
-            if(!VrLeftHandedMode){
-                off.x = -4.0f; off.y = 16.0f; off.z = 4.0f;  break;
-            }else {
-                off.x = 4.0f; off.y = 16.0f; off.z = 4.0f;  break;
+            if (!VrLeftHandedMode) {
+                off.x = -4.0f; off.y = 16.0f; off.z = 4.0f;
+            } else {
+                off.x = 4.0f; off.y = 16.0f; off.z = 4.0f;
             }
+            break;
+
         case WEAPON_COMBATKNIFE:
         case WEAPON_CROSSBOW:
         case WEAPON_GRENADE:
         case WEAPON_NBOMB:
-            if(!VrLeftHandedMode){
-                off.x = -2.0f; off.y = 12.0f; off.z = -12.0f; break;
-            }else {
-                off.x = 2.0f; off.y = 12.0f; off.z = -12.0f; break;
+            if (!VrLeftHandedMode) {
+                off.x = -2.0f; off.y = 12.0f; off.z = -12.0f;
+            } else {
+                off.x = 2.0f; off.y = 12.0f; off.z = -12.0f;
             }
-        default:
-            off.x = 0.0f;  off.y = 16.0f; off.z = -4.0f; break;
-    }
+            break;
 
+        default:
+            off.x = 0.0f;  off.y = 16.0f; off.z = -4.0f;
+            break;
+    }
 
     // Z rotation correction
     switch (g_Vars.currentplayer->gunctrl.weaponnum) {
@@ -6364,8 +6393,16 @@ void vr_gun_pos_rot(int handnum, struct hand* hand) {
             break;
         case WEAPON_UNARMED:
             if (VrMotionThrowing) {
-                if (!gripPressed)
-                    zRollAngle = ctrlIndex ? 1.0f : -1.0f;
+                if(!vr_button_R_grip && handnum == HAND_RIGHT){
+                    zRollAngle = 1.0f;
+                }
+                else if(!vr_button_L_grip && handnum == HAND_LEFT) {
+                    zRollAngle = -1.0f;
+                }
+                else{
+                    zRollAngle = 0.0f;
+                    off.x = 0.0f;  off.y = 16.0f; off.z = -4.0f;
+                }
             }
             break;
         default:
@@ -11212,10 +11249,6 @@ void bgun0f0a5550(s32 handnum) {
         hand->handmodel.matrices = (Mtxf *) mtxallocation;
 
 
-        // VR...
-        struct hand *rhand = &player->hands[HAND_RIGHT];
-        struct hand *lhand = &player->hands[HAND_LEFT];
-
         // VR - adjust weapon size according to the level's vr_world_scale
         float bg_scale = bgGetScaleBg2Gfx();
         VrCopyScale = bgGetScaleBg2Gfx();
@@ -11507,18 +11540,19 @@ void bgun0f0a5550(s32 handnum) {
             }
 
             if (weaponnum == WEAPON_REMOTEMINE || weaponnum == WEAPON_LASER) {
-                // Nothing
+                vrBuildMtxPartsList(hand, player->gunctrl.gunmodeldef, false);
+
             } else if (VrTwoHandGrip && VrTwoHandsGun(g_Vars.currentplayer->gunctrl.weaponnum)) {
                 // VR: two-handed grip - keep the gun visible even if the copy-weapon
                 // path left parts hidden (e.g. after a reload or weapon switch, issue #43).
                 for (s32 i = 0; i < s_gunMovableCount; i++) s_vrPartHidden[i] = false;
-                vrHideGunParts(hand->gunmodel.matrices);
+                vrHideGunParts(hand->gunmodel.matrices, handnum);
             } else {
-                if (hand->state != HANDSTATE_RELOAD) {
+                if (hand->state != HANDSTATE_RELOAD && VrTwoHandsGun(weaponnum)) {
                     vrHideOnly(LeftHandMtx);
-                    vrHideGunParts(hand->gunmodel.matrices);
-                    vrBuildMtxPartsList(hand, player->gunctrl.gunmodeldef, false);
+                    vrHideGunParts(hand->gunmodel.matrices, handnum);
                 }
+                vrBuildMtxPartsList(hand, player->gunctrl.gunmodeldef, false);
             }
 
             if(!VRDebugMtxPos) {
@@ -11526,9 +11560,15 @@ void bgun0f0a5550(s32 handnum) {
                     const VrReloadZoneConfig *cfg = &gVrReloadZones[g_Vars.currentplayer->gunctrl.weaponnum][ReloadZone];
                     if (cfg->valid) {
                         vrHideOnly(cfg->partsToShowId);
-                        vrHideGunParts(rhand->gunmodel.matrices);
+                        vrHideGunParts(hand->gunmodel.matrices, handnum);
                     }
                 }
+            }
+
+
+            if(VrHideArms) {
+                vrHideOnly(ArmsMtx);
+                vrHideGunParts(hand->handmodel.matrices, handnum);
             }
 
 
@@ -14924,6 +14964,7 @@ void bgunRender(Gfx * *gdlptr)
             }
 
 
+
             // FISTS POSE: snapshot vr_sp2c4 HERE -- at this point it is the fully world-locked free
             // left-hand frame and nothing below has run yet. Everything that follows (the per-weapon
             // foregrip shove, vrApplyTwoHandGrip) exists purely to drag the GUN so its left-hand BONE
@@ -15112,7 +15153,7 @@ void bgunRender(Gfx * *gdlptr)
                         if (FALCON2S) vrHideAllExcept(LeftHandAndRightMagMtx);
                         else vrHideAllExcept(LeftHandMtx);
 
-                        vrHideGunParts(g_VrCopyWepModel.matrices);
+                        vrHideGunParts(g_VrCopyWepModel.matrices, handnum);
                         MtxReplacePart = false;
 
                     } else if (FALCON2S && VrInReloadLoop && !VrReloadDisable && VrReloadGrip) {
@@ -15122,7 +15163,7 @@ void bgunRender(Gfx * *gdlptr)
                         const VrReloadZoneConfig *cfg = &gVrReloadZones[g_Vars.currentplayer->gunctrl.weaponnum][ReloadZone];
                         if (cfg->valid) {
                             vrHideAllExcept(cfg->partsToShowId);
-                            vrHideGunParts(g_VrCopyWepModel.matrices);
+                            vrHideGunParts(g_VrCopyWepModel.matrices, handnum);
                             MtxReplacePart = true;
                         }
                     } else if (FALCON2S && VrGrabMagBelt && VrReloadGrip) {
@@ -15152,7 +15193,7 @@ void bgunRender(Gfx * *gdlptr)
                             vrHideAllExcept(zone0->partsToShowId);
                         }
 
-                        vrHideGunParts(g_VrCopyWepModel.matrices);
+                        vrHideGunParts(g_VrCopyWepModel.matrices, handnum);
 
 
                     } else if ((rhand->state == HANDSTATE_RELOAD)
@@ -15161,7 +15202,7 @@ void bgunRender(Gfx * *gdlptr)
                         modelUpdateRelations(&g_VrCopyWepModel);
                         modelSetMatricesWithAnim(&renderdata, &g_VrCopyWepModel);
                         vrHideAllExcept(HideAll);
-                        vrHideGunParts(g_VrCopyWepModel.matrices);
+                        vrHideGunParts(g_VrCopyWepModel.matrices, handnum);
                     } else {
                         g_VrCopyWepModel.anim = NULL;
                         modelUpdateRelations(&g_VrCopyWepModel);
@@ -15180,7 +15221,7 @@ void bgunRender(Gfx * *gdlptr)
                             vrHideAllExcept(LeftHandMtx);
                         }
 
-                        vrHideGunParts(g_VrCopyWepModel.matrices);
+                        vrHideGunParts(g_VrCopyWepModel.matrices, handnum);
 
                     }
                     //-------------------
@@ -15188,7 +15229,7 @@ void bgunRender(Gfx * *gdlptr)
                     if (player->hands[HAND_LEFT].state == HANDSTATE_CHANGEGUN
                         || lhand->stateminor == HANDSTATEMINOR_CHANGEGUN_LOWER) {
                         vrHideAllExcept(HideAll);
-                        vrHideGunParts(g_VrCopyWepModel.matrices);
+                        vrHideGunParts(g_VrCopyWepModel.matrices, handnum);
                     }
 
 
@@ -15206,7 +15247,12 @@ void bgunRender(Gfx * *gdlptr)
 
                     if (hand->state == HANDSTATE_RELOAD) {
                         vrHideAllExcept(HideAll);
-                        vrHideGunParts(g_VrCopyWepModel.matrices);
+                        vrHideGunParts(g_VrCopyWepModel.matrices, handnum);
+                    }
+
+                    if(g_VrCopyWepModel.matrices != NULL && VrHideArms) {
+                        vrHideOnly(ArmsMtx);
+                        vrHideGunParts(g_VrCopyWepModel.matrices, handnum);
                     }
 
                     modelRender(&renderdata, &g_VrCopyWepModel);
@@ -15275,6 +15321,11 @@ void bgunRender(Gfx * *gdlptr)
                     gSPClearGeometryMode(renderdata.gdl++, G_CULL_BOTH);
 
                     renderdata.cullmode = CULLMODE_NONE;
+
+                    if(g_VrFistModel.matrices != NULL && VrHideArms) {
+                        vrHideOnly(ArmsMtx);
+                        vrHideGunParts(g_VrFistModel.matrices, handnum);
+                    }
 
                     modelRender(&renderdata, &g_VrFistModel);
                     mtxF2LBulk(fm, fnm);
@@ -17795,5 +17846,4 @@ void bgun0f0abd30(s32 handnum)
         gunctrl->lastmag = false;
     }
 }
-
 

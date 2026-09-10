@@ -17,14 +17,34 @@
 #include "input.h"
 #endif
 
+// -- ADDITION FOR THE VR POINTER --
+extern bool vr_get_menu_pointer_coords(f32 *out_x, f32 *out_y, bool is_first_frame);
+extern int vr_init_done;
+// -------------------------------
+
 void amTick(void)
 {
 	s32 prevplayernum = g_Vars.currentplayernum;
 	s32 i;
 
+// --- VR ADDITION: Detecting when the menu is opened ---
+    static s32 prev_menumode = AMMODE_CLOSED;
+    bool just_opened = false;
+    // ---------------------------------------------------
+
 	for (i = 0; i < PLAYERCOUNT(); i++) {
 		setCurrentPlayerNum(i);
 		g_AmIndex = g_Vars.currentplayernum;
+
+        // --- VR ADDITION: Update the state only for the local player ---
+        if (i == 0) {
+            s32 current_mode = g_Vars.currentplayer->activemenumode;
+            if (current_mode != AMMODE_CLOSED && prev_menumode == AMMODE_CLOSED) {
+                just_opened = true;
+            }
+            prev_menumode = current_mode;
+        }
+        // ------------------------------------------------------------------
 
 		if (g_AmMenus[g_AmIndex].togglefunc) {
 			if (bgunConsiderToggleGunFunction(60, false, true, 0) > 0) {
@@ -91,23 +111,36 @@ void amTick(void)
 				g_AmMenus[g_AmIndex].allbots = false;
 
 #ifndef PLATFORM_N64
-				s32 newstickx = (s32)cstickx;
-				s32 newsticky = (s32)csticky;
-				if (j == 0 && g_Vars.currentplayernum == 0 && inputMouseIsLocked()) {
-					f32 mdx, mdy;
-					struct activemenu *am = &g_AmMenus[g_AmIndex];
-					inputMouseGetAbsScaledDelta(&mdx, &mdy);
-					if (mdx || mdy) {
-						am->mousex += mdx * PLAYER_EXTCFG().radialmenuspeed;
-						am->mousey += mdy * PLAYER_EXTCFG().radialmenuspeed;
-						am->mousex = (am->mousex > 127.f) ? 127.f : (am->mousex < -128.f) ? -128.f : am->mousex;
-						am->mousey = (am->mousey > 127.f) ? 127.f : (am->mousey < -128.f) ? -128.f : am->mousey;
-					}
-					newstickx += (s32)am->mousex;
-					newsticky -= (s32)am->mousey;
-				}
-				cstickx = (newstickx < -128) ? -128 : (newstickx > 127) ? 127 : newstickx;
-				csticky = (newsticky < -128) ? -128 : (newsticky > 127) ? 127 : newsticky;
+                s32 newstickx = (s32)cstickx;
+                s32 newsticky = (s32)csticky;
+
+                if (j == 0 && g_Vars.currentplayernum == 0) {
+                    if (vr_init_done) {
+                        f32 pointer_x = 0.0f;
+                        f32 pointer_y = 0.0f;
+
+                        if (vr_get_menu_pointer_coords(&pointer_x, &pointer_y, just_opened)) {
+                            newstickx = (s32)pointer_x;
+                            newsticky = -(s32)pointer_y;
+                        }
+                    }
+                    else if (inputMouseIsLocked()) {
+                        f32 mdx, mdy;
+                        struct activemenu *am = &g_AmMenus[g_AmIndex];
+                        inputMouseGetAbsScaledDelta(&mdx, &mdy);
+                        if (mdx || mdy) {
+                            am->mousex += mdx * PLAYER_EXTCFG().radialmenuspeed;
+                            am->mousey += mdy * PLAYER_EXTCFG().radialmenuspeed;
+                            am->mousex = (am->mousex > 127.f) ? 127.f : (am->mousex < -128.f) ? -128.f : am->mousex;
+                            am->mousey = (am->mousey > 127.f) ? 127.f : (am->mousey < -128.f) ? -128.f : am->mousey;
+                        }
+                        newstickx += (s32)am->mousex;
+                        newsticky -= (s32)am->mousey;
+                    }
+                }
+
+                cstickx = (newstickx < -128) ? -128 : (newstickx > 127) ? 127 : newstickx;
+                csticky = (newsticky < -128) ? -128 : (newsticky > 127) ? 127 : newsticky;
 #endif
 
 				if (g_Vars.currentplayer->activemenumode == AMMODE_EDIT) {

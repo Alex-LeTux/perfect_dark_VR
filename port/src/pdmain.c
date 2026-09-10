@@ -106,6 +106,7 @@ extern void vrShowWaitingWindow(const char *bmpPath);
 extern bool vrWaitForRuntime(int waitSeconds);
 extern void vrSettingsLoad();
 extern float XrFov;
+extern int DoesAssetFolderExist(void);
 
 void rngSetSeed(u32 seed);
 
@@ -585,7 +586,7 @@ void mainTick(void)
 
     if (g_MainChangeToStageNum < 0) {
         static bool wasPressed = false;
-        bool pressed = get_button_state(1, "thumbstick_click"); // VR: Toggle external textures
+        bool pressed = get_button_state(1, "thumbstick_click") && DoesAssetFolderExist(); // VR: Toggle external textures
 
         if (pressed && !wasPressed) {
             bool enabled = videoGetExternalTextures();

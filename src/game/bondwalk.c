@@ -40,7 +40,7 @@
 extern f32 fabsf(f32);
 #endif
 
-
+#include "input.h"
 #include "../vr/vr_openxr.h"
 #include "../vr/vr_log.h"
 
@@ -104,34 +104,52 @@ static bool vr_snapArmed = true;
 float VrUseSnapTurn = 0.0f;   // true = snap turn, false = continuous turn
 
 
+
 void joy_for_vr(void) {
     XrVector2f rightThumbstick;
 
     if (get_2d_input(1, "thumbstick", &rightThumbstick)) {
 
+        // Retrieving the deadzone and sensitivity of the right stick (Player 0, Stick 1, X Axis 0)
+        float dz = inputControllerGetAxisDeadzone(0, 1, 0);
+        float scale = inputControllerGetAxisScale(0, 1, 0);
+
+        // Applying deadzone and floating-point scaling
+        float scaledX = rightThumbstick.x;
+        if (fabsf(scaledX) < dz) {
+            scaledX = 0.0f;
+        } else {
+            // Subtract deadzone for a smooth start at 0.0
+            if (scaledX < 0.0f) {
+                scaledX += dz;
+            } else {
+                scaledX -= dz;
+            }
+            scaledX = (scaledX / (1.0f - dz)) * scale;
+        }
+
         if (VrUseSnapTurn != 0.0f && g_Vars.currentplayer->bondmovemode != MOVEMODE_GRAB) {
             // --- SNAP TURN MODE ---
 
-            // Re-arm as soon as the stick returns close to center
-            if (fabsf(rightThumbstick.x) < VR_SNAP_DEACTIVATE) {
+            // Reset when stick returns to center (deadzone brings scaledX back to 0.0f)
+            if (fabsf(scaledX) < 0.1f) {
                 vr_snapArmed = true;
             }
 
-            // Trigger a snap if armed and threshold exceeded
-            if (vr_snapArmed && fabsf(rightThumbstick.x) > VR_SNAP_ACTIVATE) {
-                float direction = (rightThumbstick.x > 0.0f) ? 1.0f : -1.0f;
+            // Useful midpoint trigger (0.5f replaces VR_SNAP_ACTIVATE on the scaled axis)
+            if (vr_snapArmed && fabsf(scaledX) > 0.5f) {
+                float direction = (scaledX > 0.0f) ? 1.0f : -1.0f;
                 vr_joyAccum -= direction * (VrUseSnapTurn / 360.0f);
-                vr_snapArmed = false; // lock until stick returns to center
+                vr_snapArmed = false; // Verrouille jusqu'au retour au centre
             }
 
         } else {
             // --- CONTINUOUS ROTATION MODE ---
 
-            if (fabsf(rightThumbstick.x) > 0.1f) {
-                vr_joyAccum -= rightThumbstick.x * VR_JOY_TURN_SPEED * g_Vars.lvupdate60freal;
+            if (fabsf(scaledX) > 0.0f) {
+                vr_joyAccum -= scaledX * VR_JOY_TURN_SPEED * g_Vars.lvupdate60freal;
             }
 
-            // Keep snap re-armed to avoid a "ghost snap" if switching back later
             vr_snapArmed = true;
         }
     }
@@ -142,7 +160,6 @@ void joy_for_vr(void) {
     vr_joy_rot_Q.z = 0.0f;
     vr_joy_rot_Q.w = cosf(totalAngle * 0.5f);
 }
-
 
 
 static struct coord lastVRHeadPos = { 0.0f, 0.0f, 0.0f };
@@ -516,30 +533,32 @@ void vr_special_rot_mode(void)
     /* Flying crate / stretcher */
     is_grabbing_mode = g_Vars.currentplayer->bondmovemode == MOVEMODE_GRAB;
 
+    // Variables to manage the hoverbike
+    static bool was_hoverbike_mode = false;
+    static float vr_bike_offset_yaw = 0.0f;
+    static float last_vehyaw = 0.0f;
+
+    // --- hoverbike DESCENT MANAGEMENT ---
     if (!is_hoverbike_mode && !is_grabbing_mode) {
+        if (was_hoverbike_mode) {
+            float total_target_yaw = vr_bike_offset_yaw + last_vehyaw;
+            vr_joyAccum = total_target_yaw / (2.0f * 3.14159265f);
+
+            vr_joy_rot_Q.x = 0.0f;
+            vr_joy_rot_Q.y = sinf(total_target_yaw * 0.5f);
+            vr_joy_rot_Q.z = 0.0f;
+            vr_joy_rot_Q.w = cosf(total_target_yaw * 0.5f);
+
+            was_hoverbike_mode = false;
+        }
         return;
     }
 
     /*
-     * On entering the hoverbike, realign the VR reference frame once.
-     * Do not do this for MOVEMODE_GRAB.
-     */
-    if (is_hoverbike_mode && vr_hoverbike_can_mount) {
-        vr_align_with_game_angle(0.0f);
-        vr_hoverbike_can_mount = false;
-    }
-
-    /*
      * MOVEMODE_GRAB:
-     *
-     * bond2.unk00 must NOT be used as a yaw reference here.
-     * The rotation of the crate/stretcher is computed by bondgrab.c
-     * around g_Vars.currentplayer->vvtheta.
-     *
-     * We therefore fall back to the normal vr_player_rot() pipeline,
-     * which keeps a stable HMD view + joystick rotation.
      */
     if (is_grabbing_mode) {
+        was_hoverbike_mode = false;
         struct coord look = original_look;
         struct coord up = original_up;
         float horiz;
@@ -582,7 +601,6 @@ void vr_special_rot_mode(void)
 
     /*
      * MOVEMODE_BIKE:
-     * Preserve the special behavior based on the vehicle's orientation.
      */
     if (is_hoverbike_mode) {
         struct coord look = original_look;
@@ -590,35 +608,55 @@ void vr_special_rot_mode(void)
         float forwardlen2;
         float vehyaw;
         XrQuaternionf vehQuat;
+        XrQuaternionf offsetQuat;
 
-        joy_for_vr();
-
-        /*
-         * Avoids atan2f(0, 0) and an indeterminate orientation if the
-         * hoverbike temporarily has no valid horizontal forward vector.
-         */
         forwardlen2 =
                 g_Vars.currentplayer->bond2.unk00.x
                 * g_Vars.currentplayer->bond2.unk00.x
                 + g_Vars.currentplayer->bond2.unk00.z
                   * g_Vars.currentplayer->bond2.unk00.z;
 
-        if (forwardlen2 <= 0.0001f) {
-            return;
+        if (forwardlen2 > 0.0001f) {
+            vehyaw = atan2f(
+                    g_Vars.currentplayer->bond2.unk00.x,
+                    g_Vars.currentplayer->bond2.unk00.z);
+            last_vehyaw = vehyaw;
+        } else {
+            vehyaw = last_vehyaw;
         }
 
-        vehyaw = atan2f(
-                g_Vars.currentplayer->bond2.unk00.x,
-                g_Vars.currentplayer->bond2.unk00.z);
+        // --- hoverbike MOUNTING MANAGEMENT ---
+        if (!was_hoverbike_mode) {
+            // Check the headset's physical facing direction when mounting
+            struct coord hmd_look = original_look;
+            vr_rotate_vector_by_quaternion(&hmd_look, &vr_HMD_rot_Q);
+            float hmd_yaw = atan2f(hmd_look.x, hmd_look.z);
+
+            // Cancel this physical direction to automatically align with the front of the hoverbike
+            vr_bike_offset_yaw = -hmd_yaw;
+
+            was_hoverbike_mode = true;
+        }
+
+        offsetQuat.x = 0.0f;
+        offsetQuat.y = sinf(vr_bike_offset_yaw * 0.5f);
+        offsetQuat.z = 0.0f;
+        offsetQuat.w = cosf(vr_bike_offset_yaw * 0.5f);
 
         vehQuat.x = 0.0f;
         vehQuat.y = sinf(vehyaw * 0.5f);
         vehQuat.z = 0.0f;
         vehQuat.w = cosf(vehyaw * 0.5f);
 
+        // 1. Apply the natural physical head movement (to be able to look around)
         vr_rotate_vector_by_quaternion(&look, &vr_HMD_rot_Q);
         vr_rotate_vector_by_quaternion(&up, &vr_HMD_rot_Q);
 
+        // 2. Apply our offset to force the front-facing direction toward the handlebars
+        vr_rotate_vector_by_quaternion(&look, &offsetQuat);
+        vr_rotate_vector_by_quaternion(&up, &offsetQuat);
+
+        // 3. Lock the view to the vehicle's absolute rotation
         vr_rotate_vector_by_quaternion(&look, &vehQuat);
         vr_rotate_vector_by_quaternion(&up, &vehQuat);
 
@@ -629,9 +667,6 @@ void vr_special_rot_mode(void)
         g_Vars.currentplayer->bond2.unk28.x = up.x;
         g_Vars.currentplayer->bond2.unk28.y = -up.y;
         g_Vars.currentplayer->bond2.unk28.z = up.z;
-    }
-    else {
-        vr_hoverbike_can_mount = true;
     }
 }
 //------------------------------------------------------------------------------------------

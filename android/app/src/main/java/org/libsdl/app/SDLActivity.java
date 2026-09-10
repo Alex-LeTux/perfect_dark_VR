@@ -53,6 +53,13 @@ import android.widget.Toast;
 import java.util.Hashtable;
 import java.util.Locale;
 
+//download
+import java.io.InputStream;
+import java.io.FileOutputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.util.Scanner;
+
 
 /**
  SDL Activity
@@ -221,9 +228,76 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
     protected static SDLGenericMotionListener_API12 mMotionListener;
     protected static HIDDeviceManager mHIDDeviceManager;
 
-
     // This is what SDL runs in. It invokes SDL_main(), eventually
     protected static Thread mSDLThread;
+
+
+
+    // Download functions
+    public native void updateDownloadProgressNative(float progress);
+
+    // Function called by C++ to read the text
+    public String fetchText(String urlString) {
+        try {
+            URL url = new URL(urlString);
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+            conn.setReadTimeout(5000);
+            conn.setConnectTimeout(5000);
+            conn.setRequestMethod("GET");
+            conn.setRequestProperty("User-Agent", "PerfectDarkVR");
+
+            InputStream in = conn.getInputStream();
+            Scanner scanner = new Scanner(in).useDelimiter("\\A");
+            String result = scanner.hasNext() ? scanner.next() : "";
+            in.close();
+            conn.disconnect();
+            return result;
+        } catch (Exception e) {
+            e.printStackTrace();
+            return "";
+        }
+    }
+
+    // Function called by C++ to download the ZIP
+    public boolean downloadZip(String urlString, String filePath) {
+        try {
+            URL url = new URL(urlString);
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+            conn.connect();
+
+            if (conn.getResponseCode() != HttpURLConnection.HTTP_OK) {
+                return false;
+            }
+
+            int fileLength = conn.getContentLength();
+            InputStream input = conn.getInputStream();
+            FileOutputStream output = new FileOutputStream(filePath);
+
+            byte data[] = new byte[4096];
+            long total = 0;
+            int count;
+            while ((count = input.read(data)) != -1) {
+                total += count;
+                if (fileLength > 0) {
+                    updateDownloadProgressNative(((float) total / fileLength) * 100.0f);
+                }
+                output.write(data, 0, count);
+            }
+
+            output.flush();
+            output.close();
+            input.close();
+            conn.disconnect();
+            return true;
+        } catch (Exception e) {
+            e.printStackTrace();
+            return false;
+        }
+    }
+    //---
+
+
+
 
     protected static SDLGenericMotionListener_API12 getMotionListener() {
         if (mMotionListener == null) {

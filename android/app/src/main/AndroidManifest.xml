@@ -22,6 +22,8 @@
 
     <!-- Optional but recommended for haptics -->
     <uses-permission android:name="android.permission.VIBRATE" />
+    <!-- internet -->
+    <uses-permission android:name="android.permission.INTERNET" />
 
     <!-- OpenXR permissions (hello_xr) -->
     <uses-permission android:name="org.khronos.openxr.permission.OPENXR" />
@@ -37,6 +39,7 @@
             <action android:name="org.khronos.openxr.OpenXRApiLayerService" />
         </intent>
     </queries>
+
 
     <application
         android:allowBackup="true"

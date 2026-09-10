@@ -33,6 +33,8 @@ extern float VrUseSnapTurn;
 extern bool VrTwoHandAim;       // two-handed weapons aim along the line between both controllers
 extern int VrStickClickToCrouch;
 extern int VrLeftHandedMode;
+extern int VrSwapJoysticks;
+extern int VrHideArms;
 
 extern float VrHudDistance;
 #define HUD_DISTANCE_MIN 0.30f

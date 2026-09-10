@@ -341,6 +341,7 @@ void bmoveApplyMoveData(struct movedata *data)
     }
 }
 
+
 void bmoveUpdateSpeedTheta(void)
 {
     if (g_Vars.currentplayer->bondmovemode == MOVEMODE_BIKE) {
@@ -1390,28 +1391,73 @@ void bmoveProcessInput(bool allowc1x, bool allowc1y, bool allowc1buttons, bool i
 
                         if (controlmode == CONTROLMODE_12 || controlmode == CONTROLMODE_14 || controlmode == CONTROLMODE_PC) {
                             // Handle side stepping
-                            if (allowc1buttons) {
-                                movedata.digitalstepleft = 0;
-                                movedata.digitalstepright = 0;
-                                for (i = 0; i < numsamples; i++) {
-                                    if (joyGetButtonsOnSample(i, contpad1, c1allowedbuttons & slmask)) {
-                                        movedata.digitalstepleft++;
-                                    }
-                                    if (joyGetButtonsOnSample(i, contpad1, c1allowedbuttons & srmask)) {
-                                        movedata.digitalstepright++;
-                                    }
-                                }
-                            }
 
 
-                            movedata.digitalstepforward = (c1buttons & sumask);
-                            movedata.digitalstepback = (c1buttons & sdmask);
-                            movedata.canlookahead =
-                                    (controlmode == CONTROLMODE_PC) && (c2stickx || c2sticky);
-                            movedata.cannaturalpitch = true;
+//                            if (allowc1buttons) {
+//                                movedata.digitalstepleft = 0;
+//                                movedata.digitalstepright = 0;
+//                                for (i = 0; i < numsamples; i++) {
+//                                    if (joyGetButtonsOnSample(i, contpad1, c1allowedbuttons & slmask)) {
+//                                        movedata.digitalstepleft++;
+//                                    }
+//                                    if (joyGetButtonsOnSample(i, contpad1, c1allowedbuttons & srmask)) {
+//                                        movedata.digitalstepright++;
+//                                    }
+//                                }
+//                            }
+//
+//                            movedata.digitalstepforward = (c1buttons & sumask);
+//                            movedata.digitalstepback = (c1buttons & sdmask);
+//
+//                            movedata.canlookahead =
+//                                    (controlmode == CONTROLMODE_PC) && (c2stickx || c2sticky);
+//                            movedata.cannaturalpitch = true;
+
                             movedata.speedvertadown = 0;
                             movedata.speedvertaup = 0;
                             movedata.cannaturalturn = true;
+
+
+                            // --- JOYSTICK MOVEMENT IMPLEMENTATION ---
+                            if (controlmode == CONTROLMODE_12) {
+                                if (!g_Vars.currentplayer->insightaimmode) {
+                                    // The Y-axis (forward/backward) is always used to move forward/backward
+                                    movedata.analogwalk = c2sticky;
+
+                                    // Handle the difference in direction between walking and riding the hoverbike
+                                    if (g_Vars.currentplayer->bondmovemode == MOVEMODE_BIKE) {
+                                        movedata.analogturn = c1stickx;  // The right joystick is used as the handlebars
+                                        movedata.analogstrafe = 0;       // No strafing while riding the motorcycle
+                                        movedata.unk14 = 0;              // Disable the lateral strafe flag
+                                        movedata.cannaturalturn = true;  // Re-enable the game's physical rotation
+                                    } else {
+                                        movedata.analogturn = 0;
+                                        movedata.analogstrafe = c2stickx; // The left joystick is used for strafing while on foot
+                                        movedata.unk14 = 1;
+                                        movedata.cannaturalturn = false;  // VR handles rotation while on foot
+                                    }
+
+                                    movedata.canlookahead = (c2stickx || c2sticky);
+
+                                    movedata.digitalstepforward = false;
+                                    movedata.digitalstepback = false;
+                                    movedata.digitalstepleft = 0;
+                                    movedata.digitalstepright = 0;
+
+                                    movedata.cannaturalpitch = false;
+                                    movedata.analogpitch = 0;
+                                } else {
+                                    movedata.analogwalk = 0;
+                                    movedata.analogstrafe = 0;
+                                    movedata.unk14 = 0;
+                                    movedata.canlookahead = false;
+                                    movedata.digitalstepforward = false;
+                                    movedata.digitalstepback = false;
+                                    movedata.digitalstepleft = 0;
+                                    movedata.digitalstepright = 0;
+                                }
+                            }
+                            // -------------------------------------------------
                         }
 
 #ifndef PLATFORM_N64

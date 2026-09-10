@@ -52,6 +52,7 @@ struct menudialogdef g_CiControlPlayer2MenuDialog;
 struct menudialogdef g_CinemaMenuDialog;
 #ifndef PLATFORM_N64
 extern struct menudialogdef g_ExtendedMenuDialog;
+extern struct menudialogdef g_ExtendedStickMenuDialog;
 #endif
 
 // VR---------------
@@ -140,6 +141,33 @@ MenuItemHandlerResult menuhandlerVRLeftHandedMode(s32 operation, struct menuitem
             break;
     }
 
+    return 0;
+}
+
+MenuItemHandlerResult menuhandlerVRSwapJoysticks(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+    switch (operation) {
+        case MENUOP_GET:
+            return VrSwapJoysticks ? true : false;
+        case MENUOP_SET:
+            VrSwapJoysticks = data->checkbox.value ? true : false;
+            g_Vars.modifiedfiles |= MODFILE_GAME;
+            break;
+    }
+
+    return 0;
+}
+
+MenuItemHandlerResult menuhandlerVRHideArms(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+    switch (operation) {
+        case MENUOP_GET:
+            return VrHideArms ? true : false;
+        case MENUOP_SET:
+            VrHideArms = data->checkbox.value ? true : false;
+            g_Vars.modifiedfiles |= MODFILE_GAME;
+            break;
+    }
     return 0;
 }
 
@@ -611,6 +639,14 @@ struct menuitem g_VRDisplayOptionsMenuItems[] = {
                 0xff,
                 menuhandlerVRHudDistance,
         },
+            {
+                MENUITEMTYPE_CHECKBOX,
+                0,
+                MENUITEMFLAG_LITERAL_TEXT,
+                (uintptr_t)"Hide Arms",
+                0,
+                menuhandlerVRHideArms,
+        },
         {
                 MENUITEMTYPE_CHECKBOX,
                 0,
@@ -727,6 +763,15 @@ struct menuitem g_VRControlsOptionsMenuItems[] = {
                 0,
                 menuhandlerVRLeftHandedMode,
         },
+            {
+                MENUITEMTYPE_CHECKBOX,
+                0,
+                MENUITEMFLAG_LITERAL_TEXT,
+                (uintptr_t)"Swap Joysticks",
+                0,
+                menuhandlerVRSwapJoysticks,
+        },
+
         {
                 MENUITEMTYPE_CHECKBOX,
                 0,
@@ -742,6 +787,14 @@ struct menuitem g_VRControlsOptionsMenuItems[] = {
                 (uintptr_t)"Controllers vibration",
                 10,
                 menuhandlerVRVibration,
+        },
+        {
+                MENUITEMTYPE_SELECTABLE,
+                0,
+                MENUITEMFLAG_SELECTABLE_OPENSDIALOG | MENUITEMFLAG_LITERAL_TEXT,
+                (uintptr_t)"Stick Settings...\n",
+                0,
+                (void *)&g_ExtendedStickMenuDialog,
         },
         {
                 MENUITEMTYPE_SEPARATOR,

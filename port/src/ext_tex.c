@@ -164,7 +164,7 @@ s32 fileInfo(const char *filename, s32 *texNum, char extension[5])
 	strncpy(extension, ext, 5);
 
 	// get the filename without extension
-	char basename[16] = { 0 };
+	char basename[256] = { 0 };
 	memcpy(basename, filename, strlen(filename) - strlen(ext) - 1);
 
 	*texNum = strtol(basename, NULL, 16);
@@ -517,48 +517,43 @@ void extTexFree()
 	}
 }
 
+static s32 g_CurrentMaxModels = 0;
+static bool g_IsExtTexFirstInit = true;
+
 s32 extTexInit()
 {
     const char *path = fsFullPath(EXT_TEX_DIRNAME);
     strcpy(extTexPath, path);
 
-    for (int i = 0; i < MAX_EXT_TEX; ++i) {
-        extTextures[i].texnum = -1;
-        extTextures[i].texdata = 0;
-    }
-
-    for (int i = 0; i < NUM_FONTS; ++i) {
-        for (int j = 0; j < NCHARS; ++j) {
-            fontExtTextures[i][j].texnum = -1;
-            fontExtTextures[i][j].texdata = 0;
-
-            fontOutlineExtTextures[i][j].texnum = -1;
-            fontOutlineExtTextures[i][j].texdata = 0;
+// 1. Reset the pointers ONLY on the very first startup
+    if (g_IsExtTexFirstInit) {
+        for (int i = 0; i < MAX_EXT_TEX; ++i) {
+            extTextures[i].texnum = -1;
+            extTextures[i].texdata = 0;
         }
+        for (int i = 0; i < NUM_FONTS; ++i) {
+            for (int j = 0; j < NCHARS; ++j) {
+                fontExtTextures[i][j].texnum = -1;
+                fontExtTextures[i][j].texdata = 0;
+                fontOutlineExtTextures[i][j].texnum = -1;
+                fontOutlineExtTextures[i][j].texdata = 0;
+            }
+        }
+        g_IsExtTexFirstInit = false;
     }
 
     struct dirent *de;
     DIR *dr = opendir(extTexPath);
-
     char filepath[FS_MAXPATH];
     s32 modelOffset = 0;
-
-    s32 MAX_MODELS = 16;
     numModels = 0;
-    modelTextures = sysMemAlloc(MAX_MODELS * sizeof(struct ModelTextures));
 
-    /*
-     * FIX (v1.7.1 Quest boot crash): ./ext_tex does not exist until
-     * the user manually creates the directory and adds HD textures
-     * to it. opendir() then returns NULL, and the old code called
-     * readdir(NULL) without checking -> SIGSEGV under bionic (Android).
-     * mingw (PCVR) tolerated this case, which masked the bug during
-     * PC development.
-     *
-     * Simply skip the scan if the directory is missing: this is the
-     * normal state when no external textures have been installed,
-     * regardless of the "external HD textures" toggle in the options.
-     */
+    // 2. Allocate the initial memory block only once
+    if (g_CurrentMaxModels == 0) {
+        g_CurrentMaxModels = 16;
+        modelTextures = sysMemAlloc(g_CurrentMaxModels * sizeof(struct ModelTextures));
+    }
+
     if (dr != NULL) {
         while ((de = readdir(dr)) != NULL) {
             const char *name = de->d_name;
@@ -566,54 +561,37 @@ s32 extTexInit()
 
             struct stat stbuf;
             sprintf(filepath, "%s/%s", extTexPath, de->d_name);
-            if (stat(filepath, &stbuf) == -1) {
-                sysLogPrintf(LOG_WARNING, "Unable to stat file: %s\n", filepath);
-                continue;
-            }
+            if (stat(filepath, &stbuf) == -1) continue;
 
-            // is a directory
             if (S_ISDIR(stbuf.st_mode)) {
-                // models
                 char s = name[0];
                 if (s == 'P' || s == 'C' || s == 'G') {
                     s16 fileNum = (s16)romdataFileGetNumForName(name);
-                    if (fileNum < 0) {
-                        sysLogPrintf(LOG_WARNING, "extTexInit invalid file: %s\n", name);
-                        continue;
-                    }
+                    if (fileNum < 0) continue;
 
                     struct ModelTextures *modelTex = &modelTextures[numModels++];
                     readModelTextures(filepath, fileNum, &modelOffset, modelTex);
 
-                    // allocate more memory if necessary
-                    if (numModels > MAX_MODELS) {
-                        MAX_MODELS *= 2;
-                        modelTextures = sysMemRealloc(modelTextures, MAX_MODELS);
+                    // 3. Réallocation dynamique protégée
+                    if (numModels >= g_CurrentMaxModels) {
+                        g_CurrentMaxModels *= 2;
+                        modelTextures = sysMemRealloc(modelTextures, g_CurrentMaxModels * sizeof(struct ModelTextures));
                     }
-
-                }
-                    // fonts
-                else if (s == 'f') {
+                } else if (s == 'f') {
                     readFontTextures(filepath, name);
                 }
             } else {
                 s32 texNum = 0;
                 char extension[5] = { 0 };
-                s32 err = fileInfo(name, &texNum, extension);
-
-                // no extension: skip
-                if (err) continue;
-
-                setTex(extTextures, texNum, texNum, extension);
+                if (!fileInfo(name, &texNum, extension)) {
+                    // If the pointer already existed, setTex safely overwrites the data
+                    setTex(extTextures, texNum, texNum, extension);
+                }
             }
         }
-
         closedir(dr);
     }
 
-    // shrink this array to the actual number of model folders found
-    if (numModels > 0)
-        modelTextures = sysMemRealloc(modelTextures, numModels * sizeof(struct ModelTextures));
-
+    // REMOVAL of the final memory reduction to prevent overflows
     return 0;
 }

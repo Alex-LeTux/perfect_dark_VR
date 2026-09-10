@@ -943,14 +943,35 @@ s32 inputReadController(s32 idx, OSContPad *npad)
             }
 #endif
 
-
             // VR: C-Buttons mapped to the left thumbstick (directional mapping)
-            XrVector2f leftThumbstick;
-            if (get_2d_input(0, "thumbstick", &leftThumbstick)) {
-                if (leftThumbstick.y > 0.5f) npad->button |= CONT_E;  // U_CBUTTONS
-                if (leftThumbstick.y < -0.5f) npad->button |= CONT_D;  // D_CBUTTONS
-                if (leftThumbstick.x < -0.5f) npad->button |= CONT_C;  // L_CBUTTONS
-                if (leftThumbstick.x > 0.5f) npad->button |= CONT_F;  // R_CBUTTONS
+            if (g_Vars.currentplayer->pausemode == PAUSEMODE_PAUSED || g_Vars.currentplayer->activemenumode != AMMODE_CLOSED) {
+                XrVector2f leftThumbstick;
+                if (get_2d_input(0, "thumbstick", &leftThumbstick)) {
+                    if (leftThumbstick.y > 0.8f) npad->button |= CONT_E;  // U_CBUTTONS
+                    if (leftThumbstick.y < -0.8f) npad->button |= CONT_D;  // D_CBUTTONS
+                    if (leftThumbstick.x < -0.8f) npad->button |= CONT_C;  // L_CBUTTONS
+                    if (leftThumbstick.x > 0.8f) npad->button |= CONT_F;  // R_CBUTTONS
+                }
+            } else {
+
+                XrVector2f leftThumbstick;
+                if (get_2d_input(0, "thumbstick", &leftThumbstick)) {
+                    s32 rawX = (s32) (leftThumbstick.x * 32767.0f);
+                    s32 rawY = (s32) (leftThumbstick.y * 32767.0f);
+
+                    s32 scaledX = inputAxisScale(rawX, cfg->deadzone[cfg->axisMap[1][0]],
+                                                 cfg->sens[cfg->axisMap[1][0]]);
+                    s32 scaledY = inputAxisScale(rawY, cfg->deadzone[cfg->axisMap[1][1]],
+                                                 cfg->sens[cfg->axisMap[1][1]]);
+
+                    s32 finalX = scaledX / 256;
+                    s32 finalY = scaledY / 256;
+
+                    if (finalX)
+                        npad->rstick_x = (finalX == 128) ? 127 : finalX;
+                    if (finalY)
+                        npad->rstick_y = (finalY == 128) ? 127 : finalY;
+                }
             }
 
 
@@ -958,12 +979,17 @@ s32 inputReadController(s32 idx, OSContPad *npad)
                 !get_button_state(1, "a")) {
                 XrVector2f rightThumbstick;
                 if (get_2d_input(1, "thumbstick", &rightThumbstick)) {
-                    if (fabsf(rightThumbstick.x) > 0.1f) {
-                        npad->stick_x = (s32)(rightThumbstick.x * 127.0f);
-                    }
-                    if (fabsf(rightThumbstick.y) > 0.1f) {
-                        npad->stick_y = (s32)(rightThumbstick.y * 127.0f);
-                    }
+                    s32 rawX = (s32)(rightThumbstick.x * 32767.0f);
+                    s32 rawY = (s32)(rightThumbstick.y * 32767.0f);
+
+                    s32 scaledX = inputAxisScale(rawX, cfg->deadzone[cfg->axisMap[0][0]], cfg->sens[cfg->axisMap[0][0]]);
+                    s32 scaledY = inputAxisScale(rawY, cfg->deadzone[cfg->axisMap[0][1]], cfg->sens[cfg->axisMap[0][1]]);
+
+                    s32 finalX = scaledX / 256;
+                    s32 finalY = scaledY / 256;
+
+                    if (finalX) npad->stick_x = (finalX == 128) ? 127 : finalX;
+                    if (finalY) npad->stick_y = (finalY == 128) ? 127 : finalY;
                 }
             } else {
                 npad->stick_x = 0.0f;

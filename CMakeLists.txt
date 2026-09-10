@@ -437,6 +437,10 @@ else()
   endif()
 endif()
 
+
+if(WIN32)
+    target_link_libraries(pd urlmon)
+endif()
 if(ANDROID OR WIN32)
   target_link_libraries(pd openxr_loader)
 endif()

@@ -26,6 +26,8 @@ extern "C" void vrSettingsSave(void)
     fprintf(f, "SnapTurn=%.1f\n", VrUseSnapTurn);
     fprintf(f, "TwoHandedAiming=%d\n", VrTwoHandAim ? 1 : 0);
     fprintf(f, "LeftHandedMode=%d\n", VrLeftHandedMode ? 1 : 0);
+    fprintf(f, "SwapJoysticks=%d\n", VrSwapJoysticks ? 1 : 0);
+    fprintf(f, "HideArms=%d\n", VrHideArms ? 1 : 0);
     fprintf(f, "; Your standing EYE height in cm -- where your eyes are off the floor, which is\n");
     fprintf(f, "; what the headset reports, roughly 13 cm below the top of your head. Set it from\n");
     fprintf(f, "; the live reading beside the menu slider rather than from your stature.\n");
@@ -84,6 +86,8 @@ extern "C" void vrSettingsLoad(void)
             else if (strcmp(key, "PauseHub") == 0) VrPauseHub = (ival != 0);
             else if (strcmp(key, "TwoHandedAiming") == 0) VrTwoHandAim = (ival != 0);
             else if (strcmp(key, "LeftHandedMode") == 0) VrLeftHandedMode = (ival != 0);
+            else if (strcmp(key, "SwapJoysticks") == 0) VrSwapJoysticks = (ival != 0);
+            else if (strcmp(key, "HideArms") == 0) VrHideArms = (ival != 0);
             else if (strcmp(key, "MatchCharacterHeight") == 0) VrMatchCharacterHeight = (ival != 0);
             else if (strcmp(key, "FistClench") == 0) VrFistClench = ival;
         }

@@ -41,8 +41,9 @@ extern bool VrMotionThrowing;
 bool WepCanZoom = false;
 bool VrWeaponRecoil = true;
 extern "C" bool VrTwoHandsGun(int weaponnum);
-bool gripPressed = false;
+int gripPressed = false;
 int VrLeftHandedMode = 0;
+int VrSwapJoysticks = 0;
 
 // ===== VR CODE EXTENSION WITH FULL CONTROLLER SUPPORT =====
 
@@ -671,7 +672,7 @@ extern "C" bool get_button_state(int hand_index, const char* button_name) {
 extern "C" bool get_2d_input(int hand_index, const char* input_name, XrVector2f* value) {
     if (hand_index < 0 || hand_index > 1 || !value) return false;
 
-    if (VrLeftHandedMode){
+    if(VrSwapJoysticks){
         hand_index = 1 - hand_index;
     }
 
@@ -1373,6 +1374,67 @@ void controller_pose() {
 
     vrUpdateReloadPull();
 }
+
+
+// Active Menu selecton pointer
+extern float vr_pointer_scale = 0.45f;
+extern float vr_pointer_pitch_deg = -15.0f;
+extern float vr_pointer_smoothing = 0.6f;
+
+
+static float s_last_proj_x = 0.0f;
+static float s_last_proj_y = 0.0f;
+static float s_center_x = 0.0f;
+static float s_center_y = 0.0f;
+
+
+extern "C" bool vr_get_menu_pointer_coords(float *out_x, float *out_y, bool is_first_frame) {
+    int handIndex = VrLeftHandedMode ? 0 : 1;
+
+    if (!gControllerStates[handIndex].is_active) return false;
+
+    float pitch_rad = vr_pointer_pitch_deg * (3.1415926535f / 180.0f);
+    float base_x = 0.0f;
+    float base_y = sinf(pitch_rad);
+    float base_z = -cosf(pitch_rad);
+
+    float fwdX, fwdY, fwdZ;
+    RotVecByQuat(base_x, base_y, base_z, gCtrlQuatRaw[handIndex], fwdX, fwdY, fwdZ);
+
+    if (fwdZ >= 0.0f) return false;
+
+    float proj_x = fwdX / -fwdZ;
+    float proj_y = fwdY / -fwdZ;
+
+
+    if (is_first_frame) {
+        s_center_x = proj_x;
+        s_center_y = proj_y;
+
+        s_last_proj_x = proj_x;
+        s_last_proj_y = proj_y;
+    } else {
+        proj_x = s_last_proj_x + (1.0f - vr_pointer_smoothing) * (proj_x - s_last_proj_x);
+        proj_y = s_last_proj_y + (1.0f - vr_pointer_smoothing) * (proj_y - s_last_proj_y);
+        s_last_proj_x = proj_x;
+        s_last_proj_y = proj_y;
+    }
+
+    float rel_x = proj_x - s_center_x;
+    float rel_y = proj_y - s_center_y;
+
+    const float scale = 127.0f / vr_pointer_scale;
+
+    *out_x = rel_x * scale;
+    *out_y = rel_y * scale;
+
+    return true;
+}
+
+
+
+
+
 
 
 /*

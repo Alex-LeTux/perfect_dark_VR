@@ -200,6 +200,7 @@ static uint8_t* tex_upload_buffer = nullptr;
 
 static struct RSP {
     float modelview_matrix_stack[11][4][4];
+    bool  modelview_hidden_stack[11]; //VR
     uint8_t modelview_matrix_stack_size;
 
     float MP_matrix[4][4];
@@ -1059,6 +1060,14 @@ static void gfx_sp_matrix(uint8_t parameters, const int32_t* addr) {
     memcpy(matrix, addr, sizeof(matrix));
 #endif
 
+    // --- CUSTOM VR HIDE: INTERCEPTION ---
+    bool is_hidden = false;
+    if (matrix[0][3] > 1.5f) {
+        matrix[0][3] = 0.0f;
+        is_hidden = true;
+    }
+    // -------------------------------------
+
     if (parameters & G_MTX_PROJECTION) {
         if (parameters & G_MTX_LOAD) {
             memcpy(rsp.P_matrix, matrix, sizeof(matrix));
@@ -1070,18 +1079,26 @@ static void gfx_sp_matrix(uint8_t parameters, const int32_t* addr) {
             ++rsp.modelview_matrix_stack_size;
             memcpy(rsp.modelview_matrix_stack[rsp.modelview_matrix_stack_size - 1],
                    rsp.modelview_matrix_stack[rsp.modelview_matrix_stack_size - 2], sizeof(matrix));
+
+            // Copy the hidden state from the previous floor
+            rsp.modelview_hidden_stack[rsp.modelview_matrix_stack_size - 1] = rsp.modelview_hidden_stack[rsp.modelview_matrix_stack_size - 2];
         }
         if (parameters & G_MTX_LOAD) {
             memcpy(rsp.modelview_matrix_stack[rsp.modelview_matrix_stack_size - 1], matrix, sizeof(matrix));
+
+            // Apply the new signal
+            rsp.modelview_hidden_stack[rsp.modelview_matrix_stack_size - 1] = is_hidden;
         } else {
             gfx_matrix_mul(rsp.modelview_matrix_stack[rsp.modelview_matrix_stack_size - 1], matrix,
                            rsp.modelview_matrix_stack[rsp.modelview_matrix_stack_size - 1]);
+
+            // Combine the signal
+            rsp.modelview_hidden_stack[rsp.modelview_matrix_stack_size - 1] |= is_hidden;
         }
         rsp.lights_changed = 1;
     }
 
     gfx_matrix_mul(rsp.MP_matrix, rsp.modelview_matrix_stack[rsp.modelview_matrix_stack_size - 1], rsp.P_matrix);
-
 }
 
 
@@ -1249,6 +1266,12 @@ static void gfx_sp_vertex(size_t n_vertices, size_t dest_index, const Vtx* verti
             d->clip_rej |= 32; // CLIP_FAR
         }
 
+        // --- CUSTOM VR HIDE: MARKING ---
+        if (rsp.modelview_hidden_stack[rsp.modelview_matrix_stack_size - 1]) {
+            d->clip_rej |= 64;
+        }
+        // ---------------------------------
+
         d->x = x;
         d->y = y;
         d->z = z;
@@ -1334,6 +1357,12 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bo
     struct LoadedVertex* v2 = &rsp.loaded_vertices[vtx2_idx];
     struct LoadedVertex* v3 = &rsp.loaded_vertices[vtx3_idx];
     struct LoadedVertex* v_arr[3] = { v1, v2, v3 };
+
+    // --- CUSTOM VR HIDE: SMART REMOVAL ---
+    if ((v1->clip_rej & 64) && (v2->clip_rej & 64) && (v3->clip_rej & 64)) {
+        return;
+    }
+    // -------------------------------------------------
 
     if ((rsp.extra_geometry_mode & G_NO_CLIPPING_EXT) == 0) {
         if (v1->clip_rej & v2->clip_rej & v3->clip_rej) {
@@ -2843,6 +2872,7 @@ static void gfx_run_dl(Gfx* cmd) {
 
 static void gfx_sp_reset() {
     rsp.modelview_matrix_stack_size = 1;
+    rsp.modelview_hidden_stack[0] = false; //VR
     rsp.current_num_lights = 2;
     rsp.lights_changed = true;
 }
