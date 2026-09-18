@@ -31,7 +31,7 @@
 #include "menuimage.h"
 
 // Déclarations
-extern const u8 g_MenuImageUltimatePlusHd[];
+extern const u8 g_MenuImageForeverPlusHd[];
 extern const u8 g_MenuImageXblaPlusHd[];
 
 static struct menuimage g_PackImages[2];
@@ -2814,7 +2814,7 @@ void optionsMenuInit()
 
     if (!g_ImagesRegistered) {
         memset(&g_PackImages[0], 0, sizeof(struct menuimage));
-        g_PackImages[0].png = (u8*)g_MenuImageUltimatePlusHd;
+        g_PackImages[0].png = (u8*)g_MenuImageForeverPlusHd;
         g_PackImages[0].pnglen = 63584;  // size
         g_PackImages[0].name = "ForeverVR_Cover";
         menuImageRegister(&g_PackImages[0]);
