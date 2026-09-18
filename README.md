@@ -24,8 +24,7 @@ This project supports the **Community Texture Packs** created and maintained by 
 
 Special thanks to **Parabolee / Retro Foundry** and everyone who contributed to these texture packs. Full credits for the original authors and contributors can be found on the official texture pack releases page:
 
-https://github.com/retro-foundry/Perfect-Dark-Plus-HD-Textures/releases
-
+https://github.com/retro-foundry/Perfect-Dark-Plus-HD-Textures
 
 ________________________________________________________  
 
