@@ -22,7 +22,7 @@ If you want to support the VR build, you can support me on Ko-fi : https://ko-fi
 
 This project supports the **Community Texture Packs** created and maintained by the Perfect Dark community.
 
-Special thanks to **Parabolee / Retro Foundry** and everyone who contributed to these texture packs. Full credits for the original authors and contributors can be found on the official texture pack releases page:
+Special thanks to **Parabolee / Retro Foundry** and everyone who contributed to these texture packs. Full credits for the original authors and contributors can be found on the official project page:
 
 https://github.com/retro-foundry/Perfect-Dark-Plus-HD-Textures
 
