@@ -17,6 +17,16 @@ Preview : https://www.youtube.com/watch?v=O23-4PhqpYE
 
 If you want to support the VR build, you can support me on Ko-fi : https://ko-fi.com/alexletux  
 
+
+# Community Texture Packs
+
+This project supports the **Community Texture Packs** created and maintained by the Perfect Dark community.
+
+Special thanks to **Parabolee / Retro Foundry** and everyone who contributed to these texture packs. Full credits for the original authors and contributors can be found on the official texture pack releases page:
+
+https://github.com/retro-foundry/Perfect-Dark-Plus-HD-Textures/releases
+
+
 ________________________________________________________  
 
 This VR build is based on the PC port of Perfect Dark: https://github.com/perfect-dark-pc-port/perfect_dark  
