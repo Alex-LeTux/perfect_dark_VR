@@ -31,7 +31,7 @@
 // GLOBAL STATE - OVR_multiview / Render Targets / others
 // ============================================================================
 bool use_multiview = false;
-// Per eye: IPD translation, horizontal frustum centre, HUD parallax,
+// Per eye: IPD translation, horizontal frustum centre, HUD
 // vertical frustum centre.
 float s_eye_offsets[8] = { 0.0f, 0.0f, 0.0f, 0.0f,
                            0.0f, 0.0f, 0.0f, 0.0f };
@@ -41,7 +41,6 @@ extern float vr_world_scale;
 extern bool is_meta_runtime;
 bool copy_fbo_menu = false;
 bool VrIsTitleLegal = true;
-//bool capture_begin = false;
 static bool hud_L_was_drawn = false;
 static bool hud_R_was_drawn = false;
 static bool hud_H_was_drawn = false;
@@ -305,9 +304,6 @@ struct ShaderProgram {
     GLint isMenuLocation;
     GLint worldScaleLocation;
 
-    GLint crosshairParallaxLoc;
-    GLint crosshairParallaxLeftLoc;
-
     GLint IsTitleLegal;
 
     GLint TanHalfFovLeft;
@@ -378,21 +374,6 @@ static void gfx_opengl_set_eye_offsets(float left_ipd, float left_asym_x, float 
     s_eye_offsets[7] = right_asym_y;
 
 }
-
-static float g_crosshairParallaxRight = 0.0f;
-static float g_crosshairParallaxLeft  = 0.0f;
-
-
-
-extern "C" void gfxSetCrosshairParallaxRight(float correction) {
-    g_crosshairParallaxRight = correction;
-}
-
-extern "C" void gfxSetCrosshairParallaxLeft(float correction) {
-    g_crosshairParallaxLeft = correction;
-}
-
-
 
 
 extern "C" void gfx_opengl_connect_multiview_fbo(GLuint fbo_id, uint32_t width, uint32_t height) {
@@ -637,12 +618,6 @@ static void gfx_opengl_set_uniforms(struct ShaderProgram* prg) {
         if (prg->worldScaleLocation >= 0)
             glUniform1f(prg->worldScaleLocation, vr_world_scale);
 
-        if (prg->crosshairParallaxLoc >= 0)
-            glUniform1f(prg->crosshairParallaxLoc, g_crosshairParallaxRight);
-
-        if (prg->crosshairParallaxLeftLoc >= 0)
-            glUniform1f(prg->crosshairParallaxLeftLoc, g_crosshairParallaxLeft);
-
         if (prg->IsTitleLegal >= 0)
             glUniform1i(prg->IsTitleLegal, VrIsTitleLegal ? 1 : 0);
 
@@ -809,54 +784,25 @@ vec4 eyeOffset = (gl_ViewID_OVR == 0u) ? uEyeOffsetLeft : uEyeOffsetRight;
 // --------------------
 // MENU / HUD IN PAUSE MODE (uIsMenu == 1)
 // --------------------
-if (uIsMenu == 1 && vr_is_Menu_or_HUD) {
-//    mvPos.x -= eyeOffset.z * mvPos.w;
-}
-else if (uIsMenu == 1 && vr_is_Menu_or_crosshair_right) {
-//    mvPos.x -= eyeOffset.z * mvPos.w;
-}
-else if (uIsMenu == 1 && vr_is_Menu_blur) {
-    // Menu background (fullscreen blur)
-    mvPos.x -= eyeOffset.z * mvPos.w;
-}
-else if (uIsMenu == 1 && !vr_is_Menu_blur) {
-    // Menu 3D (fake 3D): same parallax as HUD
+
+if (uIsMenu == 1){
     mvPos.x -= eyeOffset.z * mvPos.w;
 }
 
-
 // --------------------
-// GAME (uIsMenu == 0): HUD + crosshair
+// GAME (uIsMenu == 0): HUD
 // --------------------
-// Right crosshair / reticle (parallax parameterized on C side via uCrosshairParallax*)
-float crosshairParallaxLocFinal =
-        (gl_ViewID_OVR == 0u) ? -uCrosshairParallaxLoc : uCrosshairParallaxLoc;
-
-float crosshairParallaxLeftLocFinal =
-        (gl_ViewID_OVR == 0u) ? -uCrosshairParallaxLeftLoc - 0.020f
-                              :  uCrosshairParallaxLeftLoc + 0.020f;
-
 
 if (uIsMenu == 0 && vr_is_Menu_or_HUD) {
+    mvPos.w *= 0.90f;
     mvPos.x -= eyeOffset.z * mvPos.w;
     mvPos.y -= eyeOffset.w * mvPos.w;
 }
-
 else if (uIsMenu == 0 && vr_is_Menu_or_crosshair_right) {
-    mvPos.x -= (eyeOffset.z + crosshairParallaxLocFinal) * mvPos.w;
-    mvPos.x += uCrosshairParallaxLoc * 2.0f;
-    mvPos.y -= uCrosshairParallaxLoc * 2.0f;
+    mvPos.w *= 0.90f;
+    mvPos.x -= eyeOffset.z * mvPos.w;
     mvPos.y -= eyeOffset.w * mvPos.w;
 }
-
-else if (uIsMenu == 0 && vr_is_crosshair_left) {
-    mvPos.x -= (eyeOffset.z + crosshairParallaxLeftLocFinal) * mvPos.w;
-    mvPos.x += uCrosshairParallaxLoc * 2.0f;
-    mvPos.y -= uCrosshairParallaxLoc * 2.0f;
-    mvPos.w += 2.0f; // distance correction for the left crosshair
-    mvPos.y -= eyeOffset.w * mvPos.w;
-}
-
 else if (uIsMenu == 0) {
     mvPos.x -= eyeOffset.x + (eyeOffset.y * mvPos.w);
     mvPos.y -= eyeOffset.w * mvPos.w;
@@ -907,8 +853,6 @@ static struct ShaderProgram* gfx_opengl_create_and_load_new_shader(uint64_t shad
         append_line(vs_buf, &vs_len, "uniform vec4 uEyeOffsetLeft;");
         append_line(vs_buf, &vs_len, "uniform vec4 uEyeOffsetRight;");
         append_line(vs_buf, &vs_len, "uniform float uWorldScale;");
-        append_line(vs_buf, &vs_len, "uniform float uCrosshairParallaxLoc;");
-        append_line(vs_buf, &vs_len, "uniform float uCrosshairParallaxLeftLoc;");
 
         append_line(vs_buf, &vs_len, "uniform int uIsTitleLegal;");
         append_line(vs_buf, &vs_len, "uniform float uTanHalfFovLeft;");
@@ -1318,8 +1262,6 @@ static struct ShaderProgram* gfx_opengl_create_and_load_new_shader(uint64_t shad
         prg->eyeOffsetRightLocation = glGetUniformLocation(shader_program, "uEyeOffsetRight");
         prg->isMenuLocation = glGetUniformLocation(shader_program, "uIsMenu");
         prg->worldScaleLocation = glGetUniformLocation(shader_program, "uWorldScale");
-        prg->crosshairParallaxLoc = glGetUniformLocation(shader_program, "uCrosshairParallaxLoc");
-        prg->crosshairParallaxLeftLoc = glGetUniformLocation(shader_program, "uCrosshairParallaxLeftLoc");
         prg->IsTitleLegal = glGetUniformLocation(shader_program, "uIsTitleLegal");
         prg->TanHalfFovRight = glGetUniformLocation(shader_program, "uTanHalfFovRight");
         prg->TanHalfFovLeft = glGetUniformLocation(shader_program, "uTanHalfFovLeft");

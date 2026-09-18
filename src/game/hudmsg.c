@@ -356,11 +356,10 @@ Gfx *hudmsgRenderZoomRange(Gfx *gdl, u32 alpha)
 
 Gfx *hudmsgRenderBox(Gfx *gdl, s32 x1, s32 y1, s32 x2, s32 y2, f32 bgopacity, u32 bordercolour, f32 textopacity)
 {
+    gDPNoOpTag(gdl++, VR_HUD_CAPTURE_BEGIN_H);
 	f32 f0;
 	f32 f20;
 	f32 f22;
-
-    gDPNoOpTag(gdl++, VR_HUD_CAPTURE_BEGIN_H);
 
 	if (x1);
 
@@ -972,7 +971,7 @@ void hudmsgCalculatePosition(struct hudmessage *msg)
 		y = msg->ymargin;
 		break;
 	case HUDMSGALIGN_TOP:
-        y = viewtop + msg->ymargin + 50; // VR Top Subtitle // y = viewtop + msg->ymargin + 13;
+        y = viewtop + msg->ymargin + 120; // VR Top Subtitle // y = viewtop + msg->ymargin + 13;
 		break;
 	case HUDMSGALIGN_BOTTOM:
 		y = viewtop + viewheight - msg->height - msg->ymargin - 14;

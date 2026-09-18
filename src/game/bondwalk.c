@@ -140,7 +140,7 @@ void joy_for_vr(void) {
             if (vr_snapArmed && fabsf(scaledX) > 0.5f) {
                 float direction = (scaledX > 0.0f) ? 1.0f : -1.0f;
                 vr_joyAccum -= direction * (VrUseSnapTurn / 360.0f);
-                vr_snapArmed = false; // Verrouille jusqu'au retour au centre
+                vr_snapArmed = false;
             }
 
         } else {

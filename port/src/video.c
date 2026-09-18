@@ -84,7 +84,7 @@ extern bool vr_restart_with_new_scale(float scale);
 extern bool vr_configure_resolution();
 extern void vr_request_scale(float scale);
 
-
+void optionsMenuInit();
 
 s32 videoInit(void)
 {
@@ -131,6 +131,7 @@ s32 videoInit(void)
 
     // Force fullscreen OFF VR
     videoSetFullscreen(false);
+    optionsMenuInit();
 
     initDone = true;
     return 0;

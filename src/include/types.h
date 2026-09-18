@@ -6160,6 +6160,8 @@ struct extplayerconfig {
     u32 crosshaircolour;
     u32 crosshairsize;
     s32 crosshairhealth;
+    s32 crosshairhideunlessaiming;
+    s32 hidesightzoom;
     s32 usereloads;
 };
 

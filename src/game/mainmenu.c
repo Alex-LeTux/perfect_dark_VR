@@ -69,8 +69,8 @@ static char gExtendedGameFovLabel[80];
 extern void vrSettingsSave();
 extern float gVrHeadHeightCm;   // live head height above the floor, cm
 //---
-#define HUD_STEREO_DEPTH_STEP  0.05f
-#define HUD_STEREO_DEPTH_STEPS ((s32)((HUD_STEREO_DEPTH_MAX - HUD_STEREO_DEPTH_MIN) / HUD_STEREO_DEPTH_STEP))
+//#define HUD_STEREO_DEPTH_STEP  0.05f
+//#define HUD_STEREO_DEPTH_STEPS ((s32)((HUD_STEREO_DEPTH_MAX - HUD_STEREO_DEPTH_MIN) / HUD_STEREO_DEPTH_STEP))
 //---
 #define WORLDSCALE_STEP   0.01f
 #define WORLDSCALE_STEPS  (s32)((WORLDSCALE_MAX - WORLDSCALE_MIN) / WORLDSCALE_STEP)
@@ -85,7 +85,7 @@ extern float gVrHeadHeightCm;   // live head height above the floor, cm
 //..
 #define SNAP_TURN_MIN 0.0f
 #define SNAP_TURN_MAX 90.0f
-#define SNAP_TURN_STEP 10.0f
+#define SNAP_TURN_STEP 5.0f
 #define SNAP_TURN_STEPS ((s32)((SNAP_TURN_MAX - SNAP_TURN_MIN) / SNAP_TURN_STEP))
 
 
@@ -370,45 +370,45 @@ MenuItemHandlerResult menuhandlerVRSeatedMode(s32 operation, struct menuitem *it
 }
 
 
-MenuItemHandlerResult menuhandlerStereoCrosshair(s32 operation, struct menuitem *item, union handlerdata *data)
-{
-    static u8 lastRawValue = 0xFF;
-
-    switch (operation)
-    {
-        case MENUOP_GETSLIDER:
-        {
-            s32 stepIndex = (s32)roundf((VrStereoCrosshair - HUD_STEREO_DEPTH_MIN) / HUD_STEREO_DEPTH_STEP);
-            data->slider.value = (u8)roundf((f32)stepIndex * 255.0f / (f32)HUD_STEREO_DEPTH_STEPS);
-            lastRawValue = data->slider.value;
-            break;
-        }
-        case MENUOP_SET:
-        {
-            s32 delta = (s32)data->slider.value - (s32)lastRawValue;
-
-            if (delta != 0)
-            {
-                s32 currentStep = (s32)roundf((VrStereoCrosshair - HUD_STEREO_DEPTH_MIN) / HUD_STEREO_DEPTH_STEP);
-                s32 stepDelta = (delta > 0) ? 1 : -1;
-
-                currentStep += stepDelta;
-                if (currentStep < 0) currentStep = 0;
-                if (currentStep > HUD_STEREO_DEPTH_STEPS) currentStep = HUD_STEREO_DEPTH_STEPS;
-
-                VrStereoCrosshair = HUD_STEREO_DEPTH_MIN + (f32)currentStep * HUD_STEREO_DEPTH_STEP;
-                g_Vars.modifiedfiles |= MODFILE_GAME;
-            }
-
-            lastRawValue = data->slider.value;
-            break;
-        }
-        case MENUOP_GETSLIDERLABEL:
-            sprintf(data->slider.label, "%.2f", VrStereoCrosshair);
-            break;
-    }
-    return 0;
-}
+//MenuItemHandlerResult menuhandlerStereoCrosshair(s32 operation, struct menuitem *item, union handlerdata *data)
+//{
+//    static u8 lastRawValue = 0xFF;
+//
+//    switch (operation)
+//    {
+//        case MENUOP_GETSLIDER:
+//        {
+//            s32 stepIndex = (s32)roundf((VrStereoCrosshair - HUD_STEREO_DEPTH_MIN) / HUD_STEREO_DEPTH_STEP);
+//            data->slider.value = (u8)roundf((f32)stepIndex * 255.0f / (f32)HUD_STEREO_DEPTH_STEPS);
+//            lastRawValue = data->slider.value;
+//            break;
+//        }
+//        case MENUOP_SET:
+//        {
+//            s32 delta = (s32)data->slider.value - (s32)lastRawValue;
+//
+//            if (delta != 0)
+//            {
+//                s32 currentStep = (s32)roundf((VrStereoCrosshair - HUD_STEREO_DEPTH_MIN) / HUD_STEREO_DEPTH_STEP);
+//                s32 stepDelta = (delta > 0) ? 1 : -1;
+//
+//                currentStep += stepDelta;
+//                if (currentStep < 0) currentStep = 0;
+//                if (currentStep > HUD_STEREO_DEPTH_STEPS) currentStep = HUD_STEREO_DEPTH_STEPS;
+//
+//                VrStereoCrosshair = HUD_STEREO_DEPTH_MIN + (f32)currentStep * HUD_STEREO_DEPTH_STEP;
+//                g_Vars.modifiedfiles |= MODFILE_GAME;
+//            }
+//
+//            lastRawValue = data->slider.value;
+//            break;
+//        }
+//        case MENUOP_GETSLIDERLABEL:
+//            sprintf(data->slider.label, "%.2f", VrStereoCrosshair);
+//            break;
+//    }
+//    return 0;
+//}
 
 static const char* menutextGameFov(struct menuitem *item)
 {
@@ -623,14 +623,14 @@ struct menuitem g_VRDisplayOptionsMenuItems[] = {
                 0xff,
                 menuhandlerVRWorldScale
         },
-        {
-                MENUITEMTYPE_SLIDER,
-                0,
-                MENUITEMFLAG_LITERAL_TEXT,
-                (uintptr_t)"HUD/Crosshair Depth",
-                0xff,
-                menuhandlerStereoCrosshair,
-        },
+//        {
+//                MENUITEMTYPE_SLIDER,
+//                0,
+//                MENUITEMFLAG_LITERAL_TEXT,
+//                (uintptr_t)"HUD/Crosshair Depth",
+//                0xff,
+//                menuhandlerStereoCrosshair,
+//        },
         {
                 MENUITEMTYPE_SLIDER,
                 0,

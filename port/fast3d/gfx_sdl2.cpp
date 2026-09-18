@@ -74,6 +74,8 @@ static bool vsync_enabled = true;
 static int window_width = -1;
 static int window_height = -1;
 
+const char *VR_Version = "v1.9-beta";
+
 static uint32_t fullscreen_flag = SDL_WINDOW_FULLSCREEN_DESKTOP;
 static bool fullscreen_state;
 static bool maximized_state;
@@ -211,7 +213,11 @@ extern "C" void vrShowWaitingWindow(const char *bmpPath) {
             if (waitLogoTex)
                 ImGui::Image((ImTextureID)(uintptr_t)waitLogoTex, ImVec2(waitLogoW, waitLogoH));
 
-// X button in the top-right corner — absolute position
+            // Version text in the top-left corner — absolute position
+            ImGui::SetCursorPos(ImVec2(5, 5));
+            ImGui::Text("%s", VR_Version);
+
+            // X button in the top-right corner — absolute position
             ImGui::SetCursorPos(ImVec2(waitLogoW - 26, 2));
             ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
             ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.8f, 0.1f, 0.1f, 1.0f));
@@ -219,7 +225,7 @@ extern "C" void vrShowWaitingWindow(const char *bmpPath) {
                 exit(0);
             ImGui::PopStyleColor(2);
 
-// Waiting for VR connection text
+            // Waiting for VR connection text
             ImGui::SetCursorPos(ImVec2(0, waitLogoH + 16));
             const char *text = "Waiting for VR connection...";
             float textWidth = ImGui::CalcTextSize(text).x;
@@ -700,145 +706,155 @@ static void gfx_sdl_swap_buffers_begin(void) {
     if (mirror_wnd && mirror_ctx) {
     SDL_GL_MakeCurrent(mirror_wnd, mirror_ctx);
 
-if (imgui_initialized) {
-    uint32_t now = SDL_GetTicks();
-    uint32_t idle_ms = now - last_mouse_move_ms;
+    if (imgui_initialized) {
+        uint32_t now = SDL_GetTicks();
+        uint32_t idle_ms = now - last_mouse_move_ms;
 
-    if (idle_ms < TOOLBAR_HIDE_DELAY_MS) {
-        float fade_start = (float)(TOOLBAR_HIDE_DELAY_MS - 500);
-        float t = ((float)idle_ms - fade_start) / 500.0f;
-        toolbar_alpha = 1.0f - fmaxf(0.0f, fminf(1.0f, t));
-    } else {
-        toolbar_alpha = 0.0f;
-    }
-
-    // Toolbar always visible when mirror is OFF (no fade)
-    if (!mirror_enabled) toolbar_alpha = 1.0f;
-
-    ImGui_ImplOpenGL3_NewFrame();
-    ImGui_ImplSDL2_NewFrame();
-    ImGui::NewFrame();
-
-    if (toolbar_alpha > 0.0f) {
-        ImGui::SetNextWindowPos({0, 0});
-        // Full window height when mirror is OFF, otherwise only the toolbar
-        ImGui::SetNextWindowSize({(float)mirror_width, (float)(mirror_enabled ? 36 : mirror_height)});
-        ImGui::SetNextWindowBgAlpha(mirror_enabled ? 0.75f * toolbar_alpha : 0.95f);
-        ImGui::PushStyleVar(ImGuiStyleVar_Alpha, toolbar_alpha);
-
-        ImGui::Begin("##toolbar", nullptr,
-            ImGuiWindowFlags_NoTitleBar      |
-            ImGuiWindowFlags_NoResize        |
-            ImGuiWindowFlags_NoMove          |
-            ImGuiWindowFlags_NoScrollbar     |
-            ImGuiWindowFlags_NoSavedSettings |
-            (toolbar_alpha < 0.1f ? ImGuiWindowFlags_NoInputs : 0));
-
-        // ── 1) Mirror ON/OFF button (first) ──
-        bool was_enabled = mirror_enabled;
-        ImGui::PushStyleColor(ImGuiCol_Button,
-            mirror_enabled
-                ? ImVec4(0.2f, 0.6f, 0.2f, 1.0f)   // Color = ON
-                : ImVec4(0.3f, 0.3f, 0.3f, 1.0f));  // Color = OFF
-        if (ImGui::Button(mirror_enabled ? "Mirror ON" : "Mirror OFF")) {
-            mirror_enabled = !mirror_enabled;
-            mirror_apply_size(mirror_enabled);
-        }
-        ImGui::PopStyleColor();
-
-
-        unsigned int logo_tex = gfx_opengl_get_logo_tex();
-        if (logo_tex && !mirror_enabled) {
-            // ── FPS whene mirror OFF ──
-            ImGui::SameLine(0, 20);
-            ImGui::Text("%.0f fps", ImGui::GetIO().Framerate);
-            //---------------------------------------------
-
-             // logo image
-            ImVec2 win_pos = ImGui::GetWindowPos();
-            // Offset by 36px downward (toolbar height)
-            ImVec2 img_min = ImVec2(win_pos.x, win_pos.y + 36.0f);
-            ImVec2 img_max = ImVec2(win_pos.x + (float)logo_w, win_pos.y + 36.0f + (float)logo_h);
-
-            ImGui::GetWindowDrawList()->AddImage(
-                (ImTextureID)(uintptr_t)logo_tex,
-                img_min,
-                img_max,
-                ImVec2(0, 0), ImVec2(1, 1)
-            );
-
-            ImGui::Dummy(ImVec2((float)logo_w, (float)logo_h + 36.0f));
+        if (idle_ms < TOOLBAR_HIDE_DELAY_MS) {
+            float fade_start = (float)(TOOLBAR_HIDE_DELAY_MS - 500);
+            float t = ((float)idle_ms - fade_start) / 500.0f;
+            toolbar_alpha = 1.0f - fmaxf(0.0f, fminf(1.0f, t));
+        } else {
+            toolbar_alpha = 0.0f;
         }
 
+        // Toolbar always visible when mirror is OFF (no fade)
+        if (!mirror_enabled) toolbar_alpha = 1.0f;
 
-        /// Other buttons only when mirror is ON
-        if (mirror_enabled) {
-            ImGui::SameLine(0, 20);
+        ImGui_ImplOpenGL3_NewFrame();
+        ImGui_ImplSDL2_NewFrame();
+        ImGui::NewFrame();
 
-        // ── 2) Toggle eyes / SbS ──
-        ImGui::SameLine(0, 20);
-        ImGui::Text("Eye:");
-        ImGui::SameLine();
+        if (toolbar_alpha > 0.0f) {
+            ImGui::SetNextWindowPos({0, 0});
+            // Full window height when mirror is OFF, otherwise only the toolbar
+            ImGui::SetNextWindowSize({(float)mirror_width, (float)(mirror_enabled ? 36 : mirror_height)});
+            ImGui::SetNextWindowBgAlpha(mirror_enabled ? 0.75f * toolbar_alpha : 0.95f);
+            ImGui::PushStyleVar(ImGuiStyleVar_Alpha, toolbar_alpha);
 
-        int eye_mode = mirror_sbs ? 2 : mirror_eye_index;
+            ImGui::Begin("##toolbar", nullptr,
+                ImGuiWindowFlags_NoTitleBar      |
+                ImGuiWindowFlags_NoResize        |
+                ImGuiWindowFlags_NoMove          |
+                ImGuiWindowFlags_NoScrollbar     |
+                ImGuiWindowFlags_NoSavedSettings |
+                (toolbar_alpha < 0.1f ? ImGuiWindowFlags_NoInputs : 0));
 
-        if (ImGui::RadioButton("L", eye_mode == 0)) {
-            if (mirror_sbs) SDL_SetWindowSize(mirror_wnd, mirror_saved_w, mirror_saved_h);
-            mirror_eye_index = 0;
-            mirror_sbs = false;
-        }
-        ImGui::SameLine();
-        if (ImGui::RadioButton("R", eye_mode == 1)) {
-            if (mirror_sbs) SDL_SetWindowSize(mirror_wnd, mirror_saved_w, mirror_saved_h);
-            mirror_eye_index = 1;
-            mirror_sbs = false;
-        }
-        ImGui::SameLine();
-        if (ImGui::RadioButton("SbS", eye_mode == 2)) {
-            mirror_sbs = true;
-            mirror_saved_w = mirror_width;
-            mirror_saved_h = mirror_height;
-            SDL_SetWindowSize(mirror_wnd, mirror_height * 2, mirror_height);
-        }
+            // ── 1) Mirror ON/OFF button (first) ──
+            bool was_enabled = mirror_enabled;
+            ImGui::PushStyleColor(ImGuiCol_Button,
+                mirror_enabled
+                    ? ImVec4(0.2f, 0.6f, 0.2f, 1.0f)   // Color = ON
+                    : ImVec4(0.3f, 0.3f, 0.3f, 1.0f));  // Color = OFF
+            if (ImGui::Button(mirror_enabled ? "Mirror ON" : "Mirror OFF")) {
+                mirror_enabled = !mirror_enabled;
+                mirror_apply_size(mirror_enabled);
+            }
+            ImGui::PopStyleColor();
 
-        // ── 3) Toggle format
-        ImGui::SameLine(0, 20);
-        if (mirror_sbs) ImGui::BeginDisabled();
+            // ── CALCULATE THE RIGHT-ALIGNED POSITION ──
+            float version_width = ImGui::CalcTextSize(VR_Version).x;
+            // Take the total window width, subtract the text width, then subtract a 15px margin.
+            float align_right_x = ImGui::GetWindowWidth() - version_width - 450.0f;
+            // ─────────────────────────────────────────
 
-            const char* format_label = mirror_sbs
-                ? "Format: SbS 16/9"
-                : (mirror_is_43 ? "Format: 4:3" : "Format: 1:1 VR");
+            unsigned int logo_tex = gfx_opengl_get_logo_tex();
+            if (logo_tex && !mirror_enabled) {
+                // ── FPS mirror OFF ──
+                ImGui::SameLine(0, 20);
+                ImGui::Text("%.0f fps", ImGui::GetIO().Framerate);
 
-            if (ImGui::Button(format_label)) {
-                mirror_is_43 = !mirror_is_43;
-                int h = mirror_height;
-                int new_w = mirror_is_43 ? (int)(h * 4.0f / 3.0f) : h;
-                SDL_SetWindowSize(mirror_wnd, new_w, h);
+                // ── CALCULATE THE RIGHT-ALIGNED POSITION (Mirror OFF) ──
+                ImGui::SameLine(align_right_x);
+                ImGui::Text("%s", VR_Version);
+                //---------------------------------------------
+
+                 // logo image
+                ImVec2 win_pos = ImGui::GetWindowPos();
+                // Offset by 36px downward (toolbar height)
+                ImVec2 img_min = ImVec2(win_pos.x, win_pos.y + 36.0f);
+                ImVec2 img_max = ImVec2(win_pos.x + (float)logo_w, win_pos.y + 36.0f + (float)logo_h);
+
+                ImGui::GetWindowDrawList()->AddImage(
+                    (ImTextureID)(uintptr_t)logo_tex,
+                    img_min,
+                    img_max,
+                    ImVec2(0, 0), ImVec2(1, 1)
+                );
+
+                ImGui::Dummy(ImVec2((float)logo_w, (float)logo_h + 36.0f));
             }
 
-            if (mirror_sbs) ImGui::EndDisabled();
 
-            ImGui::SameLine(0, 20);
+            /// Other buttons only when mirror is ON
+            if (mirror_enabled) {
+                ImGui::SameLine(0, 20);
 
-            // ── 4) FPS ──
-            ImGui::Text("%.0f fps", ImGui::GetIO().Framerate);
+                // ── 2) Toggle eyes / SbS ──
+                ImGui::Text("Eye:");
+                ImGui::SameLine();
+
+                int eye_mode = mirror_sbs ? 2 : mirror_eye_index;
+
+                if (ImGui::RadioButton("L", eye_mode == 0)) {
+                    if (mirror_sbs) SDL_SetWindowSize(mirror_wnd, mirror_saved_w, mirror_saved_h);
+                    mirror_eye_index = 0;
+                    mirror_sbs = false;
+                }
+                ImGui::SameLine();
+                if (ImGui::RadioButton("R", eye_mode == 1)) {
+                    if (mirror_sbs) SDL_SetWindowSize(mirror_wnd, mirror_saved_w, mirror_saved_h);
+                    mirror_eye_index = 1;
+                    mirror_sbs = false;
+                }
+                ImGui::SameLine();
+                if (ImGui::RadioButton("SbS", eye_mode == 2)) {
+                    mirror_sbs = true;
+                    mirror_saved_w = mirror_width;
+                    mirror_saved_h = mirror_height;
+                    SDL_SetWindowSize(mirror_wnd, mirror_height * 2, mirror_height);
+                }
+
+                // ── 3) Toggle format
+                ImGui::SameLine(0, 20);
+                if (mirror_sbs) ImGui::BeginDisabled();
+
+                const char* format_label = mirror_sbs
+                    ? "Format: SbS 16/9"
+                    : (mirror_is_43 ? "Format: 4:3" : "Format: 1:1 VR");
+
+                if (ImGui::Button(format_label)) {
+                    mirror_is_43 = !mirror_is_43;
+                    int h = mirror_height;
+                    int new_w = mirror_is_43 ? (int)(h * 4.0f / 3.0f) : h;
+                    SDL_SetWindowSize(mirror_wnd, new_w, h);
+                }
+
+                if (mirror_sbs) ImGui::EndDisabled();
+
+                ImGui::SameLine(0, 20);
+
+                // ── 4) FPS ──
+                ImGui::Text("%.0f fps", ImGui::GetIO().Framerate);
+
+                // ── CALCULATE THE RIGHT-ALIGNED POSITION (Mirror ON) ──
+                float align_right_x = ImGui::GetWindowWidth() - version_width - 15.0f;
+                ImGui::SameLine(align_right_x);
+                ImGui::Text("%s", VR_Version);
+            }
+
+            ImGui::End();
+            ImGui::PopStyleVar();
         }
 
-        ImGui::End();
-        ImGui::PopStyleVar();
-    }
-
-    ImGui::Render();
-    ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
-
+        ImGui::Render();
+        ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
     }
 
     SDL_GL_SetSwapInterval(0);
     SDL_GL_SwapWindow(mirror_wnd);
     SDL_GL_MakeCurrent(wnd, ctx);
 }
-
-
 
 #endif
 }

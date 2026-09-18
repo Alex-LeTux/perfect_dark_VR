@@ -10,6 +10,7 @@ void extTexFree();
 u8 *extTexLoad(u8 type, u16 id, s32 texnum, u32 *width, u32 *height);
 u8 extTexExists(u8 type, u16 id, s32 texnum);
 u8 extTexFontID(struct font *font);
+void extTexSetPack(const char *newPackName);
 
 s32 extTexPollReady(u8 *outType, u16 *outId, s32 *outTexnum, s32 maxOut);
 void extTexAsyncShutdown();

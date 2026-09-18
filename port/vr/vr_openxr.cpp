@@ -574,7 +574,7 @@ extern "C" bool vr_configure_resolution() {
         return false;
     }
 
-    // Both eyes normally have the same recommended resolution
+// Both eyes normally have the same recommended resolution
     int VrRealRecommendedW = views[0].recommendedImageRectWidth;
     int VrRealRecommendedH = views[0].recommendedImageRectHeight;
     LOGI("HMD recommended resolution: %u x %u", VrRealRecommendedW, VrRealRecommendedH);
@@ -591,14 +591,18 @@ extern "C" bool vr_configure_resolution() {
     uint32_t derivedH = (uint32_t)std::lround((double)VrRecommendedW / XrAspect);
     VrRecommendedH = (derivedH + 1u) & ~1u; // rounds up to the nearest even number, instead of truncating down
 
-    //Get correct aspect ratio and size for HUD VR
-    VrSmallW = VrRecommendedW / 4.5f;
+    // Get correct aspect ratio and size for HUD VR
+    // Add horizontal overscan (~35%) to compensate for the Quest 3's strong "cantingOffset".
+    // This allows the 2D HUD to physically extend beyond the screen and cover the
+    // empty areas on the sides when shifted by parallax.
+    float overscan = 1.0f;
+    VrSmallW = (VrRecommendedW / 4.5f) * overscan;
     VrSmallH = VrRecommendedH / 4.5f;
 
     LOGI("VR small resolution (fixed W, derived H): %u x %u", VrSmallW, VrSmallH);
 
 
-    //Set correct aspect ratio and size for VR
+    // Set correct aspect ratio and size for VR
     g_ViModes[0] = (struct vimode){(int32_t)VrSmallW, (int32_t)VrSmallH, (int32_t)VrSmallW, 1, 1, (int32_t)VrSmallH, 0, 360, 40, 272, 84  }; // default VR
     g_ViModes[1] = (struct vimode){(int32_t)VrSmallW, (int32_t)VrSmallH, (int32_t)VrSmallW, 1, 1, (int32_t)VrSmallH, 0, 360, 40, 272, 84  }; // hi-res VR
 
@@ -2389,46 +2393,19 @@ void vr_get_eye_view_offset(int eye, float* out_tx, float* out_ty, float* out_tz
     if (out_ty)   *out_ty   = 0.0f;
     if (out_tz)   *out_tz   = 0.0f;
 
+
     if (out_tx_HUD) {
         VrEyeFovTan fovTan = vr_get_eye_fov_tan(eye);
 
-        // Use localEyeX (not affected by vr_world_scale) for HUD parallax calculation
-        float parallaxOffset = localEyeX * (VrStereoCrosshair * fovTan.tanHalfWidth);
+        // CORRECTION: Use division to correctly project the distance.
+        // Use 'VrHudDistance' (already set to 0.8f) to place the HUD at 80 cm.
+        float parallaxOffset = (localEyeX / VrHudDistance) / fovTan.tanHalfWidth;
 
         // Canting managed separately via vr_get_horizontal_fov_offset_ratio
         float cantingOffset = vr_get_horizontal_fov_offset_ratio(eye);
 
         *out_tx_HUD = parallaxOffset + cantingOffset;
     }
-}
-
-
-// Compute crosshair parallax correction based on target distance
-extern "C" float vrComputeCrosshairParallax(float distanceGameUnits) {
-    if (!g_vrInitialized) return 0.0f;
-
-    const float kMinDistMeters = 1.75f;
-    float distMeters = distanceGameUnits / 100.0f;
-    if (distMeters < kMinDistMeters) distMeters = kMinDistMeters;
-
-    float ipdMeters = ipd_meters;
-    if (ipdMeters < 0.01f || ipdMeters > 0.10f) ipdMeters = 0.064f;
-
-    float eyeHalfIpd = ipdMeters * 0.5f;
-
-    VrEyeFovTan fovTan = vr_get_eye_fov_tan(0);
-    float tanFovHalf = fovTan.tanHalfWidth;
-
-    if (tanFovHalf < 0.001f) return 0.0f;
-
-    float parallaxNominal = (eyeHalfIpd / kMinDistMeters) / tanFovHalf;
-    float parallaxTarget  = (eyeHalfIpd / distMeters)     / tanFovHalf;
-
-    float correction = parallaxTarget - parallaxNominal;
-    if (correction > 0.02f) correction = 0.02f;
-    if (correction < -0.02f) correction = -0.02f;
-
-    return correction;
 }
 
 

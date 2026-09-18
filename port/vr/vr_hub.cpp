@@ -8,6 +8,8 @@
 #include <cstring>
 #include <cstdio>
 
+
+
 #ifdef ANDROID
 #include <GLES3/gl3.h>
 #include <GLES3/gl32.h>
@@ -26,6 +28,12 @@
 #define HUB_LOGE(...) fprintf(stderr, __VA_ARGS__)
 #endif
 
+
+#include "../include/bss.h"
+#include "../include/data.h"
+extern "C" bool objectiveIsAllComplete(void);
+
+
 // ----------------------------------------------------------------------------
 // Tunable look of the hub
 // ----------------------------------------------------------------------------
@@ -34,9 +42,24 @@ static const float HUB_GRID_CELL_METERS  = 1.0f;     // grid line every 1m
 static const float HUB_FOG_START         = 15.0f;    // metres
 static const float HUB_FOG_END           = 60.0f;    // metres
 
-static const float HUB_SKY_COLOR_HORIZON[3]  = { 0.10f, 0.14f, 0.22f };
-static const float HUB_FLOOR_BASE_COLOR[3]   = { 0.04f, 0.05f, 0.07f };
-static const float HUB_FLOOR_LINE_COLOR[3]   = { 0.25f, 0.55f, 1.00f };
+// Color blue default
+static const float HUB_SKY_COLOR_BLUE[3]  = { 0.10f, 0.14f, 0.22f };
+static const float HUB_FLOOR_BASE_BLUE[3] = { 0.04f, 0.05f, 0.07f };
+static const float HUB_FLOOR_LINE_BLUE[3] = { 0.25f, 0.55f, 1.00f };
+
+// Color green Succes
+static const float HUB_SKY_COLOR_GREEN[3]  = { 0.10f, 0.22f, 0.14f };
+static const float HUB_FLOOR_BASE_GREEN[3] = { 0.04f, 0.07f, 0.05f };
+static const float HUB_FLOOR_LINE_GREEN[3] = { 0.25f, 1.00f, 0.55f };
+
+// Couleurs red Failed
+static const float HUB_SKY_COLOR_RED[3]  = { 0.22f, 0.10f, 0.10f };
+static const float HUB_FLOOR_BASE_RED[3] = { 0.07f, 0.04f, 0.04f };
+static const float HUB_FLOOR_LINE_RED[3] = { 1.00f, 0.25f, 0.25f };
+
+static const float* g_HubSkyColor  = HUB_SKY_COLOR_BLUE;
+static const float* g_HubFloorBase = HUB_FLOOR_BASE_BLUE;
+static const float* g_HubFloorLine = HUB_FLOOR_LINE_BLUE;
 
 static const float HUB_LINE_FADE_START = 1.0f;
 static const float HUB_LINE_FADE_END   = 25.0f;
@@ -310,8 +333,64 @@ void vr_hub_init(void) {
 }
 
 
+
+static void vr_hub_update_colors_from_game_state(void) {
+    // Default bleu color
+    g_HubSkyColor  = HUB_SKY_COLOR_BLUE;
+    g_HubFloorBase = HUB_FLOOR_BASE_BLUE;
+    g_HubFloorLine = HUB_FLOOR_LINE_BLUE;
+
+    if (g_MenuData.root == MENUROOT_ENDSCREEN) {
+        if (g_Vars.bond->isdead || g_Vars.bond->aborted || !objectiveIsAllComplete()) {
+            // Failed Solo
+            g_HubSkyColor  = HUB_SKY_COLOR_RED;
+            g_HubFloorBase = HUB_FLOOR_BASE_RED;
+            g_HubFloorLine = HUB_FLOOR_LINE_RED;
+        } else {
+            // Succes Solo (except Defence)
+            if (g_StageIndex != STAGEINDEX_DEFENSE) {
+                g_HubSkyColor  = HUB_SKY_COLOR_GREEN;
+                g_HubFloorBase = HUB_FLOOR_BASE_GREEN;
+                g_HubFloorLine = HUB_FLOOR_LINE_GREEN;
+            }
+        }
+    }
+    else if (g_MenuData.root == MENUROOT_MPENDSCREEN) {
+        if (g_Vars.coopplayernum >= 0) {
+            // Failed Coop
+            if ((g_Vars.bond->isdead && g_Vars.coop->isdead) || g_Vars.bond->aborted || g_Vars.coop->aborted || !objectiveIsAllComplete()) {
+                g_HubSkyColor  = HUB_SKY_COLOR_RED;
+                g_HubFloorBase = HUB_FLOOR_BASE_RED;
+                g_HubFloorLine = HUB_FLOOR_LINE_RED;
+            } else {
+                // Succes Coop
+                g_HubSkyColor  = HUB_SKY_COLOR_GREEN;
+                g_HubFloorBase = HUB_FLOOR_BASE_GREEN;
+                g_HubFloorLine = HUB_FLOOR_LINE_GREEN;
+            }
+        } else if (g_Vars.antiplayernum >= 0) {
+            // Failed / Succes Anti
+            if (g_Vars.bond->isdead || g_Vars.bond->aborted || !objectiveIsAllComplete()) {
+                // Succes for Anti, Failed for Bond.
+                g_HubSkyColor  = HUB_SKY_COLOR_RED;
+                g_HubFloorBase = HUB_FLOOR_BASE_RED;
+                g_HubFloorLine = HUB_FLOOR_LINE_RED;
+            } else {
+                g_HubSkyColor  = HUB_SKY_COLOR_GREEN;
+                g_HubFloorBase = HUB_FLOOR_BASE_GREEN;
+                g_HubFloorLine = HUB_FLOOR_LINE_GREEN;
+            }
+        }
+    }
+}
+
+
+
 void vr_hub_render(const float eyeViewProj[2][16]) {
     if (!sInitDone) vr_hub_init();
+
+    // Update colors from game state
+    vr_hub_update_colors_from_game_state();
 
     GLint prevDepthFunc = GL_LESS;
     glGetIntegerv(GL_DEPTH_FUNC, &prevDepthFunc);
@@ -354,7 +433,7 @@ void vr_hub_render(const float eyeViewProj[2][16]) {
     glEnable(GL_DEPTH_TEST);
     glDepthMask(GL_TRUE);
     glDisable(GL_BLEND);
-    glClearColor(HUB_SKY_COLOR_HORIZON[0], HUB_SKY_COLOR_HORIZON[1], HUB_SKY_COLOR_HORIZON[2], 1.0f);
+    glClearColor(g_HubSkyColor[0], g_HubSkyColor[1], g_HubSkyColor[2], 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
 
@@ -362,9 +441,9 @@ void vr_hub_render(const float eyeViewProj[2][16]) {
     glDepthMask(GL_TRUE);
     glUseProgram(sFloorProg);
     glUniformMatrix4fv(sFloorVpLoc, 2, GL_FALSE, &eyeViewProj[0][0]);
-    glUniform3fv(sFloorBaseLoc, 1, HUB_FLOOR_BASE_COLOR);
-    glUniform3fv(sFloorLineLoc, 1, HUB_FLOOR_LINE_COLOR);
-    glUniform3fv(sFloorFogColorLoc, 1, HUB_SKY_COLOR_HORIZON);
+    glUniform3fv(sFloorBaseLoc, 1, g_HubFloorBase);
+    glUniform3fv(sFloorLineLoc, 1, g_HubFloorLine);
+    glUniform3fv(sFloorFogColorLoc, 1, g_HubSkyColor);
     glUniform1f(sFloorCellLoc, HUB_GRID_CELL_METERS);
     glUniform1f(sFloorFogStartLoc, HUB_FOG_START);
     glUniform1f(sFloorFogEndLoc, HUB_FOG_END);
@@ -407,4 +486,3 @@ void vr_hub_render(const float eyeViewProj[2][16]) {
     if (prevPolyOffsetFill) glEnable(GL_POLYGON_OFFSET_FILL);
     if (prevStencilTest) glEnable(GL_STENCIL_TEST);
 }
-

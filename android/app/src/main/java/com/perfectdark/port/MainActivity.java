@@ -6,6 +6,8 @@ import android.os.Bundle;
 import android.view.View;
 import android.util.Log;
 import java.io.File;
+import android.net.Uri;
+import androidx.core.content.FileProvider;
 
 public class MainActivity extends SDLActivity {
     private static final String TAG = "PerfectDark";
@@ -131,4 +133,39 @@ public class MainActivity extends SDLActivity {
     public native void nativeInit(String dataPath);
     private static native void nativeVrResume();
     public native void nativeDestroy();
+
+    public void installApk(String filePath) {
+        runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                android.util.Log.i("PD_VR_UPDATE", "Java side: installApk on UI thread with: " + filePath);
+                try {
+                    File apkFile = new File(filePath);
+                    if (!apkFile.exists()) {
+                        android.util.Log.e("PD_VR_UPDATE", "Error: APK does not exist!");
+                        return;
+                    }
+
+                    Intent intent = new Intent(Intent.ACTION_VIEW);
+
+                    Uri apkUri = androidx.core.content.FileProvider.getUriForFile(
+                            MainActivity.this,
+                            getApplicationContext().getPackageName() + ".fileprovider",
+                            apkFile
+                    );
+
+                    intent.setDataAndType(apkUri, "application/vnd.android.package-archive");
+                    intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                    intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+
+                    startActivity(intent);
+                    android.util.Log.i("PD_VR_UPDATE", "Installation prompt launched from main thread.");
+
+                } catch (Exception e) {
+                    android.util.Log.e("PD_VR_UPDATE", "Crash intercepted: " + e.getMessage());
+                    e.printStackTrace();
+                }
+            }
+        });
+    }
 }

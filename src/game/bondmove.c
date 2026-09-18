@@ -1469,6 +1469,7 @@ void bmoveProcessInput(bool allowc1x, bool allowc1y, bool allowc1buttons, bool i
                                 movedata.analogstrafe = 0;
                                 movedata.analogwalk = 0;
                                 movedata.analoglean = 0.f;
+
                             }
                             if (PLAYER_EXTCFG().mouseaimmode == MOUSEAIM_LOCKED ||
                                 bgunGetWeaponNum(HAND_RIGHT) == WEAPON_HORIZONSCANNER) {
@@ -1883,7 +1884,7 @@ void bmoveProcessInput(bool allowc1x, bool allowc1y, bool allowc1buttons, bool i
                         }
 
 #ifndef PLATFORM_N64
-                        if (controlmode == CONTROLMODE_PC) {
+                        if (controlmode == CONTROLMODE_PC || controlmode == CONTROLMODE_12) { // VR CONTROLMODE_12
                             if (c2sticky < 0) {
                                 movedata.zoomoutfovpersec = -c2sticky / 70.0f;
 

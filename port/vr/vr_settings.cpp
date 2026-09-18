@@ -6,6 +6,11 @@
 extern "C" float inputRumbleGetStrength(int playernum);
 extern "C" void inputRumbleSetStrength(int playernum, int strength);
 
+#define FS_MAXPATH 256
+extern char g_ActiveExtTexPack[FS_MAXPATH];
+extern "C" void extTexSetPack(const char *newPackName);
+extern "C" void videoSetExternalTextures(bool enable);
+
 extern "C" void vrSettingsSave(void)
 {
     FILE *f = fopen(VR_INI_PATH, "w");
@@ -28,6 +33,7 @@ extern "C" void vrSettingsSave(void)
     fprintf(f, "LeftHandedMode=%d\n", VrLeftHandedMode ? 1 : 0);
     fprintf(f, "SwapJoysticks=%d\n", VrSwapJoysticks ? 1 : 0);
     fprintf(f, "HideArms=%d\n", VrHideArms ? 1 : 0);
+    fprintf(f, "ActiveTexturePack=%s\n", g_ActiveExtTexPack);
     fprintf(f, "; Your standing EYE height in cm -- where your eyes are off the floor, which is\n");
     fprintf(f, "; what the headset reports, roughly 13 cm below the top of your head. Set it from\n");
     fprintf(f, "; the live reading beside the menu slider rather than from your stature.\n");
@@ -72,10 +78,12 @@ extern "C" void vrSettingsLoad(void)
     char key[64];
     float fval;
     int ival;
+    char sval[256];
 
     while (fgets(line, sizeof(line), f)) {
         if (line[0] == '[' || line[0] == '\n' || line[0] == ';' || line[0] == '#') continue;
 
+        // 1. Is it an integer (%d)?
         if (sscanf(line, "%63[^=]=%d", key, &ival) == 2) {
             if (strcmp(key, "ManualReloading") == 0) VrManualReloading = ival != 0;
             else if (strcmp(key, "LaserDotForAll") == 0) VrlaserDotForALL = ival != 0;
@@ -91,8 +99,8 @@ extern "C" void vrSettingsLoad(void)
             else if (strcmp(key, "MatchCharacterHeight") == 0) VrMatchCharacterHeight = (ival != 0);
             else if (strcmp(key, "FistClench") == 0) VrFistClench = ival;
         }
-
-        if (sscanf(line, "%63[^=]=%f", key, &fval) == 2) {
+            // 2. OTHERWISE, is it a floating-point number (%f)?
+        else if (sscanf(line, "%63[^=]=%f", key, &fval) == 2) {
             if (strcmp(key, "Vibration") == 0) inputRumbleGetStrength(fval);
             else if (strcmp(key, "StereoCrosshair") == 0) {
                 if (fval < HUD_STEREO_DEPTH_MIN) fval = HUD_STEREO_DEPTH_MIN;
@@ -125,7 +133,21 @@ extern "C" void vrSettingsLoad(void)
             else if (strcmp(key, "GunOffY") == 0) VrGunOffY = fval;
             else if (strcmp(key, "GunOffZ") == 0) VrGunOffZ = fval;
         }
+            // 3. OTHERWISE, is it text (%s)?
+        else if (sscanf(line, "%63[^=]=%255[^\n]", key, sval) == 2) {
+            if (strcmp(key, "ActiveTexturePack") == 0) {
+                strncpy(g_ActiveExtTexPack, sval, FS_MAXPATH - 1);
+                g_ActiveExtTexPack[FS_MAXPATH - 1] = '\0';
+            }
+        }
     }
 
     fclose(f);
+
+    // Tell the engine to use external textures.
+    // Initialization will be safely handled by the game later via extTexInit().
+    if (g_ActiveExtTexPack[0] != '\0') {
+        extTexSetPack(g_ActiveExtTexPack);
+        videoSetExternalTextures(true);
+    }
 }

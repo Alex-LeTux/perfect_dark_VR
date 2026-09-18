@@ -2,26 +2,38 @@
 #include <atomic>
 #include <string>
 #include <cstdio>
-#include "miniz/miniz.h"
 #include <filesystem>
 #include <istream>
-
 #include <algorithm>
 #include <cctype>
 
+#include "miniz/miniz.h"
+
+// ============================================================================
+// PLATFORM-SPECIFIC INCLUDES
+// ============================================================================
 #ifdef _WIN32
 #include <windows.h>
-#include <urlmon.h>
+    #include <urlmon.h>
 #elif defined(__ANDROID__)
 #include <jni.h>
+#include <SDL.h>
 #endif
 
-
+// ============================================================================
+// EXTERNAL C FUNCTIONS & ENGINE HEADERS
+// ============================================================================
 extern "C" {
+// Include the engine's filesystem header for fsFullPath[cite: 2]
+#include "fs.h"
+
 int extTexInit(void);
+void extTexSetPack(const char *newPackName);
 }
 
-
+// ============================================================================
+// GLOBALS & STATE
+// ============================================================================
 enum DownloadState {
     STATE_IDLE = 0,
     STATE_DOWNLOADING,
@@ -32,19 +44,20 @@ enum DownloadState {
 
 static std::atomic<int> g_CurrentState(STATE_IDLE);
 static std::atomic<float> g_DownloadProgress(0.0f);
+static std::string g_TargetPackFullPath = "";
+static std::string g_TargetPackName = "";
+static std::string g_TargetKeyword = "";
 
-#ifndef __ANDROID__
-const char* TARGET_PACK_KEYWORD = "PD.PLUS.HD.TEXTURE.PACK.v";
-#else
-const char* TARGET_PACK_KEYWORD = "PD.PLUS.HD.TEXTURE.PACK.QUEST.STANDALONE.v";
-#endif
+static char g_DescriptionText[256] = "Fetching info...\n";
+static std::atomic<bool> g_DescFetchStarted(false);
+static std::string g_DescKeyword = "";
 
 // ============================================================================
-// IMPLÉMENTATION WINDOWS
+// WINDOWS IMPLEMENTATION
 // ============================================================================
 #ifdef _WIN32
 
-// Pour récupérer la progression via l'API Windows, on doit fournir cette classe
+// To retrieve progress via the Windows API, this class must be provided
 class NativeDownloadCallback : public IBindStatusCallback {
 public:
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** ppvObject) override { return E_NOINTERFACE; }
@@ -74,12 +87,9 @@ bool PerformNativeDownload(const char* url, const char* filepath) {
 }
 
 // ============================================================================
-// IMPLÉMENTATION ANDROID
+// ANDROID IMPLEMENTATION
 // ============================================================================
 #elif defined(__ANDROID__)
-
-#include <jni.h>
-#include <SDL.h>
 
 // Helper to retrieve the JNI environment via SDL2
 JNIEnv* GetJniEnv() {
@@ -132,6 +142,7 @@ std::string PerformNativeFetchText(const char* url) {
 
     const char* chars = env->GetStringUTFChars(result, nullptr);
     std::string resStr(chars);
+
     env->ReleaseStringUTFChars(result, chars);
     env->DeleteLocalRef(result);
 
@@ -144,24 +155,6 @@ extern "C" JNIEXPORT void JNICALL Java_org_libsdl_app_SDLActivity_updateDownload
 }
 
 #endif
-
-static char g_DescriptionText[256] = "Fetching info...\n";
-static std::atomic<bool> g_DescFetchStarted(false);
-
-// ============================================================================
-// PATH CONFIGURATION (Windows vs Android)
-// ============================================================================
-#ifndef __ANDROID__
-    const char* ZIP_FILE_PATH = "data/temp_assets.zip";
-    const char* EXT_TEX_DIR = "data/ext_tex";
-    const char* EXT_TEX_PREFIX = "data/ext_tex/";
-#else
-const char* ZIP_FILE_PATH = "temp_assets.zip";
-const char* EXT_TEX_DIR = "ext_tex";
-const char* EXT_TEX_PREFIX = "ext_tex/";
-#endif
-
-
 
 // ============================================================================
 // GITHUB API UTILITIES
@@ -186,12 +179,11 @@ std::string ExtractJsonValue(const std::string& json, const std::string& key) {
     return json.substr(pos, endPos - pos);
 }
 
-// 3. Function to find the platform-specific download URL
+// 2. Function to find the platform-specific download URL
 std::string ExtractPlatformDownloadUrl(const std::string& json, const std::string& keyword) {
     size_t offset = 0;
 
     while (true) {
-        // Look for the download link label
         size_t pos = json.find("\"browser_download_url\"", offset);
         if (pos == std::string::npos) return "";
 
@@ -212,7 +204,7 @@ std::string ExtractPlatformDownloadUrl(const std::string& json, const std::strin
     }
 }
 
-// 4. Function to retrieve the file size (in MB)
+// 3. Function to retrieve the file size (in MB)
 double ExtractAssetSizeMB(const std::string& json, const std::string& keyword) {
     size_t offset = 0;
 
@@ -226,7 +218,6 @@ double ExtractAssetSizeMB(const std::string& json, const std::string& keyword) {
         std::string name = json.substr(valPos, endPos - valPos);
 
         if (name.find(keyword) != std::string::npos) {
-            // On cherche la clé "size" juste après
             size_t sizePos = json.find("\"size\"", namePos);
             if (sizePos != std::string::npos) {
                 sizePos = json.find(":", sizePos) + 1;
@@ -241,8 +232,7 @@ double ExtractAssetSizeMB(const std::string& json, const std::string& keyword) {
     }
 }
 
-
-// 5. Function to retrieve the file upload date
+// 4. Function to retrieve the file upload date
 std::string ExtractAssetDate(const std::string& json, const std::string& keyword) {
     size_t offset = 0;
 
@@ -277,9 +267,8 @@ std::string ExtractAssetDate(const std::string& json, const std::string& keyword
     }
 }
 
-// Function that downloads the large JSON text from GitHub
-std::string FetchGitHubReleaseRaw() {
-    const char* url = "https://api.github.com/repos/retro-foundry/Perfect-Dark-Plus-HD-Textures/releases/latest";
+// 5. Function that downloads the large JSON text from GitHub
+std::string FetchGitHubReleaseRaw(const char* url) {
     std::string result = "";
 
 #ifdef _WIN32
@@ -288,7 +277,7 @@ std::string FetchGitHubReleaseRaw() {
     if (hr == S_OK && stream) {
         char buffer[1024];
         ULONG bytesRead = 0;
-        // La réponse JSON est longue, on lit le flux en boucle !
+
         while (SUCCEEDED(stream->Read(buffer, sizeof(buffer) - 1, &bytesRead)) && bytesRead > 0) {
             buffer[bytesRead] = '\0';
             result += buffer;
@@ -302,51 +291,34 @@ std::string FetchGitHubReleaseRaw() {
     return result;
 }
 
-
-
-
 // ============================================================================
 // DESCRIPTION THREAD (Uses the GitHub API)
 // ============================================================================
 void FetchDescWorker() {
-    std::string json = FetchGitHubReleaseRaw();
+    const char* LATEST_URL = "https://api.github.com/repos/retro-foundry/Perfect-Dark-Plus-HD-Textures/releases/latest";
+    const char* BETA_URL = "https://api.github.com/repos/retro-foundry/Perfect-Dark-Plus-HD-Textures/releases/tags/Beta_Release_V0.10";
 
-    // Get the version (e.g. "v1.2")
+    std::string json = FetchGitHubReleaseRaw(LATEST_URL);
+    double sizeMB = ExtractAssetSizeMB(json, g_DescKeyword);
+
+    if (sizeMB == 0.0) {
+        json = FetchGitHubReleaseRaw(BETA_URL);
+        sizeMB = ExtractAssetSizeMB(json, g_DescKeyword);
+    }
+
     std::string version = ExtractJsonValue(json, "tag_name");
-
-    // Get the platform-specific size and date (PC or Quest)
-    double sizeMB = ExtractAssetSizeMB(json, TARGET_PACK_KEYWORD);
-    std::string date = ExtractAssetDate(json, TARGET_PACK_KEYWORD);
+    std::string date = ExtractAssetDate(json, g_DescKeyword);
 
     if (!version.empty() && sizeMB > 0.0 && !date.empty()) {
-        // Full display: Version, Date, and Size
-        snprintf(g_DescriptionText, sizeof(g_DescriptionText), "PD Plus HD Textures Pack\nVersion: %s\nDate: %s\nSize: %.1f MB\n\n", version.c_str(), date.c_str(), sizeMB);
-    }
-    else if (!version.empty() && sizeMB > 0.0) {
-        // If the date cannot be found but the file size is available
-        snprintf(g_DescriptionText, sizeof(g_DescriptionText), "PD Plus HD Textures Pack\nVersion: %s\nSize: %.1f MB\n\n", version.c_str(), sizeMB);
+        snprintf(g_DescriptionText, sizeof(g_DescriptionText), "Version: %s\nDate: %s\nSize: %.1f MB\n", version.c_str(), date.c_str(), sizeMB);
     }
     else if (!version.empty()) {
-        // If only the version is available
-        snprintf(g_DescriptionText, sizeof(g_DescriptionText), "PD Plus HD Textures Pack\nVersion: %s\n\n", version.c_str());
+        snprintf(g_DescriptionText, sizeof(g_DescriptionText), "Version: %s\n", version.c_str());
     }
     else {
-        // Full fallback in case of an internet or API error
-        snprintf(g_DescriptionText, sizeof(g_DescriptionText), "PD Plus HD Textures Pack\n\n");
+        snprintf(g_DescriptionText, sizeof(g_DescriptionText), "Error fetching description!\n");
     }
 }
-
-extern "C" {
-const char* GetDescriptionText(void) {
-    bool expected = false;
-    if (g_DescFetchStarted.compare_exchange_strong(expected, true)) {
-        std::thread t(FetchDescWorker);
-        t.detach();
-    }
-    return g_DescriptionText;
-}
-}
-
 
 // ============================================================================
 // MAIN THREAD (Uses the GitHub API)
@@ -355,14 +327,19 @@ void DownloadAndExtractWorker() {
     g_CurrentState.store(STATE_DOWNLOADING);
     g_DownloadProgress.store(0.0f);
 
-    // --- 1. RETRIEVE THE DOWNLOAD LINK VIA THE API ---
-    std::string json = FetchGitHubReleaseRaw();
+    const char* LATEST_URL = "https://api.github.com/repos/retro-foundry/Perfect-Dark-Plus-HD-Textures/releases/latest";
+    const char* BETA_URL = "https://api.github.com/repos/retro-foundry/Perfect-Dark-Plus-HD-Textures/releases/tags/Beta_Release_V0.10";
 
-    // Use our new function with the platform keyword
-    std::string link = ExtractPlatformDownloadUrl(json, TARGET_PACK_KEYWORD);
+    // --- 1. RETRIEVE THE DOWNLOAD LINK VIA THE API ---
+    std::string json = FetchGitHubReleaseRaw(LATEST_URL);
+    std::string link = ExtractPlatformDownloadUrl(json, g_TargetKeyword);
 
     if (link.empty()) {
-        // If the GitHub API is unreachable or the file does not exist for this platform
+        json = FetchGitHubReleaseRaw(BETA_URL);
+        link = ExtractPlatformDownloadUrl(json, g_TargetKeyword);
+    }
+
+    if (link.empty()) {
         g_CurrentState.store(STATE_ERROR);
         return;
     }
@@ -370,24 +347,27 @@ void DownloadAndExtractWorker() {
     char dynamicUrl[512] = {0};
     snprintf(dynamicUrl, sizeof(dynamicUrl), "%s", link.c_str());
 
-    // --- 2. PREPARE THE FOLDER ---
-    std::filesystem::create_directories(EXT_TEX_DIR);
+    // --- 2. PREPARE THE FOLDER & DYNAMIC ZIP PATH ---
+    std::filesystem::create_directories(g_TargetPackFullPath);
+
+    // Dynamically set the ZIP path relative to the target pack folder
+    std::string zipFilePath = g_TargetPackFullPath + "_temp.zip";
 
     // --- 3. NATIVE ZIP DOWNLOAD ---
-    bool downloadSuccess = PerformNativeDownload(dynamicUrl, ZIP_FILE_PATH);
+    bool downloadSuccess = PerformNativeDownload(dynamicUrl, zipFilePath.c_str());
 
     if (!downloadSuccess) {
         g_CurrentState.store(STATE_ERROR);
         return;
     }
 
-    // --- DECOMPRESSION (miniz) ---
+    // --- 4. DECOMPRESSION (miniz) ---
     g_CurrentState.store(STATE_EXTRACTING);
 
     mz_zip_archive zip_archive;
     memset(&zip_archive, 0, sizeof(zip_archive));
 
-    if (!mz_zip_reader_init_file(&zip_archive, ZIP_FILE_PATH, 0)) {
+    if (!mz_zip_reader_init_file(&zip_archive, zipFilePath.c_str(), 0)) {
         g_CurrentState.store(STATE_ERROR);
         return;
     }
@@ -401,16 +381,14 @@ void DownloadAndExtractWorker() {
 
         std::string originalPath = file_stat.m_filename;
         std::string targetPath;
-
         size_t firstSlash = originalPath.find('/');
 
         if (firstSlash != std::string::npos) {
             std::string subPath = originalPath.substr(firstSlash + 1);
             if (subPath.empty()) continue;
-
-            targetPath = std::string(EXT_TEX_PREFIX) + subPath;
+            targetPath = g_TargetPackFullPath + "/" + subPath;
         } else {
-            targetPath = std::string(EXT_TEX_PREFIX) + originalPath;
+            targetPath = g_TargetPackFullPath + "/" + originalPath;
         }
 
         std::filesystem::path filePath(targetPath);
@@ -429,22 +407,51 @@ void DownloadAndExtractWorker() {
     }
 
     mz_zip_reader_end(&zip_archive);
-    remove(ZIP_FILE_PATH);
-    extTexInit();
 
+    // Clean up the dynamically created zip file
+    remove(zipFilePath.c_str());
+
+    // Set the successfully downloaded pack
+    extTexSetPack(g_TargetPackName.c_str());
     g_CurrentState.store(STATE_FINISHED);
+
 }
 
 // ============================================================================
-// C INTERFACE (Linked with optionsmenu.c)
+// C INTERFACE
 // ============================================================================
 extern "C" {
 
-void StartAssetDownloadThread(void) {
-    if (g_CurrentState.load() == STATE_DOWNLOADING ||
-        g_CurrentState.load() == STATE_EXTRACTING) {
+void StartFetchingDescription(const char* keyword) {
+    g_DescKeyword = keyword;
+    g_DescFetchStarted.store(false);
+    snprintf(g_DescriptionText, sizeof(g_DescriptionText), "Fetching info...\n");
+}
+
+const char* GetDescriptionText(void) {
+    bool expected = false;
+    if (g_DescFetchStarted.compare_exchange_strong(expected, true)) {
+        std::thread t(FetchDescWorker);
+        t.detach();
+    }
+    return g_DescriptionText;
+}
+
+void StartAssetDownloadThread(const char* fullPath_ignored, const char* packName, const char* keyword) {
+    if (g_CurrentState.load() == STATE_DOWNLOADING || g_CurrentState.load() == STATE_EXTRACTING) {
         return;
     }
+
+    // We completely ignore 'fullPath_ignored' sent by the UI.
+    // Instead, we use fsFullPath and the packName to build the true robust path,
+    // exactly like ext_tex.c does for loading[cite: 2].
+    char relPath[512];
+    snprintf(relPath, sizeof(relPath), "$S/texture-packs/%s", packName);
+
+    g_TargetPackFullPath = fsFullPath(relPath);
+    g_TargetPackName = packName;
+    g_TargetKeyword = keyword;
+
     std::thread worker(DownloadAndExtractWorker);
     worker.detach();
 }
@@ -462,22 +469,19 @@ void ResetAssetDownloadState(void) {
     g_DownloadProgress.store(0.0f);
 }
 
+void DeleteAssetFolderFullPath(const char* fullPath) {
+    // Even if the UI sends a broken path containing "app_process",
+    // we isolate the pack name at the end of the path...
+    std::filesystem::path p(fullPath);
+    std::string packName = p.filename().string();
 
-void DeleteAssetFolder(void) {
-    std::thread t([]() {
-        std::error_code ec;
-        std::filesystem::remove_all(EXT_TEX_DIR, ec);
-        ResetAssetDownloadState();
-    });
-    t.detach();
-}
+    // ...and we rebuild the true system path via fsFullPath!
+    char relPath[512];
+    snprintf(relPath, sizeof(relPath), "$S/texture-packs/%s", packName.c_str());
+    std::string resolvedPath = fsFullPath(relPath);
 
-int DoesAssetFolderExist(void) {
     std::error_code ec;
-    if (std::filesystem::exists(EXT_TEX_DIR, ec)) {
-        return 1;
-    }
-    return 0;
+    std::filesystem::remove_all(resolvedPath, ec);
+    ResetAssetDownloadState();
 }
-
 }

@@ -15,26 +15,818 @@
 #include "input.h"
 #include "config.h"
 
+#include <dirent.h>
+#include <sys/stat.h>
+#include <fs.h>
+#include <game/game_1531a0.h>
+#include <bss.h>
+#include <game/menugfx.h>
+#include "ext_tex.h" // Pour extTexSetPack
+
 #include "../vr/vr_log.h"
 
+// ============================================================================
+// Global Menu Image cover
+// ============================================================================
+#include "menuimage.h"
 
-//static char gExtendedGameFovLabel[80];
+// Déclarations
+extern const u8 g_MenuImageUltimatePlusHd[];
+extern const u8 g_MenuImageXblaPlusHd[];
+
+static struct menuimage g_PackImages[2];
+static bool g_ImagesRegistered = false;
+
+// ============================================================================
+// GLOBAL VARIABLES & EXTERNAL DEPENDENCIES
+// ============================================================================
+extern void vrSettingsSave();
 s32 g_ExtMenuPlayer = 0;
 static struct menudialogdef *g_ExtNextDialog = NULL;
 static s32 g_BindIndex = 0;
 static u32 g_BindContKey = 0;
 
-// download textures pack
-extern void StartAssetDownloadThread(void);
+// Asset Download Thread Functions
+extern void StartAssetDownloadThread(const char* fullPath, const char* packName, const char* keyword);
 extern int GetAssetDownloadState(void);
 extern float GetAssetDownloadProgress(void);
 extern const char* GetDescriptionText(void);
-extern void DeleteAssetFolder(void);
-extern int DoesAssetFolderExist(void);
-//---
+extern void ResetAssetDownloadState(void);
+extern void StartFetchingDescription(const char* keyword);
+
+// File System Functions
+extern void DeleteAssetFolderFullPath(const char* fullPath);
+extern void ScanTexturePacksFolder(void);
+
+// Texture Pack Globals
+#define MAX_DETECTED_PACKS 32
+static char g_PackNames[MAX_DETECTED_PACKS][FS_MAXPATH];
+static s32 g_NumDetectedPacks = 0;
+static s32 g_SelectedPackIndex = 0;
+extern char g_ActiveExtTexPack[FS_MAXPATH];
+
+// Forward Declarations
+static MenuItemHandlerResult menuhandlerSelectTexturePack(s32 operation, struct menuitem *item, union handlerdata *data);
+extern struct menuitem g_ExtendedDownloadMenuItems[];
+struct menuitem g_TexturePacksListMenuItems[]; // Required for pointer arithmetic
+
+
+
+
+// Update the game
+extern int CheckUpdateStatus(const char* currentVersion);
+extern const char *VR_Version;
+extern void StartFetchingUpdateDescription(void);
+extern const char* GetUpdateDescriptionText(void);
+extern void StartGameUpdateThread(void);
+extern int GetGameUpdateState(void);
+extern float GetGameUpdateProgress(void);
+extern void ResetGameUpdateState(void);
+extern struct menuitem g_ExtendedUpdateMenuItems[];
+
+// ============================================================================
+// CONFIRM UPDATE MENU
+// ============================================================================
+
+static MenuItemHandlerResult menuhandlerConfirmUpdateYes(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+    if (operation == MENUOP_SET) {
+        StartGameUpdateThread();
+        menuPopDialog(); // Close the confirmation dialog
+    }
+    return 0;
+}
+
+struct menuitem g_ConfirmUpdateMenuItems[] = {
+        { MENUITEMTYPE_LABEL, 0, MENUITEMFLAG_SELECTABLE_CENTRE | MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"Warning: The game will restart.\n", 0, NULL },
+        { MENUITEMTYPE_LABEL, 0, MENUITEMFLAG_SELECTABLE_CENTRE | MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"Any unsaved progress will be lost.\n", 0, NULL },
+        { MENUITEMTYPE_SEPARATOR, 0, 0, 0, 0, NULL },
+        { MENUITEMTYPE_SELECTABLE, 0, MENUITEMFLAG_SELECTABLE_CENTRE | MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"Confirm & Update\n", 0, menuhandlerConfirmUpdateYes },
+        { MENUITEMTYPE_SELECTABLE, 0, MENUITEMFLAG_SELECTABLE_CENTRE | MENUITEMFLAG_SELECTABLE_CLOSESDIALOG | MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"Cancel\n", 0, NULL },
+        { MENUITEMTYPE_END }
+};
+
+struct menudialogdef g_ConfirmUpdateMenuDialog = {
+        MENUDIALOGTYPE_DEFAULT,
+        (uintptr_t)"Confirm Update",
+        g_ConfirmUpdateMenuItems,
+        NULL,
+        MENUDIALOGFLAG_LITERAL_TEXT,
+        NULL,
+};
+
+// ============================================================================
+// GAME UPDATE MENU
+// ============================================================================
+
+// Handler for the download button
+static char g_UpdateButtonText[64] = "Checking version...\n";
+
+static MenuItemHandlerResult menuhandlerDownloadUpdate(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+    int dlState = GetGameUpdateState();
+    int upStatus = CheckUpdateStatus(VR_Version);
+
+    if (operation == MENUOP_SET) {
+        if (dlState == 0 || dlState == 3) {
+            if (upStatus == 1) {
+                // Open the save data loss confirmation dialog
+                menuPushDialog(&g_ConfirmUpdateMenuDialog);
+            }
+        }
+    }
+    else if (operation == MENUOP_CHECKDISABLED) {
+        g_ExtendedUpdateMenuItems[2].param2 = (uintptr_t)GetUpdateDescriptionText();
+
+        if (dlState == 1) { // Download in progress
+            snprintf(g_UpdateButtonText, sizeof(g_UpdateButtonText), "Downloading: %.1f%%\n", GetGameUpdateProgress());
+            item->param2 = (uintptr_t)g_UpdateButtonText;
+            return true;
+        } else if (dlState == 2) { // Script in progress
+            snprintf(g_UpdateButtonText, sizeof(g_UpdateButtonText), "Applying Update...\n");
+            item->param2 = (uintptr_t)g_UpdateButtonText;
+            return true;
+        } else if (dlState == 3) { // Download error
+            snprintf(g_UpdateButtonText, sizeof(g_UpdateButtonText), "Error! Try Again\n");
+            item->param2 = (uintptr_t)g_UpdateButtonText;
+            return false;
+        } else {
+            // No download in progress (dlState == 0), handle the display based on the version status
+            if (upStatus == 0) {
+                snprintf(g_UpdateButtonText, sizeof(g_UpdateButtonText), "Checking version...\n");
+                item->param2 = (uintptr_t)g_UpdateButtonText;
+                return true; // Disabled while checking
+            } else if (upStatus == 2) {
+                snprintf(g_UpdateButtonText, sizeof(g_UpdateButtonText), "Game is Up To Date\n");
+                item->param2 = (uintptr_t)g_UpdateButtonText;
+                return true; // Disabled because already up to date
+            } else if (upStatus == 3) {
+                snprintf(g_UpdateButtonText, sizeof(g_UpdateButtonText), "Update check failed\n");
+                item->param2 = (uintptr_t)g_UpdateButtonText;
+                return true; // Disabled if GitHub is unreachable
+            } else { // upStatus == 1 (Update available)
+                snprintf(g_UpdateButtonText, sizeof(g_UpdateButtonText), "Download & Install Update\n");
+                item->param2 = (uintptr_t)g_UpdateButtonText;
+                return false; // The only situation where the button is enabled!
+            }
+        }
+    }
+
+    return 0;
+}
+
+// Menu Items for the Update Dialog
+struct menuitem g_ExtendedUpdateMenuItems[] = {
+        {
+                MENUITEMTYPE_LABEL, 0, MENUITEMFLAG_LITERAL_TEXT,
+                                        (uintptr_t)"Perfect Dark VR Update\n",
+                                           0, NULL,
+        },
+        { MENUITEMTYPE_SEPARATOR, 0, 0, 0, 0, NULL },
+        {
+                MENUITEMTYPE_LABEL, 0, MENUITEMFLAG_LITERAL_TEXT,
+                                        (uintptr_t)"Fetching info...\n", // <-- Replaced dynamically by GetUpdateDescriptionText()
+                                           0, NULL,
+        },
+        {
+                MENUITEMTYPE_LABEL, 0, MENUITEMFLAG_LITERAL_TEXT | MENUITEMFLAG_SMALLFONT,
+                (uintptr_t)"https://github.com/Alex-LeTux/perfect_dark_VR\n",
+                0, NULL,
+        },
+        { MENUITEMTYPE_SEPARATOR, 0, 0, 0, 0, NULL },
+        {
+                MENUITEMTYPE_SELECTABLE, 0, MENUITEMFLAG_LITERAL_TEXT,
+                                        (uintptr_t)g_UpdateButtonText, // <-- Dynamic button text
+                                           0, menuhandlerDownloadUpdate,
+        },
+        { MENUITEMTYPE_SEPARATOR, 0, 0, 0, 0, NULL },
+        {
+                MENUITEMTYPE_SELECTABLE, 0, MENUITEMFLAG_SELECTABLE_CLOSESDIALOG,
+                                        L_OPTIONS_213, // "Back"
+                                           0, NULL,
+        },
+        { MENUITEMTYPE_END },
+};
+
+struct menudialogdef g_ExtendedUpdateMenuDialog = {
+        MENUDIALOGTYPE_DEFAULT,
+        (uintptr_t)"Game Update",
+        g_ExtendedUpdateMenuItems,
+        NULL,
+        MENUDIALOGFLAG_LITERAL_TEXT,
+        NULL,
+};
+
+// Handler to open the Update Menu and start fetching info
+static MenuItemHandlerResult menuhandlerOpenUpdateMenu(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+    if (operation == MENUOP_SET) {
+        int dlState = GetGameUpdateState();
+        if (dlState == 3 /* Error */) {
+            ResetGameUpdateState();
+        }
+
+        StartFetchingUpdateDescription();
+        menuPushDialog(&g_ExtendedUpdateMenuDialog);
+    }
+    return 0;
+}
+
+
+
+
+
+
+// ============================================================================
+// TEXTURE PACK PROFILES
+// ============================================================================
+
+struct DownloadPackProfile {
+    const char* title;
+    const char* folderName;
+    const char* keyword;
+    const char* description;
+};
+
+static const struct DownloadPackProfile g_PackProfiles[] = {
+        {
+                "PD_Forever_Plus_HD_VR",
+                "PD_Forever_Plus_HD_VR",
+                "PD.Forever.Plus.HD.Quest.Standalone.v",
+                "PD Forever Plus HD\nHoward Phillips\nFaithful to the N64 art, for play without the XBLA\nmodels. Converted and completed by Rafccq, Enigmata,\nAtari-Dude and Parabolee. Fonts by Trov.\n"
+        },
+        {
+                "XBLA_Plus_HD_VR",
+                "XBLA_Plus_HD_VR",
+                "XBLA.Plus.HD.Quest.Standalone.v",
+                "XBLA Plus HD\nParabolee of Retro Foundry\nFor the XBLA models: the release's own textures,\nupscaled and enhanced and kept faithful to the Xbox\n360 look. Fonts by Trov.\n"
+        }
+};
+
+static int g_ActiveDownloadProfile = 0;
+static char g_DownloadButtonText[64] = "Download & install\n";
+
+
+// ============================================================================
+// DOWNLOAD CONFIRMATION WINDOW
+// ============================================================================
+
+static MenuItemHandlerResult menuhandlerConfirmDownloadYes(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+    if (operation == MENUOP_SET) {
+        char relPath[FS_MAXPATH];
+        snprintf(relPath, sizeof(relPath), "$S/texture-packs/%s", g_PackProfiles[g_ActiveDownloadProfile].folderName);
+
+        // Pass the generated path, folder name, and GitHub keyword
+        StartAssetDownloadThread(
+                fsFullPath(relPath),
+                g_PackProfiles[g_ActiveDownloadProfile].folderName,
+                g_PackProfiles[g_ActiveDownloadProfile].keyword
+        );
+
+        menuPopDialog();
+    }
+    return 0;
+}
+
+struct menuitem g_ConfirmDownloadMenuItems[] = {
+        { MENUITEMTYPE_LABEL, 0, MENUITEMFLAG_SELECTABLE_CENTRE | MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"This will download and extract\n", 0, NULL },
+        { MENUITEMTYPE_LABEL, 0, MENUITEMFLAG_SELECTABLE_CENTRE | MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"the HD Texture Pack.\n", 0, NULL },
+        { MENUITEMTYPE_SEPARATOR, 0, 0, 0, 0, NULL },
+        { MENUITEMTYPE_SELECTABLE, 0, MENUITEMFLAG_SELECTABLE_CENTRE | MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"Yes, download it\n", 0, menuhandlerConfirmDownloadYes },
+        { MENUITEMTYPE_SELECTABLE, 0, MENUITEMFLAG_SELECTABLE_CENTRE | MENUITEMFLAG_SELECTABLE_CLOSESDIALOG | MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"Cancel\n", 0, NULL },
+        { MENUITEMTYPE_END }
+};
+
+struct menudialogdef g_ConfirmDownloadMenuDialog = {
+        MENUDIALOGTYPE_DEFAULT,
+        (uintptr_t)"Confirm Download",
+        g_ConfirmDownloadMenuItems,
+        NULL,
+        MENUDIALOGFLAG_LITERAL_TEXT,
+        NULL,
+};
+
+
+// ============================================================================
+// DELETION CONFIRMATION WINDOW
+// ============================================================================
+
+static MenuItemHandlerResult menuhandlerConfirmDeleteYes(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+    if (operation == MENUOP_SET) {
+        if (g_ActiveExtTexPack[0] != '\0') {
+            char relPath[FS_MAXPATH];
+            snprintf(relPath, sizeof(relPath), "$S/texture-packs/%s", g_ActiveExtTexPack);
+
+            // 1. Recursive deletion via C++
+            DeleteAssetFolderFullPath(fsFullPath(relPath));
+
+            // 2. Clear memory (revert to N64 textures)
+            extTexSetPack(NULL);
+
+            // 3. Auto-refresh the dropdown list!
+            g_SelectedPackIndex = 0;
+            ScanTexturePacksFolder();
+        }
+        menuPopDialog();
+    }
+    return 0;
+}
+
+struct menuitem g_ConfirmDeleteMenuItems[] = {
+        { MENUITEMTYPE_LABEL, 0, MENUITEMFLAG_SELECTABLE_CENTRE | MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"This will delete\n", 0, NULL },
+        { MENUITEMTYPE_LABEL, 0, MENUITEMFLAG_SELECTABLE_CENTRE | MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"the HD Texture Pack from your device.\n", 0, NULL },
+        { MENUITEMTYPE_SEPARATOR, 0, 0, 0, 0, NULL },
+        { MENUITEMTYPE_SELECTABLE, 0, MENUITEMFLAG_SELECTABLE_CENTRE | MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"Yes, delete it\n", 0, menuhandlerConfirmDeleteYes },
+        { MENUITEMTYPE_SELECTABLE, 0, MENUITEMFLAG_SELECTABLE_CENTRE | MENUITEMFLAG_SELECTABLE_CLOSESDIALOG | MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"Cancel\n", 0, NULL },
+        { MENUITEMTYPE_END }
+};
+
+struct menudialogdef g_ConfirmDeleteMenuDialog = {
+        MENUDIALOGTYPE_DEFAULT,
+        (uintptr_t)"Confirm Deletion",
+        g_ConfirmDeleteMenuItems,
+        NULL,
+        MENUDIALOGFLAG_LITERAL_TEXT,
+        NULL,
+};
+
+
+// ============================================================================
+// DOWNLOAD PROGRESS MENU
+// ============================================================================
+
+static MenuItemHandlerResult menuhandlerDownloadAssets(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+    int state = GetAssetDownloadState();
+
+    if (operation == MENUOP_SET) {
+        if (state == 0 || state == 4) {
+            menuPushDialog(&g_ConfirmDownloadMenuDialog);
+        }
+    }
+    else if (operation == MENUOP_CHECKDISABLED) {
+
+        g_ExtendedDownloadMenuItems[2].param2 = (uintptr_t)GetDescriptionText(); // replace "Please wait...\n"
+
+        // Update the text based on the state of the C++ worker
+        if (state == 1) { // STATE_DOWNLOADING
+            snprintf(g_DownloadButtonText, sizeof(g_DownloadButtonText), "Downloading: %.1f%% Please wait...\n", GetAssetDownloadProgress());
+            item->param2 = (uintptr_t)g_DownloadButtonText;
+            return true; // Returning true gray out and disables the button
+
+        } else if (state == 2) { // STATE_EXTRACTING
+            snprintf(g_DownloadButtonText, sizeof(g_DownloadButtonText), "Extracting: %.1f%% Please wait...\n", GetAssetDownloadProgress());
+            item->param2 = (uintptr_t)g_DownloadButtonText;
+            return true;
+
+        } else if (state == 3) { // Finished!
+            snprintf(g_DownloadButtonText, sizeof(g_DownloadButtonText), "Finished!\n");
+            item->param2 = (uintptr_t)g_DownloadButtonText;
+            return true;
+
+        } else if (state == 4) { // STATE_ERROR
+            snprintf(g_DownloadButtonText, sizeof(g_DownloadButtonText), "Error! Try Again\n");
+            item->param2 = (uintptr_t)g_DownloadButtonText;
+
+        } else { // STATE_IDLE
+            snprintf(g_DownloadButtonText, sizeof(g_DownloadButtonText), "Download & Install\n");
+            item->param2 = (uintptr_t)g_DownloadButtonText;
+        }
+
+        return false;
+    }
+
+    return 0;
+}
+
+
+
+extern struct menudialogdef g_ExtendedDownloadMenuDialog;
+
+static MenuItemHandlerResult menuhandlerDrawPackPoster(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+    if (operation == MENUOP_RENDER) {
+        Gfx *gdl = data->type19.gdl;
+        struct menuitemrenderdata *renderdata = data->type19.renderdata2;
+        struct menudialog *dialog = menuIsDialogOpen(&g_ExtendedDownloadMenuDialog);
+
+        if (!dialog) return (intptr_t)gdl;
+
+        s32 textheight = 0;
+        s32 textwidth = 0;
+        textMeasure(&textheight, &textwidth, menuResolveParam2Text(item), g_CharsHandelGothicSm, g_FontHandelGothicSm, 0);
+
+        s32 height = textheight - 2;
+        if (height < 10) height = 120; // Fallback safety
+        s32 width = height * 2 / 3;
+
+        s32 x1 = dialog->x + (dialog->width - width) / 2;
+        s32 y1 = renderdata->y + 1;
+
+        // Background rectangle (serves as a clean border)
+        gdl = menugfxDrawFilledRect(gdl, x1 - 1, y1 - 1, x1 + width + 1, y1 + height + 1, renderdata->colour, renderdata->colour);
+
+        // Draw the image
+        if (g_ActiveDownloadProfile >= 0 && g_ActiveDownloadProfile < 2) {
+            gdl = menuImageDraw(gdl, &g_PackImages[g_ActiveDownloadProfile], x1, y1, x1 + width, y1 + height, 255);
+        }
+
+        return (intptr_t)gdl;
+    }
+    return 0;
+}
+
+struct menuitem g_ExtendedDownloadMenuItems[] = {
+        {
+                MENUITEMTYPE_LABEL, 0, MENUITEMFLAG_LITERAL_TEXT | MENUITEMFLAG_SMALLFONT,
+                (uintptr_t)"Please wait...\n", // <-- Replaced by info from g_PackProfiles
+                0, NULL,
+        },
+        // --- IMAGE COVER ---
+        {
+                MENUITEMTYPE_LABEL, 0, MENUITEMFLAG_LITERAL_TEXT | MENUITEMFLAG_LIST_CUSTOMRENDER,
+                (uintptr_t)"\n\n\n\n\n\n\n\n\n\n",
+                0, menuhandlerDrawPackPoster,
+        },
+        // -----------------------------
+        {
+                MENUITEMTYPE_LABEL, 0, MENUITEMFLAG_LITERAL_TEXT,
+                                        (uintptr_t)"Please wait...\n", // <-- Replaced by GetDescriptionText() (version, size, etc.)
+                                           0, NULL,
+        },
+        {
+                MENUITEMTYPE_LABEL, 0, MENUITEMFLAG_LITERAL_TEXT | MENUITEMFLAG_SMALLFONT,
+                (uintptr_t)"https://github.com/retro-foundry/\nPerfect-Dark-Plus-HD-Textures\n",
+                0, NULL,
+        },
+        { MENUITEMTYPE_SEPARATOR, 0, 0, 0, 0, NULL },
+        {
+                MENUITEMTYPE_SELECTABLE, 0, MENUITEMFLAG_LITERAL_TEXT,
+                                        (uintptr_t)g_DownloadButtonText, // <-- Points to dynamic variable
+                                           0, menuhandlerDownloadAssets,
+        },
+        { MENUITEMTYPE_SEPARATOR, 0, 0, 0, 0, NULL },
+        {
+                MENUITEMTYPE_SELECTABLE, 0, MENUITEMFLAG_SELECTABLE_CLOSESDIALOG,
+                                        L_OPTIONS_213, // "Back"
+                                           0, NULL,
+        },
+        { MENUITEMTYPE_END },
+};
+
+struct menudialogdef g_ExtendedDownloadMenuDialog = {
+        MENUDIALOGTYPE_DEFAULT,
+        (uintptr_t)"Texture Pack",
+        g_ExtendedDownloadMenuItems,
+        NULL,
+        MENUDIALOGFLAG_LITERAL_TEXT,
+        NULL,
+};
+
+
+// ============================================================================
+// TEXTURE PACKS SCANNING & LIST MENU
+// ============================================================================
+
+void ScanTexturePacksFolder(void)
+{
+    g_NumDetectedPacks = 0;
+
+    // The first option is always "None" (Disabled)
+    strcpy(g_PackNames[g_NumDetectedPacks++], "None (Disabled)");
+
+    const char *packsDir = fsFullPath("$S/texture-packs");
+    DIR *dr = opendir(packsDir);
+
+    if (dr != NULL) {
+        struct dirent *de;
+        while ((de = readdir(dr)) != NULL && g_NumDetectedPacks < MAX_DETECTED_PACKS) {
+            if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0) continue;
+
+            char fullPath[FS_MAXPATH];
+            snprintf(fullPath, sizeof(fullPath), "%s/%s", packsDir, de->d_name);
+
+            struct stat stbuf;
+            if (stat(fullPath, &stbuf) == 0 && S_ISDIR(stbuf.st_mode)) {
+                // It's a folder, add it to the list
+                strncpy(g_PackNames[g_NumDetectedPacks], de->d_name, FS_MAXPATH - 1);
+                g_PackNames[g_NumDetectedPacks][FS_MAXPATH - 1] = '\0';
+                g_NumDetectedPacks++;
+            }
+        }
+        closedir(dr);
+    }
+}
+
+static MenuItemHandlerResult menuhandlerSelectTexturePack(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+    // Static variable to remember the previous state
+    static int lastDownloadState = 0;
+
+    switch (operation) {
+        case MENUOP_CHECKDISABLED: {
+            int currentState = GetAssetDownloadState();
+
+            // If the download has just finished
+            if (currentState == 3 && lastDownloadState != 3) {
+                // 1. Rescan the disk to find the new folder
+                ScanTexturePacksFolder();
+
+                // 2. Update the selected index to match the active pack
+                // (The C++ thread already called extTexSetPack, so g_ActiveExtTexPack has the correct name)
+                g_SelectedPackIndex = 0;
+                for (int i = 0; i < g_NumDetectedPacks; i++) {
+                    if (strcmp(g_PackNames[i], g_ActiveExtTexPack) == 0) {
+                        g_SelectedPackIndex = i;
+                        extTexSetPack(g_PackNames[g_SelectedPackIndex]);
+                        videoSetExternalTextures(true);
+                        break;
+                    }
+                }
+            }
+
+            lastDownloadState = currentState;
+
+            // Gray out the dropdown during download (states 1 and 2)
+            if (currentState == 1 || currentState == 2) {
+                return true;
+            }
+
+            return false; // Otherwise it is active
+        }
+
+        case MENUOP_GETOPTIONCOUNT:
+            data->dropdown.value = g_NumDetectedPacks;
+            break;
+
+        case MENUOP_GETOPTIONTEXT:
+            return (intptr_t)g_PackNames[data->dropdown.value];
+
+        case MENUOP_SET:
+            g_SelectedPackIndex = data->dropdown.value;
+            if (g_SelectedPackIndex == 0) {
+                extTexSetPack(NULL);
+                videoSetExternalTextures(false);
+            } else {
+                extTexSetPack(g_PackNames[g_SelectedPackIndex]);
+                videoSetExternalTextures(true);
+            }
+            vrSettingsSave();
+            break;
+
+        case MENUOP_GETSELECTEDINDEX:
+            // Re-align the UI index with the active pack in memory
+            g_SelectedPackIndex = 0;
+
+            if (g_ActiveExtTexPack[0] != '\0') {
+                for (int i = 0; i < g_NumDetectedPacks; i++) {
+                    if (strcmp(g_PackNames[i], g_ActiveExtTexPack) == 0) {
+                        g_SelectedPackIndex = i;
+                        break;
+                    }
+                }
+            }
+            data->dropdown.value = g_SelectedPackIndex;
+            break;
+    }
+
+    return 0;
+}
+
+static MenuItemHandlerResult menuhandlerDeleteAssets(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+    if (operation == MENUOP_SET) {
+        menuPushDialog(&g_ConfirmDeleteMenuDialog);
+    }
+    else if (operation == MENUOP_CHECKDISABLED) {
+        int state = GetAssetDownloadState();
+
+        if (state == 1 || state == 2) {
+            item->param2 = (uintptr_t)"Delete Texture Pack\n";
+            return true; // Grayed out
+        }
+
+        // Check if a pack is selected via our global variable
+        if (g_ActiveExtTexPack[0] != '\0') {
+            item->param2 = (uintptr_t)"Delete Selected Pack\n";
+            return false; // Active
+        } else {
+            item->param2 = (uintptr_t)"No Pack Selected\n";
+            return true;  // Grayed out
+        }
+    }
+    return 0;
+}
+
+
+static MenuItemHandlerResult menuhandlerOpenDownloadMenu(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+    if (operation == MENUOP_SET) {
+        g_ActiveDownloadProfile = item - g_TexturePacksListMenuItems - 3;
+
+        int dlState = GetAssetDownloadState();
+        if (dlState == 3 || dlState == 4) {
+            ResetAssetDownloadState();
+        }
+
+        g_ExtendedDownloadMenuDialog.title = (uintptr_t)g_PackProfiles[g_ActiveDownloadProfile].title;
+        g_ExtendedDownloadMenuItems[0].param2 = (uintptr_t)g_PackProfiles[g_ActiveDownloadProfile].description;
+
+        StartFetchingDescription(g_PackProfiles[g_ActiveDownloadProfile].keyword);
+        menuPushDialog(&g_ExtendedDownloadMenuDialog);
+    }
+    return 0;
+}
+
+
+extern struct menudialogdef g_TexturePacksListMenuDialog;
+
+static MenuItemHandlerResult menuhandlerBlueHeader(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+    if (operation == MENUOP_RENDER) {
+        extern s32 viGetWidth(void);
+        extern s32 viGetHeight(void);
+
+        Gfx *gdl = data->type19.gdl;
+        struct menuitemrenderdata *renderdata = data->type19.renderdata2;
+
+        // Récupère les informations de la fenêtre actuellement ouverte
+        struct menudialog *dialog = menuIsDialogOpen(&g_TexturePacksListMenuDialog);
+
+        s32 x1, x2;
+        if (dialog) {
+            // Adjust to the window width
+            x1 = dialog->x;
+            x2 = dialog->x + dialog->width;
+        } else {
+            // Safety fallback in case the window cannot be found
+            x1 = renderdata->x - 2;
+            x2 = x1 + 235;
+        }
+
+        s32 y1 = renderdata->y + 1;
+        s32 y2 = y1 + 11;
+        u32 bgColor = 0x0033AAFF;
+
+        // 1. Draw the adaptive blue rectangle
+        gdl = menugfxDrawFilledRect(gdl, x1, y1, x2, y2, bgColor, bgColor);
+
+        // 2. Draw the text on top
+        // Position the text 4 pixels from the left edge of our blue bar
+        s32 textX = x1 + 4;
+        s32 textY = renderdata->y + 2;
+        u32 textColor = 0xFFFFFFFF;
+
+        gdl = text0f153628(gdl);
+        gdl = textRenderProjected(gdl, &textX, &textY, "Available Community Packs",
+                                  g_CharsHandelGothicSm, g_FontHandelGothicSm,
+                                  textColor, viGetWidth(), viGetHeight(), 0, 0);
+        gdl = text0f153780(gdl);
+
+        return (intptr_t)gdl;
+    }
+    return 0;
+}
+
+struct menuitem g_TexturePacksListMenuItems[] = {
+        {
+                MENUITEMTYPE_DROPDOWN, 0, MENUITEMFLAG_LITERAL_TEXT,
+                                        (uintptr_t)"Active Texture Pack",
+                                           0, menuhandlerSelectTexturePack,
+        },
+        {
+                MENUITEMTYPE_SELECTABLE, 0, MENUITEMFLAG_LITERAL_TEXT,
+                                        (uintptr_t)"Delete Selected Pack\n",
+                                           0, menuhandlerDeleteAssets,
+        },
+
+
+        // --- CUSTOM TEXT RENDERING (BLUE BACKGROUND + TEXT) ---
+        {
+                MENUITEMTYPE_LABEL, 0, MENUITEMFLAG_LITERAL_TEXT | MENUITEMFLAG_LIST_CUSTOMRENDER,
+                (uintptr_t)"\n", // empty space for custom menuhandlerBlueHeader
+                0, menuhandlerBlueHeader,
+        },
+        // ---------------------------------------------------------
+
+        {
+                MENUITEMTYPE_SELECTABLE, 0, MENUITEMFLAG_LITERAL_TEXT,
+                                        (uintptr_t)"PD Forever Plus HD VR\n",
+                                           0, (void *)&menuhandlerOpenDownloadMenu,
+        },
+        {
+                MENUITEMTYPE_SELECTABLE, 0, MENUITEMFLAG_LITERAL_TEXT,
+                                        (uintptr_t)"XBLA Plus HD VR\n",
+                                           0, (void *)&menuhandlerOpenDownloadMenu,
+        },
+        { MENUITEMTYPE_SEPARATOR, 0, 0, 0, 0, NULL },
+        {
+                MENUITEMTYPE_SELECTABLE, 0, MENUITEMFLAG_SELECTABLE_CLOSESDIALOG,
+                                        L_OPTIONS_213, // "Back"
+                                           0, NULL,
+        },
+        { MENUITEMTYPE_END },
+};
+struct menudialogdef g_TexturePacksListMenuDialog = {
+        MENUDIALOGTYPE_DEFAULT,
+        (uintptr_t)"Community Texture Packs",
+        g_TexturePacksListMenuItems,
+        NULL,
+        MENUDIALOGFLAG_LITERAL_TEXT,
+        NULL,
+};
+
+
+// ============================================================================
+// ROOT EXTENDED OPTIONS MENU
+// ============================================================================
+
+static MenuItemHandlerResult menuhandlerOpenTexturePacksList(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+    if (operation == MENUOP_SET) {
+        ScanTexturePacksFolder(); // Read folders from headset/PC
+        menuPushDialog(&g_TexturePacksListMenuDialog); // Display the window
+    }
+    return 0;
+}
+
+extern struct menudialogdef g_ExtendedVideoMenuDialog;
+static MenuItemHandlerResult menuhandlerOpenGameMenu(s32 operation, struct menuitem *item, union handlerdata *data);
+// ... [Dans optionsmenu.c, trouve la structure g_ExtendedMenuItems et modifie-la] ...
+
+struct menuitem g_ExtendedMenuItems[] = {
+        {
+                MENUITEMTYPE_SELECTABLE, 0, MENUITEMFLAG_SELECTABLE_OPENSDIALOG | MENUITEMFLAG_LITERAL_TEXT,
+                (uintptr_t)"Video\n",
+                0, (void *)&g_ExtendedVideoMenuDialog,
+        },
+        {
+                MENUITEMTYPE_SELECTABLE, 0, MENUITEMFLAG_LITERAL_TEXT,
+                                        (uintptr_t)"Game\n",
+                                           0, menuhandlerOpenGameMenu,
+        },
+        {
+                MENUITEMTYPE_SELECTABLE, 0, MENUITEMFLAG_LITERAL_TEXT,
+                                        (uintptr_t)"Community Texture Packs\n",
+                                           0, menuhandlerOpenTexturePacksList,
+        },
+        // --- NOUVEAU BOUTON ICI ---
+        {
+                MENUITEMTYPE_SELECTABLE, 0, MENUITEMFLAG_LITERAL_TEXT,
+                                        (uintptr_t)"Check for Game Updates\n",
+                                           0, menuhandlerOpenUpdateMenu,
+        },
+        // --------------------------
+        { MENUITEMTYPE_SEPARATOR, 0, 0, 0, 0, NULL },
+        {
+                MENUITEMTYPE_SELECTABLE, 0, MENUITEMFLAG_SELECTABLE_CLOSESDIALOG,
+                                        L_OPTIONS_213, // "Back"
+                                           0, NULL,
+        },
+        { MENUITEMTYPE_END },
+};
+
+struct menudialogdef g_ExtendedMenuDialog = {
+        MENUDIALOGTYPE_DEFAULT,
+        (uintptr_t)"Extended Options",
+        g_ExtendedMenuItems,
+        NULL,
+        MENUDIALOGFLAG_LITERAL_TEXT,
+        NULL,
+};
+
+
 
 
 static MenuItemHandlerResult menuhandlerSelectPlayer(s32 operation, struct menuitem *item, union handlerdata *data);
+
+static MenuItemHandlerResult menuhandlerHideSightZoom(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+    switch (operation) {
+        case MENUOP_GET:
+            return g_PlayerExtCfg[g_ExtMenuPlayer].hidesightzoom;
+        case MENUOP_SET:
+            g_PlayerExtCfg[g_ExtMenuPlayer].hidesightzoom = data->checkbox.value;
+            break;
+    }
+
+    return 0;
+}
+
+static MenuItemHandlerResult menuhandlerCrosshairHideUnlessAiming(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+    switch (operation) {
+        case MENUOP_GET:
+            return g_PlayerExtCfg[g_ExtMenuPlayer].crosshairhideunlessaiming;
+        case MENUOP_SET:
+            g_PlayerExtCfg[g_ExtMenuPlayer].crosshairhideunlessaiming = data->checkbox.value;
+            break;
+    }
+
+    return 0;
+}
 
 
 struct menuitem g_ExtendedSelectPlayerMenuItems[] = {
@@ -934,31 +1726,6 @@ static MenuItemHandlerResult menuhandlerTexDetail(s32 operation, struct menuitem
     return 0;
 }
 
-static MenuItemHandlerResult menuhandlerExternalTex(s32 operation, struct menuitem *item, union handlerdata *data)
-{
-    switch (operation) {
-        case MENUOP_CHECKDISABLED:
-            // Gray out the item if the pack is not installed
-            // OR if it is currently being downloaded/extracted
-            if (!DoesAssetFolderExist() || GetAssetDownloadState() == 1 || GetAssetDownloadState() == 2) {
-                return true;
-            }
-            return false;
-
-        case MENUOP_GET:
-            // If the folder does not exist, force the checkbox to appear unchecked
-            if (!DoesAssetFolderExist()) {
-                return false;
-            }
-            return (videoGetExternalTextures() != 0);
-
-        case MENUOP_SET:
-            videoSetExternalTextures(data->checkbox.value);
-            break;
-    }
-
-    return 0;
-}
 
 static MenuItemHandlerResult menuhandlerTexFilter2D(s32 operation, struct menuitem *item, union handlerdata *data)
 {
@@ -1703,6 +2470,22 @@ struct menuitem g_ExtendedGameMenuItems[] = {
                 MENUITEMTYPE_CHECKBOX,
                 0,
                 MENUITEMFLAG_LITERAL_TEXT,
+                (uintptr_t)"Hide Scope Overlay",
+                0,
+                menuhandlerHideSightZoom,
+        },
+        {
+                MENUITEMTYPE_CHECKBOX,
+                0,
+                MENUITEMFLAG_LITERAL_TEXT,
+                (uintptr_t)"Hide Crosshair Unless Aiming",
+                0,
+                menuhandlerCrosshairHideUnlessAiming,
+        },
+        {
+                MENUITEMTYPE_CHECKBOX,
+                0,
+                MENUITEMFLAG_LITERAL_TEXT,
                 (uintptr_t)"Use Key Reloads",
                 0,
                 menuhandlerUseKeyReloads,
@@ -2026,333 +2809,21 @@ static MenuItemHandlerResult menuhandlerOpenBindsMenu(s32 operation, struct menu
 
 
 
-
-
-//Download texture pack
-static char g_DownloadButtonText[64] = "Download & Extract PD Plus HD Texture Pack\n";
-extern struct menuitem g_ExtendedDownloadMenuItems[];
-
-// ============================================================================
-// DOWNLOAD CONFIRMATION WINDOW
-// ============================================================================
-
-static MenuItemHandlerResult menuhandlerConfirmDownloadYes(s32 operation, struct menuitem *item, union handlerdata *data)
+void optionsMenuInit()
 {
-    if (operation == MENUOP_SET) {
-        // The user said YES, start the download
-        StartAssetDownloadThread();
-        menuPopDialog(); // Close the small confirmation window
+
+    if (!g_ImagesRegistered) {
+        memset(&g_PackImages[0], 0, sizeof(struct menuimage));
+        g_PackImages[0].png = (u8*)g_MenuImageUltimatePlusHd;
+        g_PackImages[0].pnglen = 63584;  // size
+        g_PackImages[0].name = "ForeverVR_Cover";
+        menuImageRegister(&g_PackImages[0]);
+
+        memset(&g_PackImages[1], 0, sizeof(struct menuimage));
+        g_PackImages[1].png = (u8*)g_MenuImageXblaPlusHd;
+        g_PackImages[1].pnglen = 63313; // size
+        g_PackImages[1].name = "XblaVR_Cover";
+        menuImageRegister(&g_PackImages[1]);
+        g_ImagesRegistered = true;
     }
-    return 0;
 }
-
-struct menuitem g_ConfirmDownloadMenuItems[] = {
-        { MENUITEMTYPE_LABEL, 0, MENUITEMFLAG_SELECTABLE_CENTRE | MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"This will download and extract\n", 0, NULL },
-        { MENUITEMTYPE_LABEL, 0, MENUITEMFLAG_SELECTABLE_CENTRE | MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"the HD Texture Pack.\n", 0, NULL },
-        { MENUITEMTYPE_SEPARATOR, 0, 0, 0, 0, NULL },
-        { MENUITEMTYPE_SELECTABLE, 0, MENUITEMFLAG_SELECTABLE_CENTRE | MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"Yes, download it\n", 0, menuhandlerConfirmDownloadYes },
-        { MENUITEMTYPE_SELECTABLE, 0, MENUITEMFLAG_SELECTABLE_CENTRE | MENUITEMFLAG_SELECTABLE_CLOSESDIALOG | MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"Cancel\n", 0, NULL },
-        { MENUITEMTYPE_END }
-};
-
-struct menudialogdef g_ConfirmDownloadMenuDialog = {
-        MENUDIALOGTYPE_DEFAULT,
-        (uintptr_t)"Confirm Download",
-        g_ConfirmDownloadMenuItems,
-        NULL,
-        MENUDIALOGFLAG_LITERAL_TEXT,
-        NULL,
-};
-
-// ============================================================================
-// DELETION CONFIRMATION WINDOW
-// ============================================================================
-
-static MenuItemHandlerResult menuhandlerConfirmDeleteYes(s32 operation, struct menuitem *item, union handlerdata *data)
-{
-    if (operation == MENUOP_SET) {
-        // The user said YES, delete it
-        videoSetExternalTextures(0); // Disable it to prevent a crash
-        DeleteAssetFolder();         // Delete the files
-        menuPopDialog();             // Close the small confirmation window
-    }
-    return 0;
-}
-
-struct menuitem g_ConfirmDeleteMenuItems[] = {
-        { MENUITEMTYPE_LABEL, 0, MENUITEMFLAG_SELECTABLE_CENTRE | MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"This will delete\n", 0, NULL },
-        { MENUITEMTYPE_LABEL, 0, MENUITEMFLAG_SELECTABLE_CENTRE | MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"the HD Texture Pack from your device.\n", 0, NULL },
-        { MENUITEMTYPE_SEPARATOR, 0, 0, 0, 0, NULL },
-        { MENUITEMTYPE_SELECTABLE, 0, MENUITEMFLAG_SELECTABLE_CENTRE | MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"Yes, delete it\n", 0, menuhandlerConfirmDeleteYes },
-        { MENUITEMTYPE_SELECTABLE, 0, MENUITEMFLAG_SELECTABLE_CENTRE | MENUITEMFLAG_SELECTABLE_CLOSESDIALOG | MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"Cancel\n", 0, NULL },
-        { MENUITEMTYPE_END }
-};
-
-struct menudialogdef g_ConfirmDeleteMenuDialog = {
-        MENUDIALOGTYPE_DEFAULT,
-        (uintptr_t)"Confirm Deletion",
-        g_ConfirmDeleteMenuItems,
-        NULL,
-        MENUDIALOGFLAG_LITERAL_TEXT,
-        NULL,
-};
-
-
-
-static MenuItemHandlerResult menuhandlerDeleteAssets(s32 operation, struct menuitem *item, union handlerdata *data)
-{
-    if (operation == MENUOP_SET) {
-        menuPushDialog(&g_ConfirmDeleteMenuDialog);
-    }
-    else if (operation == MENUOP_CHECKDISABLED) {
-        int state = GetAssetDownloadState();
-
-        // 1. If a download or extraction is in progress, gray out the button
-        if (state == 1 || state == 2) {
-            item->param2 = (uintptr_t)"Delete Texture Pack\n";
-            return true; // Bouton grisé
-        }
-
-        // 2. Check if the pack is installed
-        if (DoesAssetFolderExist()) {
-            item->param2 = (uintptr_t)"Delete Texture Pack\n";
-            return false;
-        } else {
-            item->param2 = (uintptr_t)"No Texture Pack Installed\n";
-            return true;
-        }
-    }
-    return 0;
-}
-
-
-
-// Handler for the download button
-static MenuItemHandlerResult menuhandlerDownloadAssets(s32 operation, struct menuitem *item, union handlerdata *data)
-{
-    int state = GetAssetDownloadState();
-
-    if (operation == MENUOP_SET) {
-        if (state == 0 || state == 4) {
-            menuPushDialog(&g_ConfirmDownloadMenuDialog);
-        }
-    }
-    else if (operation == MENUOP_CHECKDISABLED) {
-
-        g_ExtendedDownloadMenuItems[0].param2 = (uintptr_t)GetDescriptionText();
-
-        // Update the text based on the state of the C++ worker
-        if (state == 1) { // STATE_DOWNLOADING
-            snprintf(g_DownloadButtonText, sizeof(g_DownloadButtonText), "Downloading: %.1f%% Please wait...\n", GetAssetDownloadProgress());
-            item->param2 = (uintptr_t)g_DownloadButtonText;
-            return true; // Returning true grays out and disables the button
-
-        } else if (state == 2) { // STATE_EXTRACTING
-            snprintf(g_DownloadButtonText, sizeof(g_DownloadButtonText), "Extracting: %.1f%% Please wait...\n", GetAssetDownloadProgress());
-            item->param2 = (uintptr_t)g_DownloadButtonText;
-            return true;
-
-        } else if (state == 3) { // Finished!
-            snprintf(g_DownloadButtonText, sizeof(g_DownloadButtonText), "Finished!\n");
-            item->param2 = (uintptr_t)g_DownloadButtonText;
-            return true; // Returning true grays out and disables the button
-
-        } else if (state == 4) { // STATE_ERROR
-            snprintf(g_DownloadButtonText, sizeof(g_DownloadButtonText), "Error! Try Again\n");
-            item->param2 = (uintptr_t)g_DownloadButtonText;
-
-        } else { // STATE_IDLE
-            snprintf(g_DownloadButtonText, sizeof(g_DownloadButtonText), "Download & Extract\n");
-            item->param2 = (uintptr_t)g_DownloadButtonText;
-        }
-
-        return false;
-    }
-
-    return 0;
-}
-
-
-
-struct menuitem g_ExtendedDownloadMenuItems[] = {
-        {
-                MENUITEMTYPE_LABEL,
-                0,
-                MENUITEMFLAG_LITERAL_TEXT,
-                (uintptr_t)"Please wait...\n", // <-- Will be replaced by the info from GetDescriptionText()
-                0,
-                NULL,
-        },
-        {
-                MENUITEMTYPE_SEPARATOR,
-                0, 0, 0, 0, NULL,
-        },
-        {
-                MENUITEMTYPE_SELECTABLE,
-                0,
-                MENUITEMFLAG_LITERAL_TEXT,
-                (uintptr_t)g_DownloadButtonText, // <-- Points to our dynamic variable
-                0,
-                menuhandlerDownloadAssets,
-        },
-        {
-                MENUITEMTYPE_SEPARATOR,
-                0, 0, 0, 0, NULL,
-        },
-        {
-                MENUITEMTYPE_SELECTABLE,
-                0,
-                MENUITEMFLAG_LITERAL_TEXT,
-                (uintptr_t)"Delete Texture Pack\n",
-                0,
-                menuhandlerDeleteAssets,
-        },
-        {
-                MENUITEMTYPE_SEPARATOR,
-                0, 0, 0, 0, NULL,
-        },
-        {
-                MENUITEMTYPE_CHECKBOX,
-                0,
-                MENUITEMFLAG_LITERAL_TEXT,
-                (uintptr_t)"Use Textures Pack",
-                0,
-                menuhandlerExternalTex,
-        },
-        {
-                MENUITEMTYPE_SEPARATOR,
-                0, 0, 0, 0, NULL,
-        },
-        {
-                MENUITEMTYPE_SELECTABLE,
-                0,
-                MENUITEMFLAG_SELECTABLE_CLOSESDIALOG,
-                L_OPTIONS_213, // "Back"
-                0,
-                NULL,
-        },
-        { MENUITEMTYPE_END },
-};
-
-
-struct menudialogdef g_ExtendedDownloadMenuDialog = {
-        MENUDIALOGTYPE_DEFAULT,
-        (uintptr_t)"External Textures Pack",
-        g_ExtendedDownloadMenuItems,
-        NULL,
-        MENUDIALOGFLAG_LITERAL_TEXT,
-        NULL,
-};
-
-//---
-
-
-
-
-
-
-
-
-
-
-
-
-
-struct menuitem g_ExtendedMenuItems[] = {
-        {
-                MENUITEMTYPE_SELECTABLE,
-                0,
-                MENUITEMFLAG_SELECTABLE_OPENSDIALOG | MENUITEMFLAG_LITERAL_TEXT,
-                (uintptr_t)"Video\n",
-                0,
-                (void *)&g_ExtendedVideoMenuDialog,
-        },
-
-        // VR Hide
-//        {
-//                MENUITEMTYPE_SELECTABLE,
-//                0,
-//                MENUITEMFLAG_SELECTABLE_OPENSDIALOG | MENUITEMFLAG_LITERAL_TEXT,
-//                (uintptr_t)"Audio\n",
-//                0,
-//                (void *)&g_ExtendedAudioMenuDialog,
-//        },
-//        {
-//                MENUITEMTYPE_SELECTABLE,
-//                0,
-//                MENUITEMFLAG_SELECTABLE_OPENSDIALOG | MENUITEMFLAG_LITERAL_TEXT,
-//                (uintptr_t)"Mouse\n",
-//                0,
-//                (void *)&g_ExtendedMouseMenuDialog,
-//        },
-//        {
-//                MENUITEMTYPE_SELECTABLE,
-//                0,
-//                MENUITEMFLAG_LITERAL_TEXT,
-//                (uintptr_t)"Controller\n",
-//                0,
-//                menuhandlerOpenControllerMenu,
-//        },
-        {
-                MENUITEMTYPE_SELECTABLE,
-                0,
-                MENUITEMFLAG_LITERAL_TEXT,
-                (uintptr_t)"Game\n",
-                0,
-                menuhandlerOpenGameMenu,
-        },
-
-        {
-                MENUITEMTYPE_SELECTABLE,
-                0,
-                MENUITEMFLAG_SELECTABLE_OPENSDIALOG | MENUITEMFLAG_LITERAL_TEXT,
-                (uintptr_t)"External Textures Pack\n",
-                0,
-                (void *)&g_ExtendedDownloadMenuDialog,
-        },
-
-
-        // VR Hide
-//        {
-//                MENUITEMTYPE_SELECTABLE,
-//                0,
-//                MENUITEMFLAG_LITERAL_TEXT,
-//                (uintptr_t)"Key Bindings\n",
-//                0,
-//                menuhandlerOpenBindsMenu,
-//        },
-
-    {
-                MENUITEMTYPE_SEPARATOR,
-                0,
-                0,
-                0,
-                0,
-                NULL,
-        },
-        {
-                MENUITEMTYPE_SELECTABLE,
-                0,
-                MENUITEMFLAG_SELECTABLE_CLOSESDIALOG,
-                L_OPTIONS_213, // "Back"
-                0,
-                NULL,
-        },
-        { MENUITEMTYPE_END },
-};
-
-struct menudialogdef g_ExtendedMenuDialog = {
-        MENUDIALOGTYPE_DEFAULT,
-        (uintptr_t)"Extended Options",
-        g_ExtendedMenuItems,
-        NULL,
-        MENUDIALOGFLAG_LITERAL_TEXT,
-        NULL,
-};
-
-
-
-
-
-
-

@@ -24,6 +24,8 @@
     <uses-permission android:name="android.permission.VIBRATE" />
     <!-- internet -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- packages installer -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <!-- OpenXR permissions (hello_xr) -->
     <uses-permission android:name="org.khronos.openxr.permission.OPENXR" />
@@ -86,6 +88,17 @@
             android:theme="@style/Theme.PerfectDark.Fullscreen">
             <!-- NO intent-filter here: it is not a launcher nor VR -->
         </activity>
+
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="com.perfectdark.port.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+
     </application>
 
     <queries>

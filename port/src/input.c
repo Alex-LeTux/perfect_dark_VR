@@ -944,7 +944,9 @@ s32 inputReadController(s32 idx, OSContPad *npad)
 #endif
 
             // VR: C-Buttons mapped to the left thumbstick (directional mapping)
-            if (g_Vars.currentplayer->pausemode == PAUSEMODE_PAUSED || g_Vars.currentplayer->activemenumode != AMMODE_CLOSED) {
+            if (g_Vars.currentplayer->pausemode == PAUSEMODE_PAUSED
+//            || g_Vars.currentplayer->activemenumode != AMMODE_CLOSED // enable to use joystick in activemenu
+            || g_Vars.currentplayer->devicesactive & DEVICE_EYESPY) {
                 XrVector2f leftThumbstick;
                 if (get_2d_input(0, "thumbstick", &leftThumbstick)) {
                     if (leftThumbstick.y > 0.8f) npad->button |= CONT_E;  // U_CBUTTONS
@@ -971,6 +973,7 @@ s32 inputReadController(s32 idx, OSContPad *npad)
                         npad->rstick_x = (finalX == 128) ? 127 : finalX;
                     if (finalY)
                         npad->rstick_y = (finalY == 128) ? 127 : finalY;
+
                 }
             }
 

@@ -21,7 +21,7 @@
 
 /*---------------------------------------------------------------------*
         Copyright (C) 1998 Nintendo. (Originated by SGI)
-        
+
         $RCSfile: os_libc.h,v $
         $Revision: 1.1 $
         $Date: 1998/10/09 08:01:14 $
@@ -89,6 +89,13 @@ extern "C" {
 /* byte string operations */
 
 #ifndef PLATFORM_OSX
+//Removed to avoid conflict with stdlib.h / menuimage.h
+//extern void     bcopy(const void *, void *, size_t);
+//extern int      bcmp(const void *, const void *, size_t);
+//extern void     bzero(void *, size_t);
+#endif
+
+#ifndef ANDROID
 extern void     bcopy(const void *, void *, size_t);
 extern int      bcmp(const void *, const void *, size_t);
 extern void     bzero(void *, size_t);

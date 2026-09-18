@@ -34,6 +34,7 @@ import java.util.Map;
 public class LauncherActivity extends AppCompatActivity {
     private static final String ROM_FILE_NAME = "pd.ntsc-final.z64";
     private static final String INI_FILE_NAME = "pd.ini";
+    private static final String INI_VR_FILE_NAME = "data/pd-vr.ini";
 
     private static final String MD5_NTSC_V11 = "e03b088b6ac9e0080440efed07c1e40f";
     private static final String MD5_NTSC_V10 = "7f4171b0c8d17815be37913f535e4e93";
@@ -45,6 +46,7 @@ public class LauncherActivity extends AppCompatActivity {
     private static final String RESET_VR_RENDER_SCALE = "1";
     private static final String RESET_EXTERNAL_TEXTURES = "0";
 
+    private static final String RESET_ACTIVE_TEXTURE_PACK = "";
 
     private int currentRomStatus = -1;
 
@@ -105,6 +107,9 @@ public class LauncherActivity extends AppCompatActivity {
 
     private File getIniFile() {
         return new File(getExternalFilesDir(null), INI_FILE_NAME);
+    }
+    private File getVrIniFile() {
+        return new File(getExternalFilesDir(null), INI_VR_FILE_NAME);
     }
 
     private boolean romExists() {
@@ -308,18 +313,27 @@ public class LauncherActivity extends AppCompatActivity {
         File iniFile = getIniFile();
         Map ini = readIni(iniFile);
 
+        File VRiniFile = getVrIniFile();
+        Map VRini = readIni(VRiniFile);
+
         ini.put("DefaultWidth", RESET_WIDTH);
         ini.put("DefaultHeight", RESET_HEIGHT);
         ini.put("MSAA", RESET_MSAA);
         ini.put("VRRenderScale", RESET_VR_RENDER_SCALE);
         ini.put("ExternalTextures", RESET_EXTERNAL_TEXTURES);
 
+        VRini.put("ActiveTexturePack", RESET_ACTIVE_TEXTURE_PACK);
+
         writeIni(iniFile, ini);
+
+        writeIni(VRiniFile, VRini);
 
         android.util.Log.i("PerfectDark", "Graphics settings reset: DefaultWidth=" + RESET_WIDTH
                 + " DefaultHeight=" + RESET_HEIGHT + " MSAA=" + RESET_MSAA
                 + " VRRenderScale=" + RESET_VR_RENDER_SCALE
-                + " ExternalTextures=" + RESET_EXTERNAL_TEXTURES);
+                + " ExternalTextures=" + RESET_EXTERNAL_TEXTURES
+                + " ActiveTexturePack=" + RESET_ACTIVE_TEXTURE_PACK
+        );
         Toast.makeText(this, "Graphics settings reset", Toast.LENGTH_SHORT).show();
     }
 

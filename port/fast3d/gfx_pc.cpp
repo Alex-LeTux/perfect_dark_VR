@@ -36,6 +36,7 @@
 #include "glad/glad.h"
 
 #include <atomic>
+#include <menuimage.h>
 
 #include "../vr/vr_log.h"
 extern "C" {
@@ -101,8 +102,6 @@ extern "C" bool vr_end_frame_and_submit();
 extern float vr_get_horizontal_fov_offset_ratio(int eye);
 static float g_vr_internal_scale = 1.0f;
 bool is_weapon_hud = false;
-extern "C" void gfxSetCrosshairParallaxRight(float correction);
-extern "C" void gfxSetCrosshairParallaxLeft(float correction);
 extern "C" void vr_get_eye_view_proj_gl(int eye, float outVP[16]);
 int VrPauseHub = false;
 
@@ -931,6 +930,8 @@ static void importTextureNative(int tile, const LoadedTexture &loadedtexture, bo
     }
 }
 
+
+
 static void import_texture(int i, int tile, bool is_rect) {
     LoadedTexture& loaded_texture = rdp.loaded_texture[rdp.texture_tile[tile].tmem];
     const uint8_t fmt = rdp.texture_tile[tile].fmt;
@@ -957,6 +958,30 @@ static void import_texture(int i, int tile, bool is_rect) {
     const uint8_t* orig_addr = loaded_texture.addr;
     SUPPORT_CHECK(orig_addr);
 
+    // ---------------------------------------------------------
+    // ---> LOAD MENU IMAGE COVER <---
+    // ---------------------------------------------------------
+    int32_t menuImgW, menuImgH;
+    uint8_t* hdImage = menuImageLoadReplacement(orig_addr, &menuImgW, &menuImgH);
+    if (hdImage != nullptr) {
+        // 1. Build a native cache key to bypass the texture pack system
+        TextureCacheKey key = { orig_addr, {}, G_IM_FMT_RGBA, G_IM_SIZ_16b, 0, 0, 0 };
+
+        // 2. Check if the image is already in the GPU
+        if (gfx_texture_cache_lookup(i, key)) {
+            menuImageFreeReplacement(hdImage);
+            loaded_texture.id_mask = 0;
+            return;
+        }
+
+        // 3. Otherwise, upload it to OpenGL
+        gfx_rapi->upload_texture(hdImage, menuImgW, menuImgH);
+        menuImageFreeReplacement(hdImage);
+        loaded_texture.id_mask = 0;
+        return;
+    }
+    // ---------------------------------------------------------
+
     TextureCacheKey key;
 	uint8_t external = loaded_texture.ext_key >> 7*8;
 
@@ -975,7 +1000,8 @@ static void import_texture(int i, int tile, bool is_rect) {
         return;
     }
 
-	if (external) {
+
+    if (external) {
 		uint8_t type = loaded_texture.type;
 		uint16_t id = loaded_texture.id | loaded_texture.id_mask;
 		uint32_t texnum = loaded_texture.texnum;
@@ -2596,14 +2622,10 @@ static void gfx_run_dl(Gfx* cmd) {
                         break;
 
                     case VR_HUD_CAPTURE_BEGIN_H:
-                        gfxSetCrosshairParallaxRight(0.0f);
-                        gfxSetCrosshairParallaxLeft(0.0f);
                         gfx_vr_hud_capture_begin_H();
                         break;
 
                     case VR_HUD_CAPTURE_END_H:
-                        gfxSetCrosshairParallaxRight(0.0f);
-                        gfxSetCrosshairParallaxLeft(0.0f);
                         gfx_vr_hud_capture_end_H();
                         break;
                     default:
