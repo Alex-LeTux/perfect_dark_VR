@@ -794,12 +794,10 @@ if (uIsMenu == 1){
 // --------------------
 
 if (uIsMenu == 0 && vr_is_Menu_or_HUD) {
-    mvPos.w *= 0.90f;
     mvPos.x -= eyeOffset.z * mvPos.w;
     mvPos.y -= eyeOffset.w * mvPos.w;
 }
 else if (uIsMenu == 0 && vr_is_Menu_or_crosshair_right) {
-    mvPos.w *= 0.90f;
     mvPos.x -= eyeOffset.z * mvPos.w;
     mvPos.y -= eyeOffset.w * mvPos.w;
 }
