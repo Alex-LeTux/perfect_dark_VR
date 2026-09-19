@@ -50,7 +50,8 @@ enum UpdateState {
 
 static std::atomic<int> g_UpdateState(UPDATE_STATE_IDLE);
 static std::atomic<float> g_UpdateProgress(0.0f);
-static char g_UpdateDescription[256] = "Fetching info...\n";
+static char g_UpdateDescription[512] = "Fetching info...\n";
+static char g_UpdateChangelog[4096] = "Fetching changelog...\n"; // Dedicated changelog buffer
 static std::atomic<bool> g_UpdateDescFetchStarted(false);
 
 // Forward declarations for your existing GitHub API helpers
@@ -62,6 +63,8 @@ std::string ExtractAssetDate(const std::string& json, const std::string& keyword
 
 static std::string g_FetchedVersion = "";
 static std::atomic<bool> g_UpdateDescFetchFinished(false);
+
+
 
 extern "C" {
 extern const char* VR_Version;
@@ -171,6 +174,7 @@ void FetchUpdateDescWorker() {
     double sizeMB = ExtractAssetSizeMB(json, keyword);
     std::string date = ExtractAssetDate(json, keyword);
 
+    // 1. Changelog (body)
     if (!version.empty() && sizeMB > 0.0 && !date.empty()) {
         snprintf(g_UpdateDescription, sizeof(g_UpdateDescription),
                  "Installed version: %s\nLatest version: %s\nDate: %s\nSize: %.1f MB\n",
@@ -184,6 +188,145 @@ void FetchUpdateDescWorker() {
                  "Installed version: %s\nError fetching update info!\n",
                  VR_Version);
     }
+
+// 2. Changelog extraction and processing (body)
+    std::string body = "";
+
+    // Search for the "body" key
+    std::string key = "\"body\":";
+    size_t keyPos = json.find(key);
+
+    if (keyPos != std::string::npos) {
+        // Find the opening quote of the value
+        size_t startPos = json.find('"', keyPos + key.length());
+
+        if (startPos != std::string::npos) {
+            startPos++; // Se placer juste après le guillemet ouvrant
+            size_t endPos = startPos;
+
+            // Scan the string until finding the unescaped closing quote
+            while (endPos < json.length()) {
+                if (json[endPos] == '"') {
+                    // Check if the quote is escaped
+                    int escapeCount = 0;
+                    for (int i = endPos - 1; i >= (int)startPos && json[i] == '\\'; i--) {
+                        escapeCount++;
+                    }
+
+                    // If the number of preceding '\' characters is even (or 0), it is not escaped
+                    if (escapeCount % 2 == 0) {
+                        break;
+                    }
+                }
+                endPos++;
+            }
+
+            if (endPos < json.length()) {
+                body = json.substr(startPos, endPos - startPos);
+            }
+        }
+    }
+
+    // Replace escaped newlines and quotes
+    size_t pos = 0;
+    while ((pos = body.find("\\r\\n", pos)) != std::string::npos) {
+        body.replace(pos, 4, "\n");
+        pos += 1;
+    }
+    pos = 0;
+    while ((pos = body.find("\\n", pos)) != std::string::npos) {
+        body.replace(pos, 2, "\n");
+        pos += 1;
+    }
+    pos = 0;
+    while ((pos = body.find("\\\"", pos)) != std::string::npos) {
+        body.replace(pos, 2, "\"");
+        pos += 1;
+    }
+
+    // Character filtering, line limit AND word wrapping
+    std::string cleanBody = "";
+    cleanBody.reserve(body.size());
+
+    int totalLines = 0;
+    const int MAX_TOTAL_LINES = 70; // Maximum number of lines displayed in the window (increased because lines will be shorter)
+    const int MAX_LINE_WIDTH = 60;  // Maximum number of characters per line before wrapping (adjust according to font size)
+
+    bool truncated = false;
+    int currentLineLength = 0;
+    std::string currentWord = "";
+
+    // Local function (lambda) to add a word to the clean buffer with overflow handling
+    auto addWord = [&](const std::string& word, bool addSpace) {
+        if (word.empty()) return;
+
+        // If the word itself is longer than the line (very rare, e.g. URL), or if adding the word exceeds the limit
+        if (currentLineLength + word.length() + (addSpace ? 1 : 0) > MAX_LINE_WIDTH) {
+            // Retour à la ligne forcé
+            cleanBody += '\n';
+            totalLines++;
+            currentLineLength = 0;
+
+            // Stop if we have reached the line limit
+            if (totalLines >= MAX_TOTAL_LINES) {
+                truncated = true;
+                return;
+            }
+        } else if (addSpace && currentLineLength > 0) {
+            cleanBody += ' ';
+            currentLineLength++;
+        }
+
+        cleanBody += word;
+        currentLineLength += word.length();
+    };
+
+    for (size_t i = 0; i < body.size(); ++i) {
+        if (truncated) break;
+
+        unsigned char c = (unsigned char)body[i];
+
+        if (c == '\r') continue;
+
+        if (c == '\n') {
+            addWord(currentWord, false);
+            currentWord.clear();
+            if (truncated) break;
+
+            cleanBody += '\n';
+            totalLines++;
+            currentLineLength = 0;
+
+            if (totalLines >= MAX_TOTAL_LINES) {
+                truncated = true;
+                break;
+            }
+        }
+        else if (c == ' ' || c == '\t') {
+            addWord(currentWord, true);
+            currentWord.clear();
+        }
+        else if (c >= 32 && c <= 126) {
+            currentWord += (char)c;
+        }
+    }
+
+    // Add the last word if there is one
+    if (!truncated) {
+        addWord(currentWord, false);
+    }
+
+    if (cleanBody.empty()) {
+        cleanBody = "No changelog provided for this release.\n";
+    } else {
+        if (truncated) {
+            cleanBody += "\n... (see GitHub for full notes)\n";
+        } else if (cleanBody.back() != '\n') {
+            cleanBody += '\n';
+        }
+    }
+
+    snprintf(g_UpdateChangelog, sizeof(g_UpdateChangelog), "%s", cleanBody.c_str());
 
     // Indicates that the check is finished
     g_UpdateDescFetchFinished.store(true);
@@ -367,6 +510,10 @@ float GetGameUpdateProgress(void) {
 void ResetGameUpdateState(void) {
     g_UpdateState.store(UPDATE_STATE_IDLE);
     g_UpdateProgress.store(0.0f);
+}
+
+const char* GetUpdateChangelogText(void) {
+    return g_UpdateChangelog;
 }
 
 int CheckUpdateStatus(const char* currentVersion) {

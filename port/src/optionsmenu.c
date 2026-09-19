@@ -78,6 +78,7 @@ extern int CheckUpdateStatus(const char* currentVersion);
 extern const char *VR_Version;
 extern void StartFetchingUpdateDescription(void);
 extern const char* GetUpdateDescriptionText(void);
+extern const char* GetUpdateChangelogText(void);
 extern void StartGameUpdateThread(void);
 extern int GetGameUpdateState(void);
 extern float GetGameUpdateProgress(void);
@@ -114,6 +115,50 @@ struct menudialogdef g_ConfirmUpdateMenuDialog = {
         MENUDIALOGFLAG_LITERAL_TEXT,
         NULL,
 };
+
+
+
+// ============================================================================
+// CHANGELOG MENU
+// ============================================================================
+
+struct menuitem g_ChangelogMenuItems[] = {
+        {
+                MENUITEMTYPE_LABEL, 0, MENUITEMFLAG_LITERAL_TEXT | MENUITEMFLAG_SMALLFONT,
+                (uintptr_t)"Fetching changelog...\n",
+                0, NULL,
+        },
+        { MENUITEMTYPE_SEPARATOR, 0, 0, 0, 0, NULL },
+        {
+                MENUITEMTYPE_SELECTABLE, 0, MENUITEMFLAG_SELECTABLE_CLOSESDIALOG,
+                                        L_OPTIONS_213, // "Back"
+                                           0, NULL,
+        },
+        { MENUITEMTYPE_END },
+};
+
+struct menudialogdef g_ChangelogMenuDialog = {
+        MENUDIALOGTYPE_DEFAULT,
+        (uintptr_t)"Changelog",
+        g_ChangelogMenuItems,
+        NULL,
+        MENUDIALOGFLAG_LITERAL_TEXT,
+        NULL,
+};
+
+static MenuItemHandlerResult menuhandlerOpenChangelog(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+    if (operation == MENUOP_SET) {
+        g_ChangelogMenuItems[0].param2 = (uintptr_t)GetUpdateChangelogText();
+        menuPushDialog(&g_ChangelogMenuDialog);
+    } else if (operation == MENUOP_CHECKDISABLED) {
+        int upStatus = CheckUpdateStatus(VR_Version);
+        if (upStatus == 0) {
+            return true; // Grayed out until the GitHub request is complete
+        }
+    }
+    return 0;
+}
 
 // ============================================================================
 // GAME UPDATE MENU
@@ -185,13 +230,19 @@ struct menuitem g_ExtendedUpdateMenuItems[] = {
         { MENUITEMTYPE_SEPARATOR, 0, 0, 0, 0, NULL },
         {
                 MENUITEMTYPE_LABEL, 0, MENUITEMFLAG_LITERAL_TEXT,
-                                        (uintptr_t)"Fetching info...\n", // <-- Replaced dynamically by GetUpdateDescriptionText()
-                                           0, NULL,
+                (uintptr_t)"Fetching info...\n", // <-- Replaced dynamically by GetUpdateDescriptionText()
+                0, NULL,
         },
         {
                 MENUITEMTYPE_LABEL, 0, MENUITEMFLAG_LITERAL_TEXT | MENUITEMFLAG_SMALLFONT,
                 (uintptr_t)"https://github.com/Alex-LeTux/perfect_dark_VR\n",
                 0, NULL,
+        },
+        { MENUITEMTYPE_SEPARATOR, 0, 0, 0, 0, NULL },
+        {
+                MENUITEMTYPE_SELECTABLE, 0, MENUITEMFLAG_LITERAL_TEXT,
+                (uintptr_t)"View Changelog\n",
+                0, menuhandlerOpenChangelog,
         },
         { MENUITEMTYPE_SEPARATOR, 0, 0, 0, 0, NULL },
         {

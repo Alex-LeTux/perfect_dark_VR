@@ -10,6 +10,9 @@
 #include "data.h"
 #include "types.h"
 
+#include "../../port/vr/vr_openxr.h"
+#include "../../port/vr/vr_log.h"
+
 struct marker {
     f32 x1;
     f32 y1;
@@ -545,6 +548,8 @@ Gfx *healthbarDraw(Gfx *gdl, struct chrdata *chr, s32 offyarg, f32 heightfracarg
         traumacolours++;
     }
 
+    gDPNoOpTag(gdl++, VR_HUD_CAPTURE_BEGIN_H); // VR
+
     gdl = text0f153628(gdl);
     gdl = text0f153a34(gdl, underleft, undertop, underright, underbottom, undercol);
     gdl = text0f153780(gdl);
@@ -630,6 +635,6 @@ Gfx *healthbarDraw(Gfx *gdl, struct chrdata *chr, s32 offyarg, f32 heightfracarg
             gSPTri2(gdl++, 12, 13, 14, 13, 14, 15);
         }
     }
-
+    gDPNoOpTag(gdl++, VR_HUD_CAPTURE_END_H);
     return gdl;
 }

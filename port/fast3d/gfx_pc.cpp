@@ -1256,9 +1256,16 @@ static void gfx_sp_vertex(size_t n_vertices, size_t dest_index, const Vtx* verti
                 V = (int32_t)(doty * rsp.texture_scaling_factor.t);
             }
         } else {
-            d->color.r = vcn->r;
-            d->color.g = vcn->g;
-            d->color.b = vcn->b;
+            if (vcn != nullptr) {
+                d->color.r = vcn->r;
+                d->color.g = vcn->g;
+                d->color.b = vcn->b;
+            } else {
+                // Valeurs de repli par défaut pour éviter le crash (ex: noir ou blanc)
+                d->color.r = 255;
+                d->color.g = 255;
+                d->color.b = 255;
+            }
         }
 
         d->u = U;
@@ -1320,7 +1327,11 @@ static void gfx_sp_vertex(size_t n_vertices, size_t dest_index, const Vtx* verti
             d->fog = rdp.fog_color.a;
         }
 
-        d->color.a = vcn->a; // can be required for SHADE_ALPHA even if fog is enabled
+        if (vcn != nullptr) {
+            d->color.a = vcn->a;
+        } else {
+            d->color.a = 255;
+        }
     }
 }
 
@@ -1396,6 +1407,7 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bo
             return;
         }
     }
+
 
     if ((rsp.geometry_mode & G_CULL_BOTH) != 0) {
         if ((rsp.geometry_mode & G_CULL_BOTH) == G_CULL_BOTH) {
@@ -2310,6 +2322,7 @@ static void gfx_draw_rectangle(int32_t ulx, int32_t uly, int32_t lrx, int32_t lr
 
     ulxf = gfx_adjust_x_for_aspect_ratio(ulxf);
     lrxf = gfx_adjust_x_for_aspect_ratio(lrxf);
+
 
     struct LoadedVertex* ul = &rsp.loaded_vertices[MAX_VERTICES + 0];
     struct LoadedVertex* ll = &rsp.loaded_vertices[MAX_VERTICES + 1];

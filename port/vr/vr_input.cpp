@@ -44,6 +44,7 @@ extern "C" bool VrTwoHandsGun(int weaponnum);
 int gripPressed = false;
 int VrLeftHandedMode = 0;
 int VrSwapJoysticks = 0;
+bool sQuatIdleInit_reset[2] = {false, false};
 
 // ===== VR CODE EXTENSION WITH FULL CONTROLLER SUPPORT =====
 
@@ -95,6 +96,10 @@ static float sReloadRelPrevZ = 0.0f;
 static float  sSmoothedPos[2][3]  = {{0,0,0},{0,0,0}};
 static float  sSmoothedQuat[2][4] = {{0,0,0,1},{0,0,0,1}};
 static bool   sSmoothedInit[2]    = {false, false};
+static bool   sLastPoseGood[2]    = {false, false};
+static float  sLastRawPos[2][3]   = {{0,0,0},{0,0,0}};
+static int    sRejectStreak[2]    = {0, 0};
+static float  sRejectPos[2][3]    = {{0,0,0},{0,0,0}};
 //==================================================
 
 XrActionSet gActionSet = XR_NULL_HANDLE;
@@ -433,6 +438,43 @@ XrResult create_vr_controllers_complete() {
     });
 
 
+    // 9.5. SONY PLAYSTATION VR2 CONTROLLER PROFILE
+    SuggestBindings("/interaction_profiles/sony/playstation_vr2_controller", {
+            // Poses
+            {gPoseAction, "/user/hand/left/input/grip/pose"},
+            {gPoseAction, "/user/hand/right/input/grip/pose"},
+
+            // Triggers / Grip
+            {gSelectAction, "/user/hand/left/input/trigger/value"},
+            {gSelectAction, "/user/hand/right/input/trigger/value"},
+            {gTriggerValueAction, "/user/hand/left/input/trigger/value"},
+            {gTriggerValueAction, "/user/hand/right/input/trigger/value"},
+            {gGripAction, "/user/hand/left/input/squeeze/value"},
+            {gGripAction, "/user/hand/right/input/squeeze/value"},
+            {gGripValueAction, "/user/hand/left/input/squeeze/value"},
+            {gGripValueAction, "/user/hand/right/input/squeeze/value"},
+
+            // Main buttons (SteamVR generally maps Square/Cross to X/A and Triangle/Circle to Y/B)
+            {gButtonXAction, "/user/hand/left/input/x/click"},
+            {gButtonYAction, "/user/hand/left/input/y/click"},
+            {gButtonAAction, "/user/hand/right/input/a/click"},
+            {gButtonBAction, "/user/hand/right/input/b/click"},
+
+            // Menu
+            {gMenuAction, "/user/hand/left/input/menu/click"},
+            {gMenuAction, "/user/hand/right/input/menu/click"},
+
+            // Joysticks
+            {gThumbstickAction, "/user/hand/left/input/thumbstick"},
+            {gThumbstickAction, "/user/hand/right/input/thumbstick"},
+            {gThumbstickClickAction, "/user/hand/left/input/thumbstick/click"},
+            {gThumbstickClickAction, "/user/hand/right/input/thumbstick/click"},
+
+            // Haptic feedback
+            {gHapticAction, "/user/hand/left/output/haptic"},
+            {gHapticAction, "/user/hand/right/output/haptic"}
+    });
+
     // 10. Attach the ActionSet to the session (REQUIRED before xrBeginSession)
     XrSessionActionSetsAttachInfo attachInfo{XR_TYPE_SESSION_ACTION_SETS_ATTACH_INFO};
     attachInfo.countActionSets = 1;
@@ -524,17 +566,24 @@ XrResult update_vr_controllers(XrTime predicted_time) {
 
             XrResult res = xrLocateSpace(gControllerSpace[hand], g_vrState.viewSpace, predicted_time, &loc);
 
-            if (XR_SUCCEEDED(res) &&
-                (loc.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT) &&
-                (loc.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT)) {
+            const XrSpaceLocationFlags f = loc.locationFlags;
+            const bool fullyTracked =
+                    XR_SUCCEEDED(res) &&
+                    (f & XR_SPACE_LOCATION_POSITION_VALID_BIT) &&
+                    (f & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT) &&
+                    (f & XR_SPACE_LOCATION_POSITION_TRACKED_BIT) &&
+                    (f & XR_SPACE_LOCATION_ORIENTATION_TRACKED_BIT);
+
+            if (fullyTracked) {
                 state.controller_pose = loc.pose;
                 gCachedVelocity[hand] = velocity;
                 state.is_active = true;
                 spaceLocation = loc;
             } else {
-//                vr_log("[VR_DEBUG] hand=%d xrLocateSpace failed: res=%d flags=0x%X pose.isActive=%d",
-//                       hand, (int)res, (unsigned)loc.locationFlags, (int)state.pose.isActive);
+                // Out of tracking (PSVR2 out of view, empty SteamVR pose, IMU drift):
+                // We do NOT touch controller_pose → last tracked pose is preserved.
                 state.is_active = false;
+                gCachedVelocity[hand] = { XR_TYPE_SPACE_VELOCITY };
             }
         }
 
@@ -546,10 +595,19 @@ XrResult update_vr_controllers(XrTime predicted_time) {
 
             XrResult res = xrLocateSpace(gControllerSpace[hand], g_vrState.playSpace, predicted_time, &loc);
 
-            if (XR_SUCCEEDED(res) &&
-                (loc.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT)) {
+            const XrSpaceLocationFlags f = loc.locationFlags;
+            const bool fullyTracked =
+                    XR_SUCCEEDED(res) &&
+                    (f & XR_SPACE_LOCATION_POSITION_VALID_BIT) &&
+                    (f & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT) &&
+                    (f & XR_SPACE_LOCATION_POSITION_TRACKED_BIT) &&
+                    (f & XR_SPACE_LOCATION_ORIENTATION_TRACKED_BIT);
+
+            if (fullyTracked) {
                 gCtrlPosePlay[hand] = loc.pose;
                 gCachedVelocityPlay[hand] = velocity;
+            } else {
+                gCachedVelocityPlay[hand] = { XR_TYPE_SPACE_VELOCITY };
             }
         }
 
@@ -615,14 +673,18 @@ extern "C" bool get_button_state(int hand_index, const char* button_name) {
             float force = state.grip_force.isActive ? state.grip_force.currentState : state.grip_value.currentState;
 
             if (gripLatched[hand_index]) {
-                if (force < 0.65f) gripLatched[hand_index] = false; // lower release threshold
+                if (force < 0.65f) gripLatched[hand_index] = false;
             } else {
-                if (force >= 0.85f) gripLatched[hand_index] = true; // activation threshold
+                if (force >= 0.85f) gripLatched[hand_index] = true;
             }
             return gripLatched[hand_index];
         }
-        // Normal behavior for all other headsets
-        return state.grip_click.currentState;
+
+        if (state.grip_click.isActive && state.grip_click.currentState)
+            return true;
+        if (state.grip_value.isActive && state.grip_value.currentState >= 0.5f)
+            return true;
+        return false;
     }
 
     if (!VrLeftHandedMode) {
@@ -772,7 +834,7 @@ void log_controller_states() {
 */
 
 
-void detect_headset_profile() {
+bool detect_headset_profile() {
     char profileStr[256] = {};
     uint32_t outLen = 0;
     bool profileFound = false;
@@ -796,13 +858,14 @@ void detect_headset_profile() {
     }
 
     if (!profileFound) {
-        vr_log("[VR_CTRL] No interaction profile active yet");
+        vr_log("[VR_CTRL] No interaction profile active yet. Will retry.");
         gIsValveIndex = false;
-        return;
+        return false; // Indique que la détection a échoué
     }
 
     gIsValveIndex = (strstr(profileStr, "valve/index_controller") != nullptr);
     vr_log("[VR_CTRL] IsValveIndex: %d", (int)gIsValveIndex);
+    return true; // Succès
 }
 
 
@@ -849,9 +912,15 @@ void applyCtrlRotation(int i, int axis, float angle) {
 
 // Update the local pull FOR MANUAL RELOADING
 void vrUpdateReloadPull(void) {
+    if (!sLastPoseGood[0] || !sLastPoseGood[1]) {
+        sReloadPrevCaptured = false;
+        return;
+    }
+
     float rx = gCtrlPos[0][0] - gCtrlPos[1][0];
     float ry = gCtrlPos[0][1] - gCtrlPos[1][1];
     float rz = gCtrlPos[0][2] - gCtrlPos[1][2];
+
 
     if (!sReloadPrevCaptured) {
         sReloadRelPrevX = rx; sReloadRelPrevY = ry; sReloadRelPrevZ = rz;
@@ -1188,10 +1257,10 @@ void controller_pose() {
 
     static bool profileDetected = false;
     if (!profileDetected) {
-        // Wait until both controllers are active before locking
+        // Wait for the controllers to become active and physically tracked
         if (gControllerStates[0].is_active && gControllerStates[1].is_active) {
-            detect_headset_profile();
-            profileDetected = true;
+            // profileDetected is only set to true if a valid profile is returned
+            profileDetected = detect_headset_profile();
         }
     }
 
@@ -1205,8 +1274,21 @@ void controller_pose() {
         const auto& state = gControllerStates[sourceIndex]; // On utilise sourceIndex
         const char *handname = (i == 0) ? "LEFT" : "RIGHT";
 
+        auto HoldLastWeaponPose = [&]() {
+            vr_ctrl_velocity[i][0] = 0.0f;
+            vr_ctrl_velocity[i][1] = 0.0f;
+            vr_ctrl_velocity[i][2] = 0.0f;
+            vr_ctrl_velocity_play[i][0] = 0.0f;
+            vr_ctrl_velocity_play[i][1] = 0.0f;
+            vr_ctrl_velocity_play[i][2] = 0.0f;
+        };
+
         if (!state.is_active) {
-            sSmoothedInit[i] = false;
+            HoldLastWeaponPose();
+            // Actual tracking loss reported by the runtime:
+            // allow re-anchoring on the next valid pose.
+            sLastPoseGood[i] = false;
+            sRejectStreak[i] = 0;
             continue;
         }
 
@@ -1224,21 +1306,89 @@ void controller_pose() {
             vr_ctrl_velocity_play[i][0] = gCachedVelocityPlay[sourceIndex].linearVelocity.x;
             vr_ctrl_velocity_play[i][1] = gCachedVelocityPlay[sourceIndex].linearVelocity.y;
             vr_ctrl_velocity_play[i][2] = gCachedVelocityPlay[sourceIndex].linearVelocity.z;
+        } else {
+            vr_ctrl_velocity_play[i][0] = 0.0f;
+            vr_ctrl_velocity_play[i][1] = 0.0f;
+            vr_ctrl_velocity_play[i][2] = 0.0f;
         }
 
-        // --- Raw OpenXR position ---
+// --- Raw OpenXR position ---
         float rawX = state.controller_pose.position.x * 100.0f;
         float rawY = state.controller_pose.position.y * 100.0f;
         float rawZ = state.controller_pose.position.z * 100.0f;
 
-
-        // --- Raw OpenXR quaternion (internal format: w, -x, y, -z) ---
+        // --- Raw OpenXR quaternion ---
         float rawQuat[4] = {
                 state.controller_pose.orientation.w,
                 -state.controller_pose.orientation.x,
                 state.controller_pose.orientation.y,
                 -state.controller_pose.orientation.z
         };
+
+        // --- FIX: Strict validation of raw data ---
+        bool isDataValid = true;
+
+        // 1. Reject corrupted positions (NaN)
+        if (std::isnan(rawX) || std::isnan(rawY) || std::isnan(rawZ)) {
+            isDataValid = false;
+        }
+
+        // 2. Reject empty or corrupted quaternions
+        float quatLengthSq = rawQuat[0]*rawQuat[0] + rawQuat[1]*rawQuat[1] +
+                             rawQuat[2]*rawQuat[2] + rawQuat[3]*rawQuat[3];
+
+        if (quatLengthSq < 0.01f || std::isnan(quatLengthSq)) {
+            isDataValid = false;
+        }
+
+        // 3. Identity pose in view-space = weapon stuck to the headset (SteamVR / PSVR2 out of view)
+        {
+            float posLenSq = rawX*rawX + rawY*rawY + rawZ*rawZ;
+            if (posLenSq < 3.0f * 3.0f) {
+                isDataValid = false;
+            }
+        }
+
+        // 4. Impossible jump in 1 frame (PSVR2 IMU "flies away" while remaining TRACKED)
+        //    Only if we already had a good pose: accept it when tracking is reacquired.
+        if (isDataValid && sLastPoseGood[i]) {
+            float dx = rawX - sLastRawPos[i][0];
+            float dy = rawY - sLastRawPos[i][1];
+            float dz = rawZ - sLastRawPos[i][2];
+            if (dx*dx + dy*dy + dz*dz > 50.0f * 50.0f) {
+                isDataValid = false;
+            }
+        }
+
+        if (!isDataValid) {
+            // If the same "suspicious" position persists for several consecutive frames,
+            // accept it as the new reference. Handles:
+            //  - PSVR2 IMU drift that eventually stabilizes,
+            //  - actual repositioning after tracking loss,
+            // while rejecting an isolated one-frame spike.
+            float ddx = rawX - sRejectPos[i][0];
+            float ddy = rawY - sRejectPos[i][1];
+            float ddz = rawZ - sRejectPos[i][2];
+            if (sRejectStreak[i] > 0 && (ddx*ddx + ddy*ddy + ddz*ddz) < 0.02f * 0.02f) {
+                sRejectStreak[i]++;
+            } else {
+                sRejectStreak[i] = 1;
+                sRejectPos[i][0] = rawX;
+                sRejectPos[i][1] = rawY;
+                sRejectPos[i][2] = rawZ;
+            }
+
+            if (sRejectStreak[i] < 15) {   // ~170 ms à 90 Hz
+                HoldLastWeaponPose();
+                continue;
+            }
+        }
+
+        sLastPoseGood[i] = true;
+        sLastRawPos[i][0] = rawX;
+        sLastRawPos[i][1] = rawY;
+        sLastRawPos[i][2] = rawZ;
+        sRejectStreak[i] = 0;
 
         // Save the raw version, before any SLERP, for uses
         // that must follow the controller with no delay (e.g. left-hand HUD layer)
@@ -1306,13 +1456,13 @@ void controller_pose() {
 
             // Rotation: light permanent SLERP (high-frequency anti-jitter)
             // Initialize the quaternion buffer if necessary
-            static bool sQuatIdleInit[2] = {false, false};
-            if (!sQuatIdleInit[i]) {
+
+            if (!sQuatIdleInit_reset[i]) {
                 sSmoothedQuat[i][0] = rawQuat[0];
                 sSmoothedQuat[i][1] = rawQuat[1];
                 sSmoothedQuat[i][2] = rawQuat[2];
                 sSmoothedQuat[i][3] = rawQuat[3];
-                sQuatIdleInit[i] = true;
+                sQuatIdleInit_reset[i] = true;
             }
 
             float slerpResult[4];
@@ -1362,11 +1512,16 @@ void controller_pose() {
         }
 
 
+
         // --- Velocities ---
-        if (gCachedVelocity[i].velocityFlags & XR_SPACE_VELOCITY_LINEAR_VALID_BIT) {
-            vr_ctrl_velocity[i][0] = gCachedVelocity[i].linearVelocity.x;
-            vr_ctrl_velocity[i][1] = gCachedVelocity[i].linearVelocity.y;
-            vr_ctrl_velocity[i][2] = gCachedVelocity[i].linearVelocity.z;
+        if (gCachedVelocity[sourceIndex].velocityFlags & XR_SPACE_VELOCITY_LINEAR_VALID_BIT) {
+            vr_ctrl_velocity[i][0] = gCachedVelocity[sourceIndex].linearVelocity.x;
+            vr_ctrl_velocity[i][1] = gCachedVelocity[sourceIndex].linearVelocity.y;
+            vr_ctrl_velocity[i][2] = gCachedVelocity[sourceIndex].linearVelocity.z;
+        } else {
+            vr_ctrl_velocity[i][0] = 0.0f;
+            vr_ctrl_velocity[i][1] = 0.0f;
+            vr_ctrl_velocity[i][2] = 0.0f;
         }
 
 
