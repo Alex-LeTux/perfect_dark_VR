@@ -455,13 +455,13 @@ void vrHideGunParts(Mtxf *matrices, s32 handnum)
 
         // --- MIRROR MODE HANDLING (DUAL WIELD / UNARMED) ---
         if (handnum == 1 && weaponnum != WEAPON_REMOTEMINE) {
-        // If we were asked to hide right-hand matrices (1 to 16),
-        // ignore them to avoid accidentally amputating the right hand.
+            // If we were asked to hide right-hand matrices (1 to 16),
+            // ignore them to avoid accidentally amputating the right hand.
             if (mtxindex >= 1 && mtxindex <= 16) {
                 continue;
             }
-        // If we were asked to hide left-hand matrices (17 to 32),
-        // redirect them to the recycled right hand (1 to 16).
+            // If we were asked to hide left-hand matrices (17 to 32),
+            // redirect them to the recycled right hand (1 to 16).
             if (mtxindex >= 17 && mtxindex <= 32) {
                 mtxindex -= 16; // 17 becomes 1, 18 becomes 2 ... 32 becomes 16
             }
@@ -1624,7 +1624,7 @@ static void vrStartReloadTransition(struct hand *rightHand, bool reverse) {
     g_VrCopyWepModel.anim = NULL;
 
     if (reverse) {
-    // For the return transition, use the free position (not snapped)
+        // For the return transition, use the free position (not snapped)
         rdTmp.unk00 = &g_VrLeftHandFreeSp2c4;
     }
 
@@ -2839,7 +2839,7 @@ void vr_record_throw_sample(int ctrlIdx, float vx, float vy, float vz) {
 // 2. Use the frozen orientation from the BEST sample, not the current frame's
 struct coord vr_throw(s32 handnum) {
     int ctrlIdx = !vr_invert_hands ? (handnum == HAND_RIGHT ? 1 : 0)
-                                 : (handnum == HAND_RIGHT ? 0 : 1);
+                                   : (handnum == HAND_RIGHT ? 0 : 1);
     uint32_t frameNow = g_Vars.lvframe60;
 
     float bestvx = vr_ctrl_velocity_play[ctrlIdx][0];
@@ -6924,7 +6924,7 @@ u32 bgunCalculateGunMemCapacity(void)
 
 void bgunFreeGunMem(void)
 {
-	g_Vars.currentplayer->gunctrl.gunmemowner = GUNMEMOWNER_FREE;
+    g_Vars.currentplayer->gunctrl.gunmemowner = GUNMEMOWNER_FREE;
 }
 
 void bgunSetGunMemWeapon(s32 weaponnum)
@@ -8440,7 +8440,7 @@ void bgunSwivel(f32 screenx, f32 screeny, f32 crossdamp, f32 aimdamp)
                      hand->dotpos.x == old_dotposX[h] &&
                      hand->dotpos.y == old_dotposY[h] &&
                      hand->dotpos.z == old_dotposZ[h]) ||
-                        player->hands[HAND_RIGHT].gset.weaponnum == WEAPON_REAPER){ // TODO fix reaper sight
+                    player->hands[HAND_RIGHT].gset.weaponnum == WEAPON_REAPER){ // TODO fix reaper sight
 
                     sp94.x = hand->muzzlepos.x + vrdir.x * 100000.0f;
                     sp94.y = hand->muzzlepos.y - vrdir.y * 100000.0f;
@@ -8682,8 +8682,8 @@ void bgunCalculatePlayerShotSpread(struct coord* gunpos2d, struct coord* gundir2
         up.y = right.z * vr_dir.x - right.x * vr_dir.z;
         up.z = right.x * vr_dir.y - right.y * vr_dir.x;
 
-    // Convert scaledspread (pixels) to angle (radians)
-    // Same scale as the original: spread in pixels / screen width → angle
+        // Convert scaledspread (pixels) to angle (radians)
+        // Same scale as the original: spread in pixels / screen width → angle
         float spread_angle = scaledspread / camGetScreenWidth() * viGetFovY() * (3.14159265f / 180.0f);
 
         if(VrWeaponRecoil && VrTwoHandsGun(g_Vars.currentplayer->gunctrl.weaponnum) && get_button_state(0, "grip")) {
@@ -14908,8 +14908,8 @@ void bgunRender(Gfx * *gdlptr)
                 // DAMPLOOK step -- the piece the good/unarmed path (bgun0f0a5550) has that this path
                 // lacks. Guard against a zero damplook vector (mtx00016d58 would normalize 0 -> NaN).
                 float dl2 = lhand->damplook.x*lhand->damplook.x
-                          + lhand->damplook.y*lhand->damplook.y
-                          + lhand->damplook.z*lhand->damplook.z;
+                            + lhand->damplook.y*lhand->damplook.y
+                            + lhand->damplook.z*lhand->damplook.z;
                 if (offHandIdle && dl2 > 1e-6f) {
                     Mtxf dampMtx;
                     mtx00016d58(&dampMtx, 0.0f, 0.0f, 0.0f,
@@ -15012,7 +15012,7 @@ void bgunRender(Gfx * *gdlptr)
                 // Render bones 1-16 (the RIGHT hand) mirrored, exactly how the unarmed left hand is
                 // built (mtx00015e24 negates row 0).
                 if (!VrLeftHandedMode) {
-                mtx00015e24(-1, &fist);
+                    mtx00015e24(-1, &fist);
                 }
 
 
@@ -15198,7 +15198,7 @@ void bgunRender(Gfx * *gdlptr)
 
                     } else if ((rhand->state == HANDSTATE_RELOAD)
                                || (VrTwoHandGrip &&
-                            VrTwoHandsGun(g_Vars.currentplayer->gunctrl.weaponnum))) {
+                                   VrTwoHandsGun(g_Vars.currentplayer->gunctrl.weaponnum))) {
                         modelUpdateRelations(&g_VrCopyWepModel);
                         modelSetMatricesWithAnim(&renderdata, &g_VrCopyWepModel);
                         vrHideAllExcept(HideAll);
@@ -16114,6 +16114,53 @@ static void worldToLocal(const float q[4], const float v[3], float out[3]) // VR
  *
  * This function is not called during cutscenes.
  */
+/**
+ * VR motion attacks (pistol whip, knife slash) must never be started while the
+ * hand is in the middle of a weapon change, a reload or a function change.
+ *
+ * During a switch, bgunTickSwitch2() already writes the NEW weapon number into
+ * hand->gset.weaponnum while the hand state machine is still in
+ * HANDSTATE_CHANGEGUN (LOAD -> RAISE -> EQUIP). If a swing is detected at that
+ * moment, forcing HANDSTATE_ATTACK throws away the CHANGEGUN state: the new gun
+ * never gets its HANDMODE_6 -> HANDMODE_7 -> EQUIP transition, so it is never
+ * raised/displayed and the switching logic can no longer complete.
+ */
+static bool vrHandCanStartMotionAttack(s32 handnum, struct hand *hand)
+{
+    struct player *player = g_Vars.currentplayer;
+    struct gunctrl *ctrl = &player->gunctrl;
+    s32 i;
+
+    if (!hand->inuse) {
+        return false;
+    }
+
+    // A weapon switch is pending or the new gun model is still being loaded
+    if (ctrl->switchtoweaponnum != -1 || ctrl->gunmemnew >= 0 || !bgunIsLoaded()) {
+        return false;
+    }
+
+    // Do not interrupt a change/autoswitch on either hand
+    for (i = 0; i < 2; i++) {
+        s32 state = player->hands[i].state;
+
+        if (state == HANDSTATE_CHANGEGUN || state == HANDSTATE_AUTOSWITCH) {
+            return false;
+        }
+    }
+
+    // Only allow from states where starting an attack is safe
+    switch (hand->state) {
+        case HANDSTATE_IDLE:
+        case HANDSTATE_ATTACK:
+        case HANDSTATE_ATTACKEMPTY:
+            return true;
+        default:
+            // RELOAD, CHANGEFUNC, CHANGEGUN, AUTOSWITCH, ...
+            return false;
+    }
+}
+
 void bgunTickGameplay(bool triggeron) {
     s32 gunsfiring[2] = {false, false};
     struct player *player = g_Vars.currentplayer;
@@ -16349,6 +16396,15 @@ void bgunTickGameplay(bool triggeron) {
             } else {
                 vr_hand_triggered[i] = false;
                 continue;
+            }
+
+            // Ignore swings while the hand is switching weapon / reloading, otherwise
+            // bgunSetState(ATTACK) below overwrites HANDSTATE_CHANGEGUN and the new
+            // weapon is never equipped (no weapon + switching locked).
+            if (vr_set_motion_triggered
+                && weaponnum != WEAPON_UNARMED
+                && !vrHandCanStartMotionAttack(handnum, hand)) {
+                vr_set_motion_triggered = false;
             }
 
 
@@ -17846,4 +17902,3 @@ void bgun0f0abd30(s32 handnum)
         gunctrl->lastmag = false;
     }
 }
-
