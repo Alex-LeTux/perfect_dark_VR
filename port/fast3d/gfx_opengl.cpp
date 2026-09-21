@@ -151,9 +151,10 @@ static const char* mv_blit_fs_src =
         "    vec2 srcUV;\n"
         "    srcUV.x = mix(uRect.x, uRect.z, uv.x);\n"
         "    srcUV.y = mix(uRect.y, uRect.w, uv.y);\n"
-        "    outColor = texture(uTex, vec3(srcUV, float(uLayer)));\n"
+        "    vec4 col = texture(uTex, vec3(srcUV, float(uLayer)));\n"
+        "    // Force l'Alpha à 1.0 pour corriger les layers OpenXR !\n"
+        "    outColor = vec4(col.rgb, 1.0);\n"
         "}\n";
-
 
 #else
 extern "C" int gfx_sdl_get_mirror_eye();
@@ -535,7 +536,6 @@ extern "C" void gfx_opengl_draw_mirror_menu_overlay(GLuint menuTex, const float*
     glDisable(GL_DEPTH_TEST);
     glEnable(GL_BLEND);
     glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
-
     glEnable(GL_SCISSOR_TEST);
     glViewport(vpX, vpY, vpW, vpH);
     glScissor(vpX, vpY, vpW, vpH);
@@ -1415,6 +1415,8 @@ static void gfx_opengl_set_use_alpha(bool use_alpha, bool modulate) { // VR
 }
 
 
+
+
 static void gfx_opengl_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t buf_vbo_num_tris) {
 
     // printf("flushing %d tris\n", buf_vbo_num_tris);
@@ -1432,7 +1434,10 @@ static void gfx_opengl_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_
     if (use_multiview) {
         if (gForceFlatShaderForMenu) {
             if (gCurEyeOffsetLeftLoc  >= 0) glUniform4f(gCurEyeOffsetLeftLoc,  0.0f, 0.0f, 0.0f, 0.0f);
-            if (gCurEyeOffsetRightLoc >= 0) glUniform4f(gCurEyeOffsetRightLoc, 0.0f, 0.0f, 0.0f, 1000.0f); // hide
+
+            // Correction : décalage à 1000.0f sur l'axe Z également
+            if (gCurEyeOffsetRightLoc >= 0) glUniform4f(gCurEyeOffsetRightLoc, 1000.0f, 1000.0f, 1000.0f, 1000.0f);
+
         } else {
             if (gCurEyeOffsetLeftLoc >= 0)
                 glUniform4f(gCurEyeOffsetLeftLoc,

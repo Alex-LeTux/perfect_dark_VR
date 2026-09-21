@@ -218,6 +218,9 @@ static bool g_colorSpaceExtSupported = false;
 // GLOBAL STATE - MENU Rendering & Swapchains
 // ============================================================================
 
+#ifdef ANDROID
+static bool g_menuSwapchainIsSrgb = false;
+#endif
 static uint32_t g_menuSwapchainWidth  = 0;
 static uint32_t g_menuSwapchainHeight = 0;
 extern GLuint gfx_opengl_get_vr_menu_texture(void);  // Left-hand HUD texture
@@ -877,7 +880,7 @@ static bool vr_format_supported(const std::vector<int64_t>& formats, int64_t fmt
     return false;
 }
 
-static int64_t vr_pick_swapchain_format()
+static int64_t vr_pick_swapchain_format(bool forQuadLayer = false)
 {
     uint32_t count = 0;
     XrResult r0 = xrEnumerateSwapchainFormats(g_vrState.session, 0, &count, nullptr);
@@ -898,28 +901,45 @@ static int64_t vr_pick_swapchain_format()
              (unsigned long long)formats[i], (long long)formats[i]);
     }
 
-
 #ifdef ANDROID
-    const int64_t preferred[] = {
+    // Yeux (projection layer) : inchangé, GL_RGBA8 en premier.
+    static const int64_t prefEyes[] = {
             (int64_t)GL_RGBA8,
             (int64_t)GL_RGB10_A2,
             (int64_t)GL_RGBA16F,
             (int64_t)GL_SRGB8_ALPHA8,
     };
 
-#else
-    const int64_t preferred[] = {
+    // Quads (menu / HUD armes) : GL_SRGB8_ALPHA8 en premier, sinon le compositeur
+    // Quest ré-encode des valeurs déjà en gamma => couleurs délavées.
+    static const int64_t prefQuad[] = {
             (int64_t)GL_SRGB8_ALPHA8,
             (int64_t)GL_RGBA8,
             (int64_t)GL_RGB10_A2,
             (int64_t)GL_RGBA16F,
     };
+
+    const int64_t* preferred = forQuadLayer ? prefQuad : prefEyes;
+#else
+    // PC : inchangé (le paramètre forQuadLayer n'a aucun effet).
+    static const int64_t prefPC[] = {
+            (int64_t)GL_SRGB8_ALPHA8,
+            (int64_t)GL_RGBA8,
+            (int64_t)GL_RGB10_A2,
+            (int64_t)GL_RGBA16F,
+    };
+
+    const int64_t* preferred = prefPC;
 #endif
 
+    const size_t preferredCount = 4;
 
-    for (int64_t fmt : preferred) {
+    for (size_t i = 0; i < preferredCount; i++) {
+        const int64_t fmt = preferred[i];
         if (vr_format_supported(formats, fmt)) {
-            LOGI("picked format=0x%llx (%lld)", (unsigned long long)fmt, (long long)fmt);
+            LOGI("picked format=0x%llx (%lld)%s",
+                 (unsigned long long)fmt, (long long)fmt,
+                 forQuadLayer ? " [quad]" : " [eye]");
             return fmt;
         }
     }
@@ -983,9 +1003,11 @@ static bool vr_create_menu_swapchain()
     g_menuSwapchainWidth  = (uint32_t)g_internalRenderWidth;
     g_menuSwapchainHeight = (uint32_t)g_internalRenderHeight;
 
-    // Use the same format as the eye swapchains, selected dynamically
-    // via xrEnumerateSwapchainFormats (instead of a hardcoded format)
-    const int64_t chosenFormat = vr_pick_swapchain_format();
+    // Quad layers: sRGB format preferred on Android (see vr_pick_swapchain_format)
+    const int64_t chosenFormat = vr_pick_swapchain_format(/*forQuadLayer=*/true);
+#ifdef ANDROID
+    g_menuSwapchainIsSrgb = (chosenFormat == (int64_t)GL_SRGB8_ALPHA8);
+#endif
 
     XrSwapchainCreateInfo swapchainInfo = {XR_TYPE_SWAPCHAIN_CREATE_INFO};
     swapchainInfo.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT | XR_SWAPCHAIN_USAGE_SAMPLED_BIT;
@@ -1051,7 +1073,135 @@ static bool vr_create_menu_swapchain()
 
 
 
-static void vr_update_menu_swapchain_L() {
+#ifdef ANDROID
+static GLuint s_menuCopyProg = 0;
+static GLuint s_menuCopyVao  = 0;
+static bool   s_menuCopyFailed = false;
+
+static bool vr_menu_copy_init()
+{
+    if (s_menuCopyProg) return true;
+    if (s_menuCopyFailed) return false;
+
+    static const char* vsSrc =
+            "#version 300 es\n"
+            "const vec2 pos[3] = vec2[3](vec2(-1.0,-1.0), vec2(3.0,-1.0), vec2(-1.0,3.0));\n"
+            "void main() { gl_Position = vec4(pos[gl_VertexID], 0.0, 1.0); }\n";
+
+    // Source : octets gamma PREMULTIPLIES (blend SRC_ALPHA sur clear transparent).
+    // Sortie : on écrit du linéaire; le GPU ré-encode en sRGB à l'écriture dans
+    // GL_SRGB8_ALPHA8 => octets finaux == octets du jeu, et le compositeur les
+    // décode correctement (recette identique à celle du PC).
+    static const char* fsSrc =
+            "#version 300 es\n"
+            "precision highp float;\n"
+            "uniform sampler2D uTex;\n"
+            "out vec4 o;\n"
+            "vec3 srgb_to_linear(vec3 c) {\n"
+            "    return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(0.04045, c));\n"
+            "}\n"
+            "void main() {\n"
+            "    vec4 c = texelFetch(uTex, ivec2(gl_FragCoord.xy), 0);\n"
+            "    vec3 straight = (c.a > 0.0) ? clamp(c.rgb / c.a, 0.0, 1.0) : vec3(0.0);\n"
+            "    o = vec4(srgb_to_linear(straight) * c.a, c.a);\n"   // re-prémultiplié en linéaire
+            "}\n";
+
+    auto compile = [](GLenum type, const char* src) -> GLuint {
+        GLuint s = glCreateShader(type);
+        glShaderSource(s, 1, &src, nullptr);
+        glCompileShader(s);
+        GLint ok = 0; glGetShaderiv(s, GL_COMPILE_STATUS, &ok);
+        if (!ok) {
+            char log[512]; glGetShaderInfoLog(s, sizeof(log), nullptr, log);
+            LOGE("menu copy shader compile error: %s", log);
+            glDeleteShader(s); return 0;
+        }
+        return s;
+    };
+
+    GLuint vs = compile(GL_VERTEX_SHADER, vsSrc);
+    GLuint fs = compile(GL_FRAGMENT_SHADER, fsSrc);
+    if (!vs || !fs) { s_menuCopyFailed = true; return false; }
+
+    GLuint p = glCreateProgram();
+    glAttachShader(p, vs); glAttachShader(p, fs);
+    glLinkProgram(p);
+    glDeleteShader(vs); glDeleteShader(fs);
+    GLint ok = 0; glGetProgramiv(p, GL_LINK_STATUS, &ok);
+    if (!ok) { LOGE("menu copy program link failed"); glDeleteProgram(p); s_menuCopyFailed = true; return false; }
+
+    glUseProgram(p);
+    glUniform1i(glGetUniformLocation(p, "uTex"), 0);
+    glUseProgram(0);
+
+    glGenVertexArrays(1, &s_menuCopyVao);
+    s_menuCopyProg = p;
+    return true;
+}
+#endif
+
+static void vr_copy_menu_layer(GLuint srcTex, GLuint dstTex, GLuint& srcFbo, GLuint& dstFbo)
+{
+    if (!dstFbo) glGenFramebuffers(1, &dstFbo);
+
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, dstFbo);
+    glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, dstTex, 0);
+
+#ifdef ANDROID
+    if (g_menuSwapchainIsSrgb && vr_menu_copy_init()) {
+        GLint prevProg = 0, prevVao = 0, prevTex = 0, prevActive = 0, vp[4];
+        GLboolean prevBlend   = glIsEnabled(GL_BLEND);
+        GLboolean prevScissor = glIsEnabled(GL_SCISSOR_TEST);
+        glGetIntegerv(GL_CURRENT_PROGRAM, &prevProg);
+        glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &prevVao);
+        glGetIntegerv(GL_ACTIVE_TEXTURE, &prevActive);
+        glActiveTexture(GL_TEXTURE0);
+        glGetIntegerv(GL_TEXTURE_BINDING_2D, &prevTex);
+        glGetIntegerv(GL_VIEWPORT, vp);
+
+        glDisable(GL_SCISSOR_TEST);
+        glDisable(GL_BLEND);
+        glViewport(0, 0, g_menuSwapchainWidth, g_menuSwapchainHeight);
+
+        glUseProgram(s_menuCopyProg);
+        glBindVertexArray(s_menuCopyVao);
+        glBindTexture(GL_TEXTURE_2D, srcTex);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+
+        glBindTexture(GL_TEXTURE_2D, (GLuint)prevTex);
+        glActiveTexture((GLenum)prevActive);
+        glBindVertexArray((GLuint)prevVao);
+        glUseProgram((GLuint)prevProg);
+        glViewport(vp[0], vp[1], vp[2], vp[3]);
+        if (prevBlend)   glEnable(GL_BLEND);        else glDisable(GL_BLEND);
+        if (prevScissor) glEnable(GL_SCISSOR_TEST); else glDisable(GL_SCISSOR_TEST);
+
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        return;
+    }
+#endif
+
+    if (!srcFbo) glGenFramebuffers(1, &srcFbo);
+
+    // Chemin d'origine (PC, ou Android si le runtime n'offre pas SRGB8_ALPHA8)
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, srcFbo);
+    glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, srcTex, 0);
+
+    glClearColor(0.f, 0.f, 0.f, 0.f);
+    glClear(GL_COLOR_BUFFER_BIT);
+
+    glDisable(GL_SCISSOR_TEST);
+    glBlitFramebuffer(0, 0, g_menuSwapchainWidth, g_menuSwapchainHeight,
+                      0, 0, g_menuSwapchainWidth, g_menuSwapchainHeight,
+                      GL_COLOR_BUFFER_BIT, GL_NEAREST);
+    glEnable(GL_SCISSOR_TEST);
+
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+}
+
+
+static void vr_update_menu_swapchain_L()
+{
     uint32_t imageIndex = 0;
     XrSwapchainImageAcquireInfo acquireInfo{ XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO };
     xrAcquireSwapchainImage(g_menuSwapchain, &acquireInfo, &imageIndex);
@@ -1063,28 +1213,8 @@ static void vr_update_menu_swapchain_L() {
     GLuint srcTex = gfx_opengl_get_vr_menu_texture();
     GLuint dstTex = g_menuSwapchainImages[imageIndex].image;
 
-    static GLuint srcFboTmp = 0, dstFboTmp = 0;
-    if (srcFboTmp == 0) glGenFramebuffers(1, &srcFboTmp);
-    if (dstFboTmp == 0) glGenFramebuffers(1, &dstFboTmp);
-
-    glBindFramebuffer(GL_READ_FRAMEBUFFER, srcFboTmp);
-    glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, srcTex, 0);
-
-    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, dstFboTmp);
-    glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, dstTex, 0);
-
-    glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
-    glClear(GL_COLOR_BUFFER_BIT);
-
-    glDisable(GL_SCISSOR_TEST);
-    glBlitFramebuffer(
-            0, 0, g_menuSwapchainWidth, g_menuSwapchainHeight,
-            0, 0, g_menuSwapchainWidth, g_menuSwapchainHeight,
-            GL_COLOR_BUFFER_BIT, GL_LINEAR
-    );
-    glEnable(GL_SCISSOR_TEST);
-
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    static GLuint srcFboL = 0, dstFboL = 0;
+    vr_copy_menu_layer(srcTex, dstTex, srcFboL, dstFboL);
 
     XrSwapchainImageReleaseInfo releaseInfo{ XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO };
     xrReleaseSwapchainImage(g_menuSwapchain, &releaseInfo);
@@ -1099,35 +1229,20 @@ static void vr_update_menu_swapchain_R()
     waitInfo.timeout = XR_INFINITE_DURATION;
     xrWaitSwapchainImage(g_menuSwapchainR, &waitInfo);
 
-    GLuint srcTex = gfx_opengl_get_vr_menu_texture_R();
-    GLuint dstTex = g_menuSwapchainImagesR[imageIndex].image;
-
-    static GLuint srcFboR = 0, dstFboR = 0;
-    if (!srcFboR) glGenFramebuffers(1, &srcFboR);
-    if (!dstFboR) glGenFramebuffers(1, &dstFboR);
-
-    glBindFramebuffer(GL_READ_FRAMEBUFFER, srcFboR);
-    glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, srcTex, 0);
-    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, dstFboR);
-    glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, dstTex, 0);
-    glClearColor(0.f, 0.f, 0.f, 0.f);
-    glClear(GL_COLOR_BUFFER_BIT);
-    glDisable(GL_SCISSOR_TEST);
-    glBlitFramebuffer(0, 0, g_menuSwapchainWidth, g_menuSwapchainHeight,
-                      0, 0, g_menuSwapchainWidth, g_menuSwapchainHeight,
-                      GL_COLOR_BUFFER_BIT, GL_LINEAR);
-    glEnable(GL_SCISSOR_TEST);
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    static GLuint srcFbo = 0, dstFbo = 0;
+    vr_copy_menu_layer(gfx_opengl_get_vr_menu_texture_R(),
+                       g_menuSwapchainImagesR[imageIndex].image, srcFbo, dstFbo);
 
     XrSwapchainImageReleaseInfo releaseInfo = {XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
     xrReleaseSwapchainImage(g_menuSwapchainR, &releaseInfo);
 }
 
-
-static void vr_update_menu_swapchain_H() {
+static void vr_update_menu_swapchain_H()
+{
     uint32_t imageIndex = 0;
     XrSwapchainImageAcquireInfo acquireInfo = {XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
     xrAcquireSwapchainImage(g_menuSwapchainH, &acquireInfo, &imageIndex);
+
     XrSwapchainImageWaitInfo waitInfo = {XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
     waitInfo.timeout = XR_INFINITE_DURATION;
     xrWaitSwapchainImage(g_menuSwapchainH, &waitInfo);
@@ -1136,22 +1251,7 @@ static void vr_update_menu_swapchain_H() {
     GLuint dstTex = g_menuSwapchainImagesH[imageIndex].image;
 
     static GLuint srcFboH = 0, dstFboH = 0;
-    if (!srcFboH) glGenFramebuffers(1, &srcFboH);
-    if (!dstFboH) glGenFramebuffers(1, &dstFboH);
-
-    glBindFramebuffer(GL_READ_FRAMEBUFFER, srcFboH);
-    glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, srcTex, 0);
-    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, dstFboH);
-    glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, dstTex, 0);
-
-    glClearColor(0.f, 0.f, 0.f, 0.f);
-    glClear(GL_COLOR_BUFFER_BIT);
-    glDisable(GL_SCISSOR_TEST);
-    glBlitFramebuffer(0, 0, g_menuSwapchainWidth, g_menuSwapchainHeight,
-                      0, 0, g_menuSwapchainWidth, g_menuSwapchainHeight,
-                      GL_COLOR_BUFFER_BIT, GL_LINEAR);
-    glEnable(GL_SCISSOR_TEST);
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    vr_copy_menu_layer(srcTex, dstTex, srcFboH, dstFboH);
 
     XrSwapchainImageReleaseInfo releaseInfo = {XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
     xrReleaseSwapchainImage(g_menuSwapchainH, &releaseInfo);
@@ -1656,6 +1756,7 @@ static VrMenuResult vr_compute_weapon_menu(int ctrlIndex, bool mirror,
 // Initialize the common fields of a menu quad (everything except pose/size/facing)
 static XrCompositionLayerQuad vr_init_menu_quad(XrSwapchain swapchain) {
     XrCompositionLayerQuad q = {XR_TYPE_COMPOSITION_LAYER_QUAD};
+
     q.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
     q.space = g_vrState.viewSpace;
     q.eyeVisibility = XR_EYE_VISIBILITY_BOTH;

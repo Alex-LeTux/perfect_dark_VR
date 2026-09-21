@@ -9105,8 +9105,8 @@ void bgunCycleForward(void)
         weaponnum1 = bgunGetSwitchToWeapon(HAND_RIGHT);
         weaponnum2 = bgunGetSwitchToWeapon(HAND_LEFT);
 
-        vr_log("weaponnum1 %d", weaponnum1);
-        vr_log("weaponnum2 %d", weaponnum2);
+//        vr_log("weaponnum1 %d", weaponnum1);
+//        vr_log("weaponnum2 %d", weaponnum2);
 
         if (weaponnum1 > WEAPON_PSYCHOSISGUN || weaponnum2 > WEAPON_PSYCHOSISGUN) {
             weaponnum1 = player->gunctrl.prevweaponnum;

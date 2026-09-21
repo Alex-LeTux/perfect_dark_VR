@@ -554,6 +554,7 @@ void kohTick(void)
 
 Gfx *kohRenderHud(Gfx *gdl)
 {
+
 	s32 time240;
 	s32 mins;
 	s32 secs;
@@ -566,7 +567,7 @@ Gfx *kohRenderHud(Gfx *gdl)
 
 	if (radarGetTeamIndex(chr->team) == g_ScenarioData.koh.occupiedteam && !g_ScenarioData.koh.movehill) {
 		x = viGetViewLeft() + viGetViewWidth() / 2;
-		y = viGetViewTop() + 10;
+		y = viGetViewTop() + 120;
 
 		time240 = g_Vars.mphilltime * TICKS(240) - g_ScenarioData.koh.elapsed240;
 		time240 += VERSION >= VERSION_PAL_BETA ? TICKS(2640) - 1 : 2400;
@@ -612,7 +613,6 @@ Gfx *kohRenderHud(Gfx *gdl)
 		gSPClearExtraGeometryModeEXT(gdl++, G_ASPECT_MODE_EXT);
 #endif
 	}
-
 	return gdl;
 }
 

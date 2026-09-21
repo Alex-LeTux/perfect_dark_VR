@@ -1419,7 +1419,7 @@ void bmoveProcessInput(bool allowc1x, bool allowc1y, bool allowc1buttons, bool i
 
 
                             // --- JOYSTICK MOVEMENT IMPLEMENTATION ---
-                            if (controlmode == CONTROLMODE_12) {
+                            if (controlmode == CONTROLMODE_12 && g_Vars.tickmode != TICKMODE_AUTOWALK) {
                                 if (!g_Vars.currentplayer->insightaimmode) {
                                     // The Y-axis (forward/backward) is always used to move forward/backward
                                     movedata.analogwalk = c2sticky;

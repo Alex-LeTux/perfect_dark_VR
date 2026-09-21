@@ -404,7 +404,7 @@ Gfx *htbRenderHud(Gfx *gdl)
 
 	if (invHasBriefcase()) {
 		x = viGetViewLeft() + viGetViewWidth() / 2;
-		y = viGetViewTop() + 10;
+		y = viGetViewTop() + 120; // VR
 
 		time240 = TICKS(7200) - g_Vars.currentplayerstats->tokenheldtime;
 

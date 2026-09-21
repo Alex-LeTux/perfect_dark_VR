@@ -24,7 +24,6 @@
 #include "types.h"
 #include "string.h"
 
-#include "../port/vr/vr_log.h"
 
 #include "../../port/vr/vr_openxr.h"
 #include "../../port/vr/vr_log.h"
@@ -1005,8 +1004,8 @@ void hudmsgCalculatePosition(struct hudmessage *msg)
 		break;
 	}
 
-	msg->x = x;
-	msg->y = y;
+    msg->x = x;
+    msg->y = y;
 }
 
 void hudmsgCreateFromArgs(char *text, s32 type, s32 conf00, s32 conf01, s32 conf02,
@@ -1492,8 +1491,8 @@ Gfx *hudmsgsRender(Gfx *gdl)
 		y = msg->y;
 
 
-        // VR
-        if(msg->type == 0) {
+        // VR type 0 = Grab weapon/ammo
+        if(msg->type == 0 || msg->type == HUDMSGTYPE_MPSCENARIO) {
             s32 xMiddle = viGetViewLeft() + (viGetViewWidth() >> 1) / 2;
             x = xMiddle;
             y -= 70;

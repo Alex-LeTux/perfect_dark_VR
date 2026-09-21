@@ -1369,7 +1369,7 @@ void controller_pose() {
             float ddx = rawX - sRejectPos[i][0];
             float ddy = rawY - sRejectPos[i][1];
             float ddz = rawZ - sRejectPos[i][2];
-            if (sRejectStreak[i] > 0 && (ddx*ddx + ddy*ddy + ddz*ddz) < 0.02f * 0.02f) {
+            if (sRejectStreak[i] > 0 && (ddx*ddx + ddy*ddy + ddz*ddz) < 4.0f * 4.0f) {
                 sRejectStreak[i]++;
             } else {
                 sRejectStreak[i] = 1;

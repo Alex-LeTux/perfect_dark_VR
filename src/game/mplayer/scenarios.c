@@ -37,6 +37,8 @@
 #include "data.h"
 #include "types.h"
 
+#include "../../port/vr/vr_openxr.h"
+
 #ifdef ANDROID
 #include <android/log.h>
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO,  "PD-VR", __VA_ARGS__)
@@ -565,6 +567,8 @@ void scenarioTickChr(struct chrdata *chr)
  */
 Gfx *scenarioRenderHud(Gfx *gdl)
 {
+    gDPNoOpTag(gdl++, VR_HUD_CAPTURE_BEGIN_H);
+
 	s32 viewleft;
 	s32 viewright;
 	s32 viewtop;
@@ -649,6 +653,7 @@ Gfx *scenarioRenderHud(Gfx *gdl)
 		}
 	}
 
+    gDPNoOpTag(gdl++, VR_HUD_CAPTURE_END_H);
 	return gdl;
 }
 
@@ -706,6 +711,7 @@ Gfx *scenarioRadarExtra(Gfx *gdl)
  */
 bool scenarioRadarChr(Gfx **gdl, struct prop *prop)
 {
+
 	if (g_Vars.normmplayerisrunning && g_MpScenarios[g_MpSetup.scenario].radarchrfunc) {
 		return g_MpScenarios[g_MpSetup.scenario].radarchrfunc(gdl, prop);
 	}
