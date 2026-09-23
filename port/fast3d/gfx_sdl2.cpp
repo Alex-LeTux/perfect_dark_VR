@@ -74,7 +74,7 @@ static bool vsync_enabled = true;
 static int window_width = -1;
 static int window_height = -1;
 
-const char *VR_Version = "v1.9.1-beta";
+const char *VR_Version = "v1.9.4-beta";
 
 static uint32_t fullscreen_flag = SDL_WINDOW_FULLSCREEN_DESKTOP;
 static bool fullscreen_state;

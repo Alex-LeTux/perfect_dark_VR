@@ -468,6 +468,7 @@ struct sightprojdata {
     s32 viewleft, viewtop, viewwidth, viewheight, viewright, viewbottom;
     bool is_sky;
     bool hasprop;
+    bool is_behind_camera;
 };
 
 // =============================================================================
@@ -532,6 +533,10 @@ static void sightCalculate3DProjection(f32 crossx, f32 crossy, struct sightprojd
     p->dz = dotpos->z - campos.z;
     p->dist = sqrtf(p->dx*p->dx + p->dy*p->dy + p->dz*p->dz);
 
+    // Calculates whether the angle between the player's view direction and the laser pointer is negative
+    f32 dot = (p->dx * fwd.x) + (p->dy * fwd.y) + (p->dz * fwd.z);
+    p->is_behind_camera = (!p->is_sky && dot < 0.0f);
+
     p->render_dist = 1500.0f;
 
     if (p->hasprop && player->lookingatprop.prop) {
@@ -547,9 +552,16 @@ static void sightCalculate3DProjection(f32 crossx, f32 crossy, struct sightprojd
     if (p->render_dist < 100.0f) p->render_dist = 100.0f;
     else if (p->render_dist > 1500.0f) p->render_dist = 1500.0f;
 
-    p->cx = p->aim_x * p->render_dist * 5.0f;
-    p->cy = p->aim_y * p->render_dist * 5.0f;
-    p->cz = p->aim_z * p->render_dist * 5.0f;
+    if (!p->is_sky && p->dist > 0.0001f) {
+        p->cx = (p->dx / p->dist) * p->render_dist * 5.0f;
+        p->cy = (p->dy / p->dist) * p->render_dist * 5.0f;
+        p->cz = (p->dz / p->dist) * p->render_dist * 5.0f;
+    } else {
+        // Fallback
+        p->cx = p->aim_x * p->render_dist * 5.0f;
+        p->cy = p->aim_y * p->render_dist * 5.0f;
+        p->cz = p->aim_z * p->render_dist * 5.0f;
+    }
 
     static f32 vr_base_fov = 0.0f;
     if (current_fov > vr_base_fov) vr_base_fov = current_fov;
@@ -894,6 +906,7 @@ static Gfx *sightDrawAimerWorld3D(Gfx *gdl, f32 crossx, f32 crossy, s32 radius, 
 {
     struct sightprojdata p;
     sightCalculate3DProjection(crossx, crossy, &p);
+    if (p.is_behind_camera) return gdl;
 
     f32 base_scale = p.render_dist * 0.005f;
     static const f32 sizeScale[5] = { 0.5f, 0.75f, 1.0f, 1.5f, 2.0f };
@@ -1148,17 +1161,7 @@ Gfx *sightDrawClassic(Gfx *gdl, bool sighton, f32 crossx, f32 crossy)
 
     struct sightprojdata p;
     sightCalculate3DProjection(crossx, crossy, &p);
-
-    // Replace the physical "Classic" coordinates (does not always point to the center of the screen)
-    if (!p.is_sky) {
-        if (p.dist > 0.0001f) {
-            p.cx = (p.dx / p.dist) * p.render_dist * 5.0f;
-            p.cy = (p.dy / p.dist) * p.render_dist * 5.0f;
-            p.cz = (p.dz / p.dist) * p.render_dist * 5.0f;
-        } else {
-            p.cx = 0.0f; p.cy = 0.0f; p.cz = 0.0f;
-        }
-    }
+    if (p.is_behind_camera) return gdl;
 
     f32 dir_x, dir_y, dir_z;
     if (p.is_sky) {
@@ -1337,6 +1340,7 @@ Gfx *sightDrawSkedar(Gfx *gdl, bool sighton, f32 crossx, f32 crossy)
 
     struct sightprojdata p;
     sightCalculate3DProjection(crossx, crossy, &p);
+    if (p.is_behind_camera) return gdl;
 
     s32 paddingy = p.viewheight / 4;
     s32 paddingx = p.viewwidth / 4;
@@ -1441,6 +1445,7 @@ Gfx *sightDrawZoom(Gfx *gdl, bool sighton, f32 crossx, f32 crossy)
 {
     struct sightprojdata p;
     sightCalculate3DProjection(crossx, crossy, &p);
+    if (p.is_behind_camera) return gdl;
 
     s32 viewhalfwidth = p.viewwidth >> 1;
     s32 viewhalfheight = p.viewheight >> 1;
@@ -1550,6 +1555,7 @@ Gfx *sightDrawMaian(Gfx *gdl, bool sighton, f32 crossx, f32 crossy)
 
     struct sightprojdata p;
     sightCalculate3DProjection(crossx, crossy, &p);
+    if (p.is_behind_camera) return gdl;
 
     f32 world_pixel_scale = (p.render_dist * 5.0f) * p.fov_scale;
     f32 base_scale = p.render_dist * 0.005f;
@@ -1622,6 +1628,7 @@ Gfx *sightDrawTarget(Gfx *gdl, f32 crossx, f32 crossy)
 
     struct sightprojdata p;
     sightCalculate3DProjection(crossx, crossy, &p);
+    if (p.is_behind_camera) return gdl;
 
     f32 base_scale = p.render_dist * 0.005f;
     s32 idx = SIGHT_SCALE;

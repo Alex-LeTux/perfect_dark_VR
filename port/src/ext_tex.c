@@ -60,6 +60,7 @@ struct PendingLoad {
 struct ExtTexture {
     u8 *texdata;
     s32 texnum;
+    u32 width, height;
     char extension[5];
 };
 
@@ -318,14 +319,8 @@ u8 *extTexLoad(u8 type, u16 id, s32 texnum, u32 *width, u32 *height)
 
     // Already decoded by the background thread: fast path, no I/O.
     if (tex->texdata) {
-        // width/height were not stored before: retrieve them via stb_image_info
-        // while avoiding a full re-decode.
-        char path[FS_MAXPATH];
-        if (getTexPath(path, type, id, texnum) == 0) {
-            int w, h, ch;
-            stbi_info(path, &w, &h, &ch);
-            *width = w; *height = h;
-        }
+        *width = tex->width;
+        *height = tex->height;
         return tex->texdata;
     }
 
@@ -376,6 +371,15 @@ static void *extTexDecodeThreadFunc(void *arg)
                             b[x] = tmp;
                         }
                     }
+
+                    if (pixels) {
+                        tex->width = w;
+                        tex->height = h;
+                        tex->texdata = pixels;
+                    } else {
+                        tex->texnum = -1;
+                    }
+
                     tex->texdata = pixels;
                 } else {
                     // The image does not exist or is corrupted, invalidate it permanently

@@ -1415,41 +1415,64 @@ static void gfx_opengl_set_use_alpha(bool use_alpha, bool modulate) { // VR
 }
 
 
-
+#define VBO_RING_BUFFER_SIZE (1024 * 1024 * 16) // 16 Mo
 
 static void gfx_opengl_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t buf_vbo_num_tris) {
+    static size_t s_ring_offset = 0;
+    static bool s_vbo_allocated = false;
 
-    // printf("flushing %d tris\n", buf_vbo_num_tris);
-    glBufferData(GL_ARRAY_BUFFER, sizeof(float) * buf_vbo_len, buf_vbo, GL_STREAM_DRAW);
+    size_t draw_size_bytes = sizeof(float) * buf_vbo_len;
+    size_t total_vertices = 3 * buf_vbo_num_tris;
+    if (total_vertices == 0) return;
 
-    // A HUD capture draws into a single 2D texture, so it hides the right eye by
-    // pushing that eye's geometry far away. That is correct while capturing --
-    // but these uniforms are per shader program, and the real values are only
-    // uploaded when a program is bound. Setting them here and never putting them
-    // back left every later draw that reused the same program still hiding the
-    // right eye, until some unrelated program switch happened to restore them.
-    // That is how a full-screen effect could come out left-eye-only after a menu
-    // had been opened, and why it looked intermittent. Always write the state
-    // this draw actually wants.
+    // Explicit and deterministic rebind: cheaper than a glGet, and
+    // protects against the pause/hub menu leaving VAO=0 active.
+    if (opengl_vao) {
+        glBindVertexArray(opengl_vao);
+    }
+    glBindBuffer(GL_ARRAY_BUFFER, opengl_vbo);
+
+    size_t vertex_stride_bytes = draw_size_bytes / total_vertices;
+    size_t remainder = s_ring_offset % vertex_stride_bytes;
+    if (remainder != 0) s_ring_offset += (vertex_stride_bytes - remainder);
+
+    if (!s_vbo_allocated || (s_ring_offset + draw_size_bytes > VBO_RING_BUFFER_SIZE)) {
+        glBufferData(GL_ARRAY_BUFFER, VBO_RING_BUFFER_SIZE, NULL, GL_STREAM_DRAW);
+        s_ring_offset = 0;
+        s_vbo_allocated = true;
+    }
+
+    void* mapped_ptr = glMapBufferRange(GL_ARRAY_BUFFER,
+                                        s_ring_offset,
+                                        draw_size_bytes,
+                                        GL_MAP_WRITE_BIT | GL_MAP_UNSYNCHRONIZED_BIT);
+
+    if (mapped_ptr) {
+        memcpy(mapped_ptr, buf_vbo, draw_size_bytes);
+        glUnmapBuffer(GL_ARRAY_BUFFER);
+    } else {
+        // If the mapping fails (e.g. due to a failed allocation), still render without crashing
+        glBufferData(GL_ARRAY_BUFFER, draw_size_bytes, buf_vbo, GL_STREAM_DRAW);
+        s_ring_offset = 0;
+    }
+
+    // --- Uniforms Multiview ---
     if (use_multiview) {
         if (gForceFlatShaderForMenu) {
             if (gCurEyeOffsetLeftLoc  >= 0) glUniform4f(gCurEyeOffsetLeftLoc,  0.0f, 0.0f, 0.0f, 0.0f);
-
-            // Correction : décalage à 1000.0f sur l'axe Z également
             if (gCurEyeOffsetRightLoc >= 0) glUniform4f(gCurEyeOffsetRightLoc, 1000.0f, 1000.0f, 1000.0f, 1000.0f);
-
         } else {
-            if (gCurEyeOffsetLeftLoc >= 0)
-                glUniform4f(gCurEyeOffsetLeftLoc,
-                            s_eye_offsets[0], s_eye_offsets[1], s_eye_offsets[2], s_eye_offsets[3]);
-            if (gCurEyeOffsetRightLoc >= 0)
-                glUniform4f(gCurEyeOffsetRightLoc,
-                            s_eye_offsets[4], s_eye_offsets[5], s_eye_offsets[6], s_eye_offsets[7]);
+            if (gCurEyeOffsetLeftLoc >= 0) glUniform4f(gCurEyeOffsetLeftLoc, s_eye_offsets[0], s_eye_offsets[1], s_eye_offsets[2], s_eye_offsets[3]);
+            if (gCurEyeOffsetRightLoc >= 0) glUniform4f(gCurEyeOffsetRightLoc, s_eye_offsets[4], s_eye_offsets[5], s_eye_offsets[6], s_eye_offsets[7]);
         }
     }
 
-    glDrawArrays(GL_TRIANGLES, 0, 3 * buf_vbo_num_tris);
+    GLint first_vertex_index = (GLint)(s_ring_offset / vertex_stride_bytes);
+    if (mapped_ptr == NULL) first_vertex_index = 0; // Fallback
 
+    glDrawArrays(GL_TRIANGLES, first_vertex_index, total_vertices);
+
+    s_ring_offset += draw_size_bytes;
 }
 
 typedef void (APIENTRY* DEBUGPROC)(GLenum source,
