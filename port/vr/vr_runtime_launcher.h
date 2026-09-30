@@ -432,8 +432,8 @@ bool vrEnsureDefaultRuntimeRunning() {
             launched = vrLaunchVirtualDesktop(jsonPath);
             break;
         case XrDefaultRuntime::Other:
-            LOGI("[XR Launcher] Third-party runtime detected, automatic launch not supported.");
-            launched = false;
+            LOGI("[XR Launcher] Third-party runtime detected, bypassing auto-launch and proceeding to OpenXR initialization...");
+            return true; // Force start
             break;
         case XrDefaultRuntime::Unknown:
         default:

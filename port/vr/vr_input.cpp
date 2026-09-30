@@ -475,6 +475,54 @@ XrResult create_vr_controllers_complete() {
             {gHapticAction, "/user/hand/right/output/haptic"}
     });
 
+
+
+    // 9.6. STEAM FRAME CONTROLLER PROFILE
+    SuggestBindings("/interaction_profiles/steam/frame_controller", {
+            // Poses
+            {gPoseAction, "/user/hand/left/input/grip/pose"},
+            {gPoseAction, "/user/hand/right/input/grip/pose"},
+
+            // Triggers / Grip
+            {gSelectAction, "/user/hand/left/input/trigger/click"},
+            {gSelectAction, "/user/hand/right/input/trigger/click"},
+            {gTriggerValueAction, "/user/hand/left/input/trigger/value"},
+            {gTriggerValueAction, "/user/hand/right/input/trigger/value"},
+            {gGripAction, "/user/hand/left/input/squeeze/click"},
+            {gGripAction, "/user/hand/right/input/squeeze/click"},
+            {gGripValueAction, "/user/hand/left/input/squeeze/value"},
+            {gGripValueAction, "/user/hand/right/input/squeeze/value"},
+
+            // Main buttons (A/B/X/Y)
+            {gButtonXAction, "/user/hand/left/input/x/click"},
+            {gButtonYAction, "/user/hand/left/input/y/click"},
+            {gButtonAAction, "/user/hand/right/input/a/click"},
+            {gButtonBAction, "/user/hand/right/input/b/click"},
+
+            // Menu
+            {gMenuAction, "/user/hand/left/input/menu/click"},
+            {gMenuAction, "/user/hand/right/input/menu/click"},
+
+            // Joysticks
+            {gThumbstickAction, "/user/hand/left/input/thumbstick"},
+            {gThumbstickAction, "/user/hand/right/input/thumbstick"},
+            {gThumbstickClickAction, "/user/hand/left/input/thumbstick/click"},
+            {gThumbstickClickAction, "/user/hand/right/input/thumbstick/click"},
+
+            // Trackpads
+            {gTrackpadAction, "/user/hand/left/input/trackpad"},
+            {gTrackpadAction, "/user/hand/right/input/trackpad"},
+            {gTrackpadClickAction, "/user/hand/left/input/trackpad/click"},
+            {gTrackpadClickAction, "/user/hand/right/input/trackpad/click"},
+            {gTrackpadTouchAction, "/user/hand/left/input/trackpad/touch"},
+            {gTrackpadTouchAction, "/user/hand/right/input/trackpad/touch"},
+
+            // Haptic feedback
+            {gHapticAction, "/user/hand/left/output/haptic"},
+            {gHapticAction, "/user/hand/right/output/haptic"}
+    });
+
+
     // 10. Attach the ActionSet to the session (REQUIRED before xrBeginSession)
     XrSessionActionSetsAttachInfo attachInfo{XR_TYPE_SESSION_ACTION_SETS_ATTACH_INFO};
     attachInfo.countActionSets = 1;
@@ -1025,7 +1073,7 @@ static WeaponRecoilProfile GetRecoilProfileForWeapon(int wnum)
         case WEAPON_RCP45:
         case WEAPON_KF7SPECIAL:
         case WEAPON_AR53:
-                return { 0.003f, 0.004f, -0.500f, 130.0f, 18.0f };
+            return { 0.003f, 0.004f, -0.500f, 130.0f, 18.0f };
 
             // --- CYCLONE / KL01313 (no lateral YAW recoil, reinforced push) ---
         case WEAPON_CYCLONE:
@@ -1038,7 +1086,7 @@ static WeaponRecoilProfile GetRecoilProfileForWeapon(int wnum)
 
             // --- CMP150 (separated, reinforced push, no YAW) ---
         case WEAPON_CMP150:
-                return { 0.006f, 0.000f, -0.400f, 120.0f, 16.0f };
+            return { 0.006f, 0.000f, -0.400f, 120.0f, 16.0f };
 
         case WEAPON_RCP120:
             if(VR_FUNC_SECONDARY){

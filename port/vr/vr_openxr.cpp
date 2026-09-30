@@ -28,6 +28,7 @@
 #include <vector>
 #include <array>
 #include <algorithm>
+#include <stdlib.h>
 
 #ifdef ANDROID
 // Android Platform
@@ -1720,10 +1721,10 @@ static VrMenuResult vr_compute_weapon_menu(int ctrlIndex, bool mirror,
 
     float yawAngle = 0.0f;
     if(!VrLeftHandedMode) {
-         yawAngle = mirror ? M_PI : -M_PI;
+        yawAngle = mirror ? M_PI : -M_PI;
     }
     else{
-         yawAngle = mirror ? -M_PI : M_PI;
+        yawAngle = mirror ? -M_PI : M_PI;
     }
 
     XrQuaternionf qYaw = {0.0f, sinf(yawAngle * 0.25f), 0.0f, cosf(yawAngle * 0.25f)};
@@ -1887,92 +1888,46 @@ static void vr_submit_frame(XrFrameState& frameState, const std::array<XrView, 2
 }
 
 
-
-// ============================================================================
-// EVENTS - Session State Management
-// ============================================================================
-
-extern "C" void vr_poll_events(void)
-{
-    if (!g_vrState.instance) return;
-
-    while (true) {
-        XrEventDataBuffer event;
-        std::memset(&event, 0, sizeof(event));
-        event.type = XR_TYPE_EVENT_DATA_BUFFER;
-
-        XrResult r = xrPollEvent(g_vrState.instance, &event);
-        if (r == XR_EVENT_UNAVAILABLE) break;
-        if (XR_FAILED(r)) {
-            LOGE("xrPollEvent failed: %d", (int)r);
-            break;
-        }
-
-        const XrEventDataBaseHeader* baseEvent = (const XrEventDataBaseHeader*)&event;
-
-        switch (baseEvent->type) {
-            case XR_TYPE_EVENT_DATA_SESSION_STATE_CHANGED: {
-                const XrEventDataSessionStateChanged* ssEvent =
-                        (const XrEventDataSessionStateChanged*)baseEvent;
-                if (ssEvent->session != g_vrState.session) break;
-                LOGI("Session state changed: %d", (int)ssEvent->state);
-
-                switch (ssEvent->state) {
-                    case XR_SESSION_STATE_READY:
-                        if (!g_vrState.sessionRunning) {
-                            XrSessionBeginInfo begin{ XR_TYPE_SESSION_BEGIN_INFO };
-                            begin.primaryViewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
-                            XrResult br = xrBeginSession(g_vrState.session, &begin);
-                            if (br == XR_SUCCESS) {
-                                g_vrState.sessionRunning = true;
-                                LOGI("Session begun");
-                            }
-                        }
-                        break;
-                    case XR_SESSION_STATE_STOPPING:
-                        if (g_vrState.sessionRunning) {
-                            xrEndSession(g_vrState.session);
-                            g_vrState.sessionRunning = false;
-                            LOGI("Session ended");
-                        }
-                        break;
-                    case XR_SESSION_STATE_EXITING:
-                    case XR_SESSION_STATE_LOSS_PENDING:
-                        g_vrState.sessionRunning = false;
-                        LOGI("Session exiting/loss pending");
-                        break;
-                    case XR_SESSION_STATE_VISIBLE:
-                    default: break;
-                }
-                break;
-            }
-            case XR_TYPE_EVENT_DATA_INSTANCE_LOSS_PENDING:
-                g_vrState.sessionRunning = false;
-                LOGI("Instance loss pending");
-                break;
-            case XR_TYPE_EVENT_DATA_REFERENCE_SPACE_CHANGE_PENDING:
-                if (g_vrState.playSpace != XR_NULL_HANDLE) {
-                    xrDestroySpace(g_vrState.playSpace);
-                    g_vrState.playSpace = XR_NULL_HANDLE;
-                }
-                // Runtimes can burst several of these (recentre, guardian/boundary reset,
-                // system menu). If the recreate fails the handle stays null and every
-                // xrLocateViews and xrEndFrame afterwards works off an invalid space, so
-                // say so loudly rather than limping on in silence.
-                if (!vr_create_play_space()) {
-                    LOGE("REFERENCE_SPACE_CHANGE_PENDING: play space recreate FAILED");
-                }
-                break;
-            default: break;
-        }
-    }
-}
-
 // ============================================================================
 // INITIALIZATION - Complete VR Setup Pipeline
 // ============================================================================
 
 #ifdef ANDROID
+
+// Utility function to clean up the instance if initialization fails
+static void vrDestroyInstanceIfNeeded(void) {
+    if (g_vrState.instance != XR_NULL_HANDLE) {
+        xrDestroyInstance(g_vrState.instance);
+        g_vrState.instance = XR_NULL_HANDLE;
+    }
+}
+
+// Internal function containing the entire initialization sequence
+static bool openxrInitializeVRAndroidInternal(JavaVM* vm, jobject activity, const std::vector<const char*>& extensions) {
+    if (!vr_create_instance(vm, activity, extensions)) return false;
+    if (!vr_get_system()) return false;
+    if (!vr_configure_resolution()) return false;
+    if (!vr_capture_egl_context()) return false;
+    if (!vr_verify_graphics_requirements()) return false;
+    if (!vr_create_session()) return false;
+
+    vr_setup_color_space();
+    vr_init_controllers();
+
+    if (!vr_create_play_space()) return false;
+    if (!vr_create_view_space()) return false;
+    if (!vr_create_swapchains()) return false;
+    if (!vr_create_eye_fbos()) return false;
+
+    // Swapchain dedicated to the menu quad panel
+    if (!vr_create_menu_swapchain()) {
+        LOGE("vr_create_menu_swapchain failed (non-fatal, menu quad disabled)");
+    }
+
+    return true;
+}
+
+// Main entry point for Android OpenXR initialization
 extern "C" void openxr_initialize_vr(JavaVM* vm, jobject activity, ANativeWindow* window)
 {
     LOGI("========== OPENXR INIT (Android) START ==========");
@@ -1984,23 +1939,11 @@ extern "C" void openxr_initialize_vr(JavaVM* vm, jobject activity, ANativeWindow
         return;
     }
 
-    if (!vr_create_instance(vm, activity, extensions)) return;
-    if (!vr_get_system()) return;
-    if (!vr_configure_resolution()) return;
-    if (!vr_capture_egl_context()) return;
-    if (!vr_verify_graphics_requirements()) return;
-    if (!vr_create_session()) return;
-    vr_setup_color_space();
-    vr_init_controllers();
-    if (!vr_create_play_space()) return;
-    if (!vr_create_view_space()) return;
-    if (!vr_create_swapchains()) return;
-    if (!vr_create_eye_fbos()) return;
-
-    // Swapchain dedicated to the menu quad panel
-    if (!vr_create_menu_swapchain()) {
-        vr_log("vr_create_menu_swapchain failed (non-fatal, menu quad disabled)");
-    // non-fatal: continue without the panel
+    // If an internal step fails, perform a clean cleanup to allow retries
+    if (!openxrInitializeVRAndroidInternal(vm, activity, extensions)) {
+        LOGE("OpenXR init failed on Android, cleaning up to allow retries...");
+        vrDestroyInstanceIfNeeded();
+        return;
     }
 
     LOGI("========== OPENXR INIT (Android) COMPLETE ==========");
@@ -2093,6 +2036,105 @@ extern "C" void vr_initialize()
     LOGI("VR system ready");
 
 }
+
+
+
+// ============================================================================
+// EVENTS - Session State Management
+// ============================================================================
+
+extern "C" void vr_poll_events(void)
+{
+    // Automatic initialization attempt on every tick if not ready yet
+    if (!g_vrInitialized) {
+        vr_initialize();
+    }
+
+    if (!g_vrState.instance) return;
+
+    bool needs_shutdown = false;
+
+    while (true) {
+        XrEventDataBuffer event;
+        std::memset(&event, 0, sizeof(event));
+        event.type = XR_TYPE_EVENT_DATA_BUFFER;
+
+        XrResult r = xrPollEvent(g_vrState.instance, &event);
+        if (r == XR_EVENT_UNAVAILABLE) break;
+        if (XR_FAILED(r)) {
+            LOGE("xrPollEvent failed: %d", (int)r);
+            break;
+        }
+
+        const XrEventDataBaseHeader* baseEvent = (const XrEventDataBaseHeader*)&event;
+
+        switch (baseEvent->type) {
+            case XR_TYPE_EVENT_DATA_SESSION_STATE_CHANGED: {
+                const XrEventDataSessionStateChanged* ssEvent =
+                        (const XrEventDataSessionStateChanged*)baseEvent;
+                if (ssEvent->session != g_vrState.session) break;
+                LOGI("Session state changed: %d", (int)ssEvent->state);
+
+                switch (ssEvent->state) {
+                    case XR_SESSION_STATE_READY:
+                        if (!g_vrState.sessionRunning) {
+                            XrSessionBeginInfo begin{ XR_TYPE_SESSION_BEGIN_INFO };
+                            begin.primaryViewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
+                            XrResult br = xrBeginSession(g_vrState.session, &begin);
+                            if (br == XR_SUCCESS) {
+                                g_vrState.sessionRunning = true;
+                                LOGI("Session begun");
+                            }
+                        }
+                        break;
+                    case XR_SESSION_STATE_STOPPING:
+                        if (g_vrState.sessionRunning) {
+                            xrEndSession(g_vrState.session);
+                            g_vrState.sessionRunning = false;
+                            LOGI("Session ended");
+                            exit(0);
+                        }
+                        break;
+                    case XR_SESSION_STATE_EXITING:
+                        g_vrState.sessionRunning = false;
+                        LOGI("XR_SESSION_STATE_EXITING: OS requested termination. Exiting game.");
+                        vr_shutdown();
+                        exit(0);
+                        break;
+                    case XR_SESSION_STATE_LOSS_PENDING:
+                        g_vrState.sessionRunning = false;
+                        LOGI("XR_SESSION_STATE_LOSS_PENDING: Session lost. Scheduling restart.");
+                        needs_shutdown = true; // Requires a soft restart, not a full game exit
+                        break;
+                    case XR_SESSION_STATE_VISIBLE:
+                    default: break;
+                }
+                break;
+            }
+            case XR_TYPE_EVENT_DATA_INSTANCE_LOSS_PENDING:
+                g_vrState.sessionRunning = false;
+                LOGI("Instance loss pending");
+                needs_shutdown = true; // Flag that a restart is required
+                break;
+            case XR_TYPE_EVENT_DATA_REFERENCE_SPACE_CHANGE_PENDING:
+                if (g_vrState.playSpace != XR_NULL_HANDLE) {
+                    xrDestroySpace(g_vrState.playSpace);
+                    g_vrState.playSpace = XR_NULL_HANDLE;
+                }
+                if (!vr_create_play_space()) {
+                    LOGE("REFERENCE_SPACE_CHANGE_PENDING: play space recreate FAILED");
+                }
+                break;
+            default: break;
+        }
+    }
+
+    // Perform full cleanup outside the loop to avoid mid-loop crashes
+    if (needs_shutdown) {
+        vr_shutdown();
+    }
+}
+
 
 
 
@@ -2230,6 +2272,12 @@ static void vr_idle_pace()
 
 extern "C" bool vr_begin_frame_and_update_poses()
 {
+
+    // Auto-recovery in case the surface/window took too long to appear
+    if (!g_vrInitialized) {
+        vr_initialize();
+    }
+
     if (!g_vrState.sessionRunning || g_vrState.session == XR_NULL_HANDLE) {
         vr_idle_pace();
         return false;
@@ -2543,7 +2591,17 @@ extern "C" void vr_shutdown()
 {
     LOGI("========== VR SHUTDOWN START ==========");
 
-    // 1. Ensure no frame is currently in progress
+    // 1. Release any acquired swapchain images BEFORE ending the frame
+    // Tearing down a swapchain while holding an image, or ending a frame
+    // without releasing it, violates the OpenXR spec.
+    if (g_swapchainImageAcquired && g_vrState.swapchains[0] != XR_NULL_HANDLE) {
+        XrSwapchainImageReleaseInfo releaseInfo = { XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO };
+        xrReleaseSwapchainImage(g_vrState.swapchains[0], &releaseInfo);
+    }
+    g_swapchainImageAcquired = false;
+    g_currentMultiviewSwapchainTex = 0;
+
+    // 2. Ensure no frame is currently in progress
     // (if we are between begin/end, we cannot destroy cleanly)
     if (g_frameStarted) {
         LOGI("vr_shutdown: called during open frame! Forcing end.");
@@ -2551,7 +2609,8 @@ extern "C" void vr_shutdown()
         vr_end_empty_frame(g_frameState.predictedDisplayTime);
         g_frameStarted = false;
     }
-    // 2. FBOs OpenGL
+
+    // 3. FBOs OpenGL
     if (g_multiviewFBO) {
         glDeleteFramebuffers(1, &g_multiviewFBO);
         g_multiviewFBO = 0;
@@ -2560,17 +2619,8 @@ extern "C" void vr_shutdown()
         glDeleteTextures(1, &g_multiviewDepthArray);
         g_multiviewDepthArray = 0;
     }
-    g_currentMultiviewSwapchainTex = 0;
 
-    // 3. Swapchains. Hand back any image still checked out before destroying anything --
-    // tearing down a swapchain while the runtime thinks we hold one of its images is how a
-    // teardown that lands mid-frame leaves an out-of-process runtime in a bad state.
-    if (g_swapchainImageAcquired && g_vrState.swapchains[0] != XR_NULL_HANDLE) {
-        XrSwapchainImageReleaseInfo releaseInfo = { XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO };
-        xrReleaseSwapchainImage(g_vrState.swapchains[0], &releaseInfo);
-    }
-    g_swapchainImageAcquired = false;
-
+    // 4. Swapchains
     // Destroy both handles: [1] only exists when multiview is off, and is XR_NULL_HANDLE
     // otherwise. Only [0] is ever enumerated, so only its image cache needs clearing.
     for (int eye = 0; eye < 2; eye++) {
@@ -2598,7 +2648,7 @@ extern "C" void vr_shutdown()
         g_menuSwapchainImagesH.clear();
     }
 
-    // 4. Reference spaces
+    // 5. Reference spaces
     if (g_vrState.viewSpace != XR_NULL_HANDLE) {
         xrDestroySpace(g_vrState.viewSpace);
         g_vrState.viewSpace = XR_NULL_HANDLE;
@@ -2607,25 +2657,34 @@ extern "C" void vr_shutdown()
         xrDestroySpace(g_vrState.playSpace);
         g_vrState.playSpace = XR_NULL_HANDLE;
     }
-    // 5. Session
+
+    // 6. Session
     if (g_vrState.session != XR_NULL_HANDLE) {
-        if (g_vrState.sessionRunning) {
-            xrEndSession(g_vrState.session);
-            g_vrState.sessionRunning = false;
-        }
+        // DO NOT call xrEndSession here. According to the OpenXR spec,
+        // xrEndSession must ONLY be called when the state is STOPPING.
+        // Force-destroying the session is legal and will clean it up on the runtime side.
         xrDestroySession(g_vrState.session);
         g_vrState.session = XR_NULL_HANDLE;
+        g_vrState.sessionRunning = false;
     }
-    // 6. Instance
+
+    // 7. Instance
     if (g_vrState.instance != XR_NULL_HANDLE) {
         xrDestroyInstance(g_vrState.instance);
         g_vrState.instance = XR_NULL_HANDLE;
     }
-    // 7. Reset globals
+
+    // 8. Reset globals and tracking states
     g_vrInitialized = false;
     g_internalRenderWidth  = 0;
     g_internalRenderHeight = 0;
-    g_frameStarted = false;
+
+    positionValid = false;
+    orientationValid = false;
+    sSmoothedHeadInit = false;
+
+    // Reset head height calibration in case the play space is recreated
+    vr_recalibrate_head_height();
 
     LOGI("========== VR SHUTDOWN COMPLETE ==========");
 }

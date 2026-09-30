@@ -616,7 +616,7 @@ static struct ColorCombiner* gfx_lookup_or_create_color_combiner(const ColorComb
     return &prev_combiner->second;
 }
 
-void gfx_texture_cache_clear() {
+extern "C" void gfx_texture_cache_clear() {
     gfx_flush();
     for (const auto& entry : gfx_texture_cache.map) {
         gfx_texture_cache.free_texture_ids.push_back(entry.second.texture_id);
@@ -3265,3 +3265,6 @@ extern "C" void gfx_reset_framebuffer(void) {
     gfx_rapi->start_draw_to_framebuffer(0, (float)gfx_current_dimensions.height / SCREEN_HEIGHT);
     active_fb = framebuffers.end();
 }
+
+
+

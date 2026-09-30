@@ -45,6 +45,9 @@
 #define NCHARS 94
 #endif
 
+
+extern void gfx_texture_cache_clear(void);
+
 const u16 IDMASK_FONT_OUTLINE = MASK_FONT_OUTLINE << 8;
 
 // ============================================================================
@@ -577,6 +580,8 @@ void extTexFree(void)
             modelTex->textures[j].texdata = 0;
         }
     }
+
+
 }
 
 // ============================================================================
@@ -778,10 +783,13 @@ void extTexSetPack(const char *newPackName)
     // 1. Stop the asynchronous decoding thread if it's running
     extTexAsyncShutdown();
 
-    // 2. Free the texture memory of the old pack
+    // 2. Force Fast3D to clean VRAM
+    gfx_texture_cache_clear();
+
+    // 3. Free the texture memory of the old pack in RAM
     extTexFree();
 
-    // 3. Update the name of the new pack
+    // 4. Update the name of the new pack
     if (newPackName != NULL) {
         strncpy(g_ActiveExtTexPack, newPackName, sizeof(g_ActiveExtTexPack) - 1);
         g_ActiveExtTexPack[sizeof(g_ActiveExtTexPack) - 1] = '\0';
@@ -789,7 +797,7 @@ void extTexSetPack(const char *newPackName)
         g_ActiveExtTexPack[0] = '\0';
     }
 
-    // 4. Manually reset the indices
+    // 5. Manually reset the indices
     for (int i = 0; i < MAX_EXT_TEX; ++i) {
         extTextures[i].texnum = -1;
         extTextures[i].texdata = 0;
@@ -806,6 +814,6 @@ void extTexSetPack(const char *newPackName)
     numModels = 0;               // Reset the models
     g_IsExtTexFirstInit = false; // Prevent extTexInit from overwriting our reset
 
-    // 5. Load the new pack
+    // 6. Load the new pack
     extTexInit();
 }

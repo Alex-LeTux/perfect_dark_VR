@@ -230,8 +230,8 @@ struct menuitem g_ExtendedUpdateMenuItems[] = {
         { MENUITEMTYPE_SEPARATOR, 0, 0, 0, 0, NULL },
         {
                 MENUITEMTYPE_LABEL, 0, MENUITEMFLAG_LITERAL_TEXT,
-                (uintptr_t)"Fetching info...\n", // <-- Replaced dynamically by GetUpdateDescriptionText()
-                0, NULL,
+                                        (uintptr_t)"Fetching info...\n", // <-- Replaced dynamically by GetUpdateDescriptionText()
+                                           0, NULL,
         },
         {
                 MENUITEMTYPE_LABEL, 0, MENUITEMFLAG_LITERAL_TEXT | MENUITEMFLAG_SMALLFONT,
@@ -241,8 +241,8 @@ struct menuitem g_ExtendedUpdateMenuItems[] = {
         { MENUITEMTYPE_SEPARATOR, 0, 0, 0, 0, NULL },
         {
                 MENUITEMTYPE_SELECTABLE, 0, MENUITEMFLAG_LITERAL_TEXT,
-                (uintptr_t)"View Changelog\n",
-                0, menuhandlerOpenChangelog,
+                                        (uintptr_t)"View Changelog\n",
+                                           0, menuhandlerOpenChangelog,
         },
         { MENUITEMTYPE_SEPARATOR, 0, 0, 0, 0, NULL },
         {
@@ -374,6 +374,7 @@ static MenuItemHandlerResult menuhandlerConfirmDeleteYes(s32 operation, struct m
             DeleteAssetFolderFullPath(fsFullPath(relPath));
 
             // 2. Clear memory (revert to N64 textures)
+            videoSetExternalTextures(false);
             extTexSetPack(NULL);
 
             // 3. Auto-refresh the dropdown list!
@@ -617,9 +618,11 @@ static MenuItemHandlerResult menuhandlerSelectTexturePack(s32 operation, struct 
 
         case MENUOP_SET:
             g_SelectedPackIndex = data->dropdown.value;
+
+            videoSetExternalTextures(false);
+
             if (g_SelectedPackIndex == 0) {
                 extTexSetPack(NULL);
-                videoSetExternalTextures(false);
             } else {
                 extTexSetPack(g_PackNames[g_SelectedPackIndex]);
                 videoSetExternalTextures(true);
@@ -2457,7 +2460,7 @@ struct menudialogdef g_ExtendedGameCrosshairColourMenuDialog = {
 };
 
 struct menuitem g_ExtendedGameMenuItems[] = {
-            // VR hide
+        // VR hide
 //        {
 //                MENUITEMTYPE_DROPDOWN,
 //                0,
