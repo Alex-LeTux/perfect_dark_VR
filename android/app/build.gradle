@@ -17,7 +17,16 @@ android {
     compileSdk 34
 
     defaultConfig {
-        applicationId "com.perfectdark.port"
+        def romId = project.hasProperty('ROMID') ? project.property('ROMID') : 'ntsc-final'
+        
+        // Dynamic applicationId per region so NTSC, PAL, and JPN can coexist
+        def idSuffix = (romId == 'pal-final') ? '.pal' : ((romId == 'jpn-final') ? '.jpn' : '')
+        applicationId "com.perfectdark.port" + idSuffix
+        
+        // Dynamic app label shown on Meta Quest
+        def regionLabel = (romId == 'pal-final') ? ' (PAL)' : ((romId == 'jpn-final') ? ' (JPN)' : ' (NTSC)')
+        resValue "string", "app_name", "Perfect Dark VR" + regionLabel
+
         minSdk 21
         targetSdk 34
         versionCode 1
@@ -35,9 +44,12 @@ android {
                 cppFlags "-std=c++20"
                 arguments "-DANDROID_STL=c++_shared",
                         "-DANDROID_PLATFORM=android-21",
-                        "-DTARGET_OS=android"
+                        "-DTARGET_OS=android",
+                        "-DROMID=${romId}"
             }
         }
+        
+        buildConfigField "String", "ROM_ID", "\"${romId}\""
     }
 
     signingConfigs {
@@ -73,9 +85,11 @@ android {
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
-            // Sign release only if keystore is present
+            // Sign release with keystore if present, otherwise fallback to debug keystore for sideloading
             if (keystorePropertiesFile.exists()) {
                 signingConfig signingConfigs.release
+            } else {
+                signingConfig signingConfigs.debug
             }
             // Include native symbol table for easier crash decoding
             ndk { debugSymbolLevel 'SYMBOL_TABLE' }
@@ -97,6 +111,14 @@ android {
     sourceSets {
         main {
             jniLibs.srcDirs = ['src/main/jniLibs']
+        }
+    }
+
+    applicationVariants.all { variant ->
+        def romId = project.hasProperty('ROMID') ? project.property('ROMID') : 'ntsc-final'
+        def region = (romId == 'pal-final') ? 'pal' : ((romId == 'jpn-final') ? 'jpn' : 'ntsc')
+        variant.outputs.all {
+            outputFileName = "pd-vr-${region}-${variant.buildType.name}.apk"
         }
     }
 }

@@ -286,6 +286,12 @@ void menuTick(void)
 
 		if (g_MenuData.root == MENUROOT_MPSETUP || g_MenuData.root == MENUROOT_4MBMAINMENU) {
 			if (g_MenuData.prevmenuroot == -1) {
+#ifndef PLATFORM_N64
+				if (g_MpSetup.storedbotbits) {
+					g_MpSetup.chrslots |= g_MpSetup.storedbotbits;
+					g_MpSetup.storedbotbits = 0;
+				}
+#endif
 				g_MpSetup.chrslots &= 0xfff0;
 			}
 

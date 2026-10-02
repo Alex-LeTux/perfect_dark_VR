@@ -32,12 +32,14 @@ import java.util.Map;
  * getExternalFilesDir(null)/data as pd.ntsc-final.z64 before starting SDL.
  */
 public class LauncherActivity extends AppCompatActivity {
-    private static final String ROM_FILE_NAME = "pd.ntsc-final.z64";
+    private static final String ROM_FILE_NAME = "pd." + BuildConfig.ROM_ID + ".z64";
     private static final String INI_FILE_NAME = "pd.ini";
     private static final String INI_VR_FILE_NAME = "data/pd-vr.ini";
 
     private static final String MD5_NTSC_V11 = "e03b088b6ac9e0080440efed07c1e40f";
     private static final String MD5_NTSC_V10 = "7f4171b0c8d17815be37913f535e4e93";
+    private static final String MD5_PAL_FINAL = "d9b5cd305d228424891ce38e71bc9213";
+    private static final String MD5_JPN_FINAL = "538d2b75945eae069b29c46193e74790";
 
     // Requested reset values.
     private static final String RESET_WIDTH = "0";
@@ -122,8 +124,8 @@ public class LauncherActivity extends AppCompatActivity {
 
         if (!romExists()) {
             currentRomStatus = -1;
-            infoText.setText("ROM not found. Select your Perfect Dark NTSC (z64) ROM to proceed.\n"
-                    + "It will be copied to Android/data/com.perfectdark.port/files/data as " + ROM_FILE_NAME + ".");
+            infoText.setText("ROM not found. Select your Perfect Dark " + BuildConfig.ROM_ID + " (z64) ROM to proceed.\n"
+                    + "It will be copied to Android/data/" + getPackageName() + "/files/data as " + ROM_FILE_NAME + ".");
             setStartEnabled(false);
             return;
         }
@@ -133,7 +135,7 @@ public class LauncherActivity extends AppCompatActivity {
 
         switch (hashStatus) {
             case 0:
-                infoText.setText("ROM detected: NTSC-U v1.1 (recommended).\nReady to start.");
+                infoText.setText("ROM verified for " + BuildConfig.ROM_ID + ".\nReady to start.");
                 setStartEnabled(true);
                 break;
             case 1:
@@ -141,8 +143,8 @@ public class LauncherActivity extends AppCompatActivity {
                 setStartEnabled(true);
                 break;
             default:
-                infoText.setText("A ROM file was found but it does not match the expected version.\nPlease pick a valid Perfect Dark NTSC (z64) ROM.");
-                setStartEnabled(false);
+                infoText.setText("ROM file found (" + ROM_FILE_NAME + ").\nHash check unconfirmed, but you can start.");
+                setStartEnabled(true);
                 break;
         }
     }
@@ -184,7 +186,7 @@ public class LauncherActivity extends AppCompatActivity {
         File target = getRomFile();
         int hashStatus = checkRomHash(target);
         if (hashStatus == 0) {
-            Toast.makeText(this, "ROM verified (v1.1)", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, "ROM verified (" + BuildConfig.ROM_ID + ")", Toast.LENGTH_SHORT).show();
             refreshRomStatusUi();
         } else if (hashStatus == 1) {
             showV10WarningDialog(target);
@@ -194,8 +196,8 @@ public class LauncherActivity extends AppCompatActivity {
     }
 
     private void onStartClicked() {
-        if (currentRomStatus != 0 && currentRomStatus != 1) {
-            Toast.makeText(this, "No valid ROM selected yet", Toast.LENGTH_SHORT).show();
+        if (!romExists()) {
+            Toast.makeText(this, "No ROM selected yet", Toast.LENGTH_SHORT).show();
             return;
         }
         startGame();
@@ -234,9 +236,15 @@ public class LauncherActivity extends AppCompatActivity {
     private int checkRomHash(File file) {
         try {
             String md5 = computeMd5(file);
-            if (MD5_NTSC_V11.equalsIgnoreCase(md5)) return 0;
-            if (MD5_NTSC_V10.equalsIgnoreCase(md5)) return 1;
-            return -1;
+            if ("pal-final".equalsIgnoreCase(BuildConfig.ROM_ID)) {
+                return MD5_PAL_FINAL.equalsIgnoreCase(md5) ? 0 : -1;
+            } else if ("jpn-final".equalsIgnoreCase(BuildConfig.ROM_ID)) {
+                return MD5_JPN_FINAL.equalsIgnoreCase(md5) ? 0 : -1;
+            } else {
+                if (MD5_NTSC_V11.equalsIgnoreCase(md5)) return 0;
+                if (MD5_NTSC_V10.equalsIgnoreCase(md5)) return 1;
+                return -1;
+            }
         } catch (Exception e) {
             Toast.makeText(this, "Hash check failed: " + e.getMessage(), Toast.LENGTH_SHORT).show();
             return -1;
@@ -251,17 +259,27 @@ public class LauncherActivity extends AppCompatActivity {
             computed = "";
         }
 
+        String expected = MD5_NTSC_V11;
+        if ("pal-final".equalsIgnoreCase(BuildConfig.ROM_ID)) {
+            expected = MD5_PAL_FINAL;
+        } else if ("jpn-final".equalsIgnoreCase(BuildConfig.ROM_ID)) {
+            expected = MD5_JPN_FINAL;
+        }
+
         new AlertDialog.Builder(this)
-                .setTitle("Wrong ROM version")
-                .setMessage("Expected NTSC-U v1.1 ROM (md5: " + MD5_NTSC_V11 + ")\nAlso allowed (not recommended): v1.0 (md5: " + MD5_NTSC_V10 + ")\n\nGot: " + computed + "\n\nPick a different .z64 ROM?")
-                .setPositiveButton("Pick another", (d, w) -> {
+                .setTitle("ROM Hash Info")
+                .setMessage("Expected " + BuildConfig.ROM_ID + " ROM (md5: " + expected + ")\n\nGot: " + computed + "\n\nDo you want to use this ROM anyway?")
+                .setPositiveButton("Use this ROM", (d, w) -> {
+                    currentRomStatus = 0;
+                    refreshRomStatusUi();
+                })
+                .setNegativeButton("Pick another", (d, w) -> {
                     try {
 //noinspection ResultOfMethodCallIgnored
                         target.delete();
                     } catch (Exception ignored) {}
                     refreshRomStatusUi();
                 })
-                .setNegativeButton("Keep anyway", (d, w) -> refreshRomStatusUi())
                 .setCancelable(false)
                 .show();
     }

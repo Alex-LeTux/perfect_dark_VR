@@ -1913,7 +1913,19 @@ static MenuItemHandlerResult menuhandlerOverexposureScale(s32 operation, struct 
     return 0;
 }
 
+static MenuItemHandlerResult menuhandlerAnisotropicFiltering(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+    switch (operation) {
+        case MENUOP_GETSLIDER:
+            data->slider.value = videoGetAnisotropicFilter();
+            break;
+        case MENUOP_SET:
+            videoSetAnisotropicFilter(data->slider.value);
+            break;
+    }
 
+    return 0;
+}
 
 struct menuitem g_ExtendedVideoMenuItems[] = {
         {
@@ -2011,6 +2023,14 @@ struct menuitem g_ExtendedVideoMenuItems[] = {
                 (uintptr_t)"Texture Filtering",
                 0,
                 menuhandlerTexFilter,
+        },
+        {
+                MENUITEMTYPE_SLIDER,
+                0,
+                MENUITEMFLAG_LITERAL_TEXT | MENUITEMFLAG_SLIDER_WIDE | MENUITEMFLAG_SLIDER_DEFERRED,
+                (uintptr_t)"Anisotropic Filtering",
+                16,
+                menuhandlerAnisotropicFiltering,
         },
         {
                 MENUITEMTYPE_CHECKBOX,
@@ -2247,21 +2267,21 @@ static MenuItemHandlerResult menuhandlerCrosshairSway(s32 operation, struct menu
     return 0;
 }
 
-//static MenuItemHandlerResult menuhandlerCrosshairEdgeBoundary(s32 operation, struct menuitem* item, union handlerdata *data)
-//{
-//	switch (operation) {
-//	case MENUOP_GETSLIDER:
-//		data->slider.value = (s32)(g_PlayerExtCfg[g_ExtMenuPlayer].crosshairedgeboundary * 10.f + 0.5f);
-//		break;
-//	case MENUOP_SET:
-//		g_PlayerExtCfg[g_ExtMenuPlayer].crosshairedgeboundary = (f32)data->slider.value / 10.f;
-//		break;
-//	case MENUOP_GETSLIDERLABEL:
-//		sprintf(data->slider.label, "%d", (s32)data->slider.value);
-//		break;
-//	}
-//	return 0;
-//}
+static MenuItemHandlerResult menuhandlerCrosshairEdgeBoundary(s32 operation, struct menuitem* item, union handlerdata *data)
+{
+	switch (operation) {
+	case MENUOP_GETSLIDER:
+		data->slider.value = (s32)(g_PlayerExtCfg[g_ExtMenuPlayer].crosshairedgeboundary * 10.f + 0.5f);
+		break;
+	case MENUOP_SET:
+		g_PlayerExtCfg[g_ExtMenuPlayer].crosshairedgeboundary = (f32)data->slider.value / 10.f;
+		break;
+	case MENUOP_GETSLIDERLABEL:
+		sprintf(data->slider.label, "%d", (s32)data->slider.value);
+		break;
+	}
+	return 0;
+}
 
 static MenuItemHandlerResult menuhandlerCrosshairR(s32 operation, struct menuitem* item, union handlerdata* data)
 {
@@ -2520,6 +2540,14 @@ struct menuitem g_ExtendedGameMenuItems[] = {
                 0,
                 menuhandlerCrosshairHealth,
         },
+	// {
+	// 	MENUITEMTYPE_SLIDER,
+	// 	0,
+	// 	MENUITEMFLAG_LITERAL_TEXT | MENUITEMFLAG_SLIDER_WIDE,
+	// 	(uintptr_t)"Crosshair Edge Deadzone",
+	// 	10,
+	// 	menuhandlerCrosshairEdgeBoundary,
+	// },
         {
                 MENUITEMTYPE_CHECKBOX,
                 0,
@@ -2862,10 +2890,22 @@ static MenuItemHandlerResult menuhandlerOpenBindsMenu(s32 operation, struct menu
 
 
 
+void updateMaxAnisotropyLevel()
+{
+    for (int i = 0; i < ARRAYCOUNT(g_ExtendedVideoMenuItems); ++i) {
+        struct menuitem *item = &g_ExtendedVideoMenuItems[i];
+        const char *text = menuResolveParam2Text(item);
+
+        if (text && strstr(text, "Anisotropic Filtering") != NULL) {
+            item->param3 = videoGetMaxAnisotropyLevel();
+            break;
+        }
+    }
+}
 
 void optionsMenuInit()
 {
-
+    updateMaxAnisotropyLevel();
     if (!g_ImagesRegistered) {
         memset(&g_PackImages[0], 0, sizeof(struct menuimage));
         g_PackImages[0].png = (u8*)g_MenuImageForeverPlusHd;

@@ -49,8 +49,11 @@ u8 var800a8b58nb[0x1c0];
 s32 var8007f840 = 0;
 u8 var8007f844 = 0;
 u8 var8007f848 = 0;
-//s32 g_IrBinocularRadius = PAL ? 102 : 90;
-s32 g_IrBinocularRadius = PAL ? 204 : 180; // VR Fix
+#ifndef PLATFORM_N64
+s32 g_IrBinocularRadius = 180; // VR Fix: use one size regardless of ROM region
+#else
+s32 g_IrBinocularRadius = PAL ? 102 : 90;
+#endif
 s32 var8007f850 = 3;
 u32 var8007f854 = 0x00000000;
 u32 var8007f858 = 0xb8000000;
@@ -693,7 +696,7 @@ Gfx *bviewDrawFisheye(Gfx *gdl, u32 colour, u32 alpha, s32 shuttertime60, s8 sta
 	startupfrac = 1.0f;
 	s2 = 0;
 
-#if PAL
+#if PAL && defined(PLATFORM_N64)
 	if (PLAYERCOUNT() >= 2
 			|| optionsGetEffectiveScreenSize() == SCREENSIZE_WIDE
 			|| optionsGetEffectiveScreenSize() == SCREENSIZE_CINEMA) {
@@ -909,7 +912,7 @@ Gfx *bviewDrawFisheye(Gfx *gdl, u32 colour, u32 alpha, s32 shuttertime60, s8 sta
         }
     }
 
-#if PAL
+#if PAL && defined(PLATFORM_N64)
     s3 = viGetViewTop();
 #if VERSION >= VERSION_PAL_FINAL
 	s2 = s3 + viGetViewHeight() - vpadding;
@@ -1033,11 +1036,16 @@ Gfx *bviewDrawEyespyMetrics(Gfx *gdl)
     u32 colourglow;
 
 
+#ifndef PLATFORM_N64
+    s32 scale = viewwidth > VrSmallW ? 2 : 1; // VR
+    f32 palscale = scale;
+#else
 #if PAL
     s32 scale = 1;
 	f32 palscale = viewwidth > SCREEN_WIDTH_LO ? 1.4f : 1.0f;
 #else
-    s32 scale = viewwidth > VrSmallW ? 2 : 1; // VR
+    s32 scale = 1;
+#endif
 #endif
 #if VERSION >= VERSION_NTSC_1_0
     bool vsplit = false;
@@ -1045,7 +1053,7 @@ Gfx *bviewDrawEyespyMetrics(Gfx *gdl)
     u32 umask, dmask, lmask, rmask;
 
 #if VERSION >= VERSION_PAL_FINAL
-    #if PAL
+    #if PAL && defined(PLATFORM_N64)
 	if (PLAYERCOUNT() >= 2
 			|| optionsGetEffectiveScreenSize() == SCREENSIZE_WIDE
 			|| optionsGetEffectiveScreenSize() == SCREENSIZE_CINEMA) {
@@ -2644,9 +2652,13 @@ Gfx *bviewDrawHorizonScanner(Gfx *gdl)
 
     strcpy(var800a41c0, "BinocularViewGfx");
 
+#ifndef PLATFORM_N64
+    scale = viGetViewWidth() > VrSmallW ? 2 : 1;
+#else
     if (!PAL && g_ViRes == VIRES_HI) {
         scale = 2;
     }
+#endif
 
     if (optionsGetScreenSplit() == SCREENSPLIT_VERTICAL && PLAYERCOUNT() >= 2) {
         vsplit = true;

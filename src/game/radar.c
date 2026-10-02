@@ -22,6 +22,7 @@
 
 f32 g_RadarScale = 1.0f; // Global VR scale factor
 
+extern int VrSmallW;
 
 u32 g_RadarX;
 u32 g_RadarY;
@@ -289,6 +290,9 @@ Gfx *radarRender(Gfx *gdl)
         return gdl;
     }
 
+#ifndef PLATFORM_N64
+    g_ScaleX = viGetViewWidth() > VrSmallW ? 2 : 1;
+#else
 #if PAL
     g_ScaleX = 1;
 #else
@@ -297,6 +301,7 @@ Gfx *radarRender(Gfx *gdl)
     } else {
         g_ScaleX = 1;
     }
+#endif
 #endif
 
     g_RadarX = (viGetViewLeft() + viGetViewWidth()) / g_ScaleX - 41;

@@ -47,3 +47,6 @@ android/.gradle/buildOutputCleanup/outputFiles.bin
 android/.gradle/config.properties
 android/.gradle/file-system.probe
 android/.gradle/vcs-1/gc.properties
+/android/.gradle
+
+/android/built_apks

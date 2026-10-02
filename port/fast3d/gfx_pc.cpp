@@ -662,7 +662,7 @@ static bool gfx_texture_cache_lookup(int i, const TextureCacheKey& key) {
     node->second.lru_location = gfx_texture_cache.lru.insert(gfx_texture_cache.lru.end(), { it });
 
     gfx_rapi->select_texture(i, texture_id, false);
-    gfx_rapi->set_sampler_parameters(i, false, 0, 0);
+    gfx_rapi->set_sampler_parameters(i, false, 0, 0, rdp.tex_lod);
     *n = node;
     return false;
 }
@@ -716,7 +716,7 @@ static void import_texture_rgba16(int tile, const LoadedTexture& loaded_texture,
         dest[3] = a ? 255 : 0;
     }
 
-    gfx_rapi->upload_texture(tex_upload_buffer, width, height);
+    gfx_rapi->upload_texture(tex_upload_buffer, width, height, rdp.tex_lod);
 }
 
 static void import_texture_rgba32(int tile, const LoadedTexture& loaded_texture, bool importReplacement) {
@@ -731,7 +731,7 @@ static void import_texture_rgba32(int tile, const LoadedTexture& loaded_texture,
         *dest = PD_BE32(*src);
     }
 
-    gfx_rapi->upload_texture(tex_upload_buffer, width, height);
+    gfx_rapi->upload_texture(tex_upload_buffer, width, height, rdp.tex_lod);
 }
 
 static void import_texture_ia4(int tile, const LoadedTexture& loaded_texture, bool importReplacement) {
@@ -753,7 +753,7 @@ static void import_texture_ia4(int tile, const LoadedTexture& loaded_texture, bo
         dest[3] = alpha ? 255 : 0;
     }
 
-    gfx_rapi->upload_texture(tex_upload_buffer, width, height);
+    gfx_rapi->upload_texture(tex_upload_buffer, width, height, rdp.tex_lod);
 }
 
 static void import_texture_ia8(int tile, const LoadedTexture& loaded_texture, bool importReplacement) {
@@ -772,7 +772,7 @@ static void import_texture_ia8(int tile, const LoadedTexture& loaded_texture, bo
         dest[3] = alpha;
     }
 
-    gfx_rapi->upload_texture(tex_upload_buffer, width, height);
+    gfx_rapi->upload_texture(tex_upload_buffer, width, height, rdp.tex_lod);
 }
 
 static void import_texture_ia16(int tile, const LoadedTexture& loaded_texture, bool importReplacement) {
@@ -791,7 +791,7 @@ static void import_texture_ia16(int tile, const LoadedTexture& loaded_texture, b
         dest[3] = alpha;
     }
 
-    gfx_rapi->upload_texture(tex_upload_buffer, width, height);
+    gfx_rapi->upload_texture(tex_upload_buffer, width, height, rdp.tex_lod);
 }
 
 static void import_texture_i4(int tile, const LoadedTexture& loaded_texture, bool importReplacement) {
@@ -811,7 +811,7 @@ static void import_texture_i4(int tile, const LoadedTexture& loaded_texture, boo
         dest[3] = intensity;
     }
 
-    gfx_rapi->upload_texture(tex_upload_buffer, width, height);
+    gfx_rapi->upload_texture(tex_upload_buffer, width, height, rdp.tex_lod);
 }
 
 static void import_texture_i8(int tile, const LoadedTexture& loaded_texture, bool importReplacement) {
@@ -829,7 +829,7 @@ static void import_texture_i8(int tile, const LoadedTexture& loaded_texture, boo
         dest[3] = intensity;
     }
 
-    gfx_rapi->upload_texture(tex_upload_buffer, width, height);
+    gfx_rapi->upload_texture(tex_upload_buffer, width, height, rdp.tex_lod);
 }
 
 static inline void palette_to_rgba32(const uint16_t palentry, uint8_t *rgba32_buf) {
@@ -882,7 +882,7 @@ static void import_texture_ci4(int tile, const LoadedTexture& loaded_texture, bo
         src += line_size;
     }
 
-    gfx_rapi->upload_texture(tex_upload_buffer, width, height);
+    gfx_rapi->upload_texture(tex_upload_buffer, width, height, rdp.tex_lod);
 }
 
 static void import_texture_ci8(int tile, const LoadedTexture& loaded_texture, bool importReplacement) {
@@ -896,7 +896,7 @@ static void import_texture_ci8(int tile, const LoadedTexture& loaded_texture, bo
         palette_to_rgba32(rdp.palette[idx], tex_upload_buffer + 4 * i);
     }
 
-    gfx_rapi->upload_texture(tex_upload_buffer, width, height);
+    gfx_rapi->upload_texture(tex_upload_buffer, width, height, rdp.tex_lod);
 }
 
 
@@ -972,7 +972,7 @@ static void import_texture(int i, int tile, bool is_rect) {
         }
 
         // 3. Otherwise, upload it to OpenGL
-        gfx_rapi->upload_texture(hdImage, menuImgW, menuImgH);
+        gfx_rapi->upload_texture(hdImage, menuImgW, menuImgH, false);
         menuImageFreeReplacement(hdImage);
         loaded_texture.id_mask = 0;
         return;
@@ -1018,11 +1018,11 @@ static void import_texture(int i, int tile, bool is_rect) {
                 // safety check: if even the native fallback doesn't have a valid address
                 tex_upload_buffer[0] = 255; tex_upload_buffer[1] = 0;
                 tex_upload_buffer[2] = 255; tex_upload_buffer[3] = 255;
-                gfx_rapi->upload_texture(tex_upload_buffer, 1, 1);
+                gfx_rapi->upload_texture(tex_upload_buffer, 1, 1, false);
             }
             return;
         }
-        gfx_rapi->upload_texture(addr, width, height);
+        gfx_rapi->upload_texture(addr, width, height, rdp.tex_lod);
         return;
     }
 
@@ -1585,7 +1585,7 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bo
                 if (linear_filter != rendering_state.textures[i]->second.linear_filter ||
                     cms != rendering_state.textures[i]->second.cms || cmt != rendering_state.textures[i]->second.cmt) {
                     gfx_flush();
-                    gfx_rapi->set_sampler_parameters(i, linear_filter, cms, cmt);
+                    gfx_rapi->set_sampler_parameters(i, linear_filter, cms, cmt, rdp.tex_lod);
                     rendering_state.textures[i]->second.linear_filter = linear_filter;
                     rendering_state.textures[i]->second.cms = cms;
                     rendering_state.textures[i]->second.cmt = cmt;
@@ -1673,11 +1673,18 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bo
                 }
             }
 
-            uint32_t tex_w = is_rect ? tex_width[t] : tex_width2[t];
-            uint32_t tex_h = is_rect ? tex_height[t] : tex_height2[t];
+            buf_vbo[buf_vbo_len++] = u / tex_width[t];
+            buf_vbo[buf_vbo_len++] = v / tex_height[t];
 
-            buf_vbo[buf_vbo_len++] = u / tex_w;
-            buf_vbo[buf_vbo_len++] = v / tex_h;
+            bool clampS = tm & (1 << 2 * t);
+            bool clampT = tm & (1 << (2 * t + 1));
+
+            if (clampS) {
+                buf_vbo[buf_vbo_len++] = (tex_width2[t] - 0.5f) / tex_width[t];
+            }
+            if (clampT) {
+                buf_vbo[buf_vbo_len++] = (tex_height2[t] - 0.5f) / tex_height[t];
+            }
         }
 
         if (use_fog) {
@@ -3204,6 +3211,18 @@ extern "C" void gfx_set_texture_filter(enum FilteringMode mode) {
     color_combiner_pool.clear();
     prev_combiner = color_combiner_pool.end();
     gfx_rapi->set_texture_filter(mode);
+}
+
+extern "C" void gfx_set_mipmap_filter(enum MipmapFilteringMode mode) {
+    gfx_texture_cache_clear();
+    if (rendering_state.shader_program) {
+        gfx_rapi->unload_shader(rendering_state.shader_program);
+        rendering_state.shader_program = nullptr;
+    }
+    gfx_rapi->clear_shaders();
+    color_combiner_pool.clear();
+    prev_combiner = color_combiner_pool.end();
+    gfx_rapi->set_mipmap_filter(mode);
 }
 
 extern "C" int gfx_create_framebuffer(uint32_t width, uint32_t height, int upscale, int autoresize) {

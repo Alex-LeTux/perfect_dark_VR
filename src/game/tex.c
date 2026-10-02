@@ -544,7 +544,7 @@ Gfx *texWriteLoadToTmemAddr(Gfx *gdl, struct tex *tex, s32 tmemoffset)
 		}
 
 		gDPLoadSync(gdl++);
-		gDPLoadTLUT07(gdl++, tex->tlutoffset, tex->numcolors + 1);
+		gDPLoadTLUT07(gdl++, tex->tlutoffset, tex->unk0a + 1);
 	}
 
 	return gdl;

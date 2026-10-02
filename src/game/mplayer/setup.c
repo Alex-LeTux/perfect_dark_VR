@@ -2262,7 +2262,7 @@ MenuItemHandlerResult mpPlayerNameMenuHandler(s32 operation, struct menuitem *it
 
 MenuItemHandlerResult mpLoadSettingsMenuHandler(s32 operation, struct menuitem *item, union handlerdata *data)
 {
-	u8 presets = g_Menus[g_MpPlayerNum].mpsetup.showpresets;
+	u8 presets = g_Menus[g_MpPlayerNum].mpsetupext.showpresets;
 	s32 numpresets = mpGetNumUnlockedPresets()*presets;
 
 	switch (operation) {
@@ -2572,8 +2572,8 @@ MenuDialogHandlerResult mpLoadSettingsDialogHandler(s32 operation, struct menudi
 {
 	if (operation == MENUOP_TICK) {
 		if (menuAltAnyPressed(g_MpPlayerNum)) {
-			u8 presets = g_Menus[g_MpPlayerNum].mpsetup.showpresets;
-			g_Menus[g_MpPlayerNum].mpsetup.showpresets = 1 - presets;
+			u8 presets = g_Menus[g_MpPlayerNum].mpsetupext.showpresets;
+			g_Menus[g_MpPlayerNum].mpsetupext.showpresets = 1 - presets;
 		}
 	}
 }

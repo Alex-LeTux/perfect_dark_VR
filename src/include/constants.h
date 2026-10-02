@@ -3674,17 +3674,18 @@ extern int32_t g_internalRenderHeight;
 
 // Dimensions used for rendering
 #if VERSION == VERSION_PAL_FINAL
-#define SCREEN_WIDTH_LO  320
-#define SCREEN_HEIGHT_LO 266
-#define SCREEN_WIDTH_HI  448
-#define SCREEN_HEIGHT_HI 266
+//VR now set in vr_openxr.cpp (VrSmallW - VrSmallH)
+#define SCREEN_WIDTH_LO  10
+#define SCREEN_HEIGHT_LO 10
+#define SCREEN_WIDTH_HI  10
+#define SCREEN_HEIGHT_HI 10
 #elif VERSION == VERSION_PAL_BETA
-#define SCREEN_WIDTH_LO  320
-#define SCREEN_HEIGHT_LO 252
-#define SCREEN_WIDTH_HI  448
-#define SCREEN_HEIGHT_HI 252
+//VR now set in vr_openxr.cpp (VrSmallW - VrSmallH)
+#define SCREEN_WIDTH_LO  10
+#define SCREEN_HEIGHT_LO 10
+#define SCREEN_WIDTH_HI  10
+#define SCREEN_HEIGHT_HI 10
 #else
-
 //VR now set in vr_openxr.cpp (VrSmallW - VrSmallH)
 #define SCREEN_WIDTH_LO  10
 #define SCREEN_HEIGHT_LO 10

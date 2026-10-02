@@ -2363,7 +2363,11 @@ void titleInitSkip(void)
 
     if (IS4MB()) {
         g_TitleNextStage = STAGE_4MBMENU;
+#ifndef PLATFORM_N64
+        viSetAspect((f32)FBALLOC_WIDTH_LO / (f32)FBALLOC_HEIGHT_LO);
+#else
         viSetAspect(PAL ? 1.7316017150879f : ((f32)FBALLOC_WIDTH_LO / (f32)FBALLOC_HEIGHT_LO));
+#endif
         viSetSize(FBALLOC_WIDTH_LO, FBALLOC_HEIGHT_LO);
         viSetBufSize(FBALLOC_WIDTH_LO, FBALLOC_HEIGHT_LO);
         playermgrSetViewSize(FBALLOC_WIDTH_LO, FBALLOC_HEIGHT_LO);

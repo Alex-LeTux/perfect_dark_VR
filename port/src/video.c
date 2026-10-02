@@ -68,6 +68,8 @@ static s32 texFilter = FILTER_LINEAR;
 static s32 texFilter2D = true;
 static s32 texDetail = false;
 static s32 texExternal = false;
+static s32 texMipmapFilter = MIPMAP_LINEAR;
+static u32 texAnisotropicFilter = 4;
 
 static u32 dlcount = 0;
 static u32 frames = 0;
@@ -128,6 +130,8 @@ s32 videoInit(void)
     videoSetFramerateLimit(vidFramerateLimit);
 
     gfx_set_texture_filter((enum FilteringMode)texFilter);
+    gfx_set_mipmap_filter((enum MipmapFilteringMode)texMipmapFilter);
+    videoSetAnisotropicFilter(texAnisotropicFilter);
 
     // Force fullscreen OFF VR
     videoSetFullscreen(false);
@@ -529,6 +533,22 @@ void videoSetTextureFilter(u32 filter)
 void videoSetTextureFilter2D(s32 filter)
 {
     texFilter2D = !!filter;
+}
+
+void videoSetAnisotropicFilter(u32 level)
+{
+    texAnisotropicFilter = level;
+    renderingAPI->set_anisotropy_level(level);
+}
+
+u32 videoGetAnisotropicFilter(void)
+{
+    return texAnisotropicFilter;
+}
+
+u32 videoGetMaxAnisotropyLevel(void)
+{
+    return renderingAPI->get_max_anisotropy_level();
 }
 
 void videoSetDetailTextures(s32 detail)

@@ -3598,8 +3598,10 @@ void playerTick(bool arg0)
     aspectratio = player0f0bd358();
 #endif
 
+#ifdef PLATFORM_N64
 #if PAL
     aspectratio *= 1.1904761791229f;
+#endif
 #endif
 
     mainOverrideVariable("tps", &var8007083c);

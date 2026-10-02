@@ -336,6 +336,8 @@ static std::vector<Framebuffer> framebuffers;
 static size_t current_framebuffer;
 static float current_noise_scale;
 static FilteringMode current_filter_mode = FILTER_LINEAR;
+static MipmapFilteringMode current_mipmap_filter_mode = MIPMAP_LINEAR;
+static int current_anisotropy_level = 1;
 static bool current_textures_linear_filter[2] = { false, false };
 
 #ifdef ANDROID // VR
@@ -349,6 +351,13 @@ static char gl_glsl_version_str[16] = "330";
 static GLenum gl_mirror_clamp = GL_MIRROR_CLAMP_TO_EDGE;
 static bool gl_es = false;
 static bool gl_core_profile = false;
+
+#ifndef GL_TEXTURE_MAX_ANISOTROPY_EXT
+#define GL_TEXTURE_MAX_ANISOTROPY_EXT 0x84FE
+#endif
+#ifndef GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT
+#define GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT 0x84FF
+#endif
 
 
 
@@ -881,6 +890,13 @@ static struct ShaderProgram* gfx_opengl_create_and_load_new_shader(uint64_t shad
             vs_len += sprintf(vs_buf + vs_len, "INPUT vec2 aTexCoord%d;\n", i);
             vs_len += sprintf(vs_buf + vs_len, "OUTPUT vec2 vTexCoord%d;\n", i);
             num_floats += 2;
+            for (int j = 0; j < 2; j++) {
+                if (cc_features.clamp[i][j]) {
+                    vs_len += sprintf(vs_buf + vs_len, "INPUT float aTexClamp%s%d;\n", j == 0 ? "S" : "T", i);
+                    vs_len += sprintf(vs_buf + vs_len, "OUTPUT float vTexClamp%s%d;\n", j == 0 ? "S" : "T", i);
+                    num_floats += 1;
+                }
+            }
         }
     }
     if (cc_features.opt_fog) {
@@ -907,6 +923,12 @@ static struct ShaderProgram* gfx_opengl_create_and_load_new_shader(uint64_t shad
     for (int i = 0; i < 2; i++) {
         if (cc_features.used_textures[i]) {
             vs_len += sprintf(vs_buf + vs_len, "    vTexCoord%d = aTexCoord%d;\n", i, i);
+            for (int j = 0; j < 2; j++) {
+                if (cc_features.clamp[i][j]) {
+                    vs_len += sprintf(vs_buf + vs_len, "    vTexClamp%s%d = aTexClamp%s%d;\n", j == 0 ? "S" : "T", i,
+                                      j == 0 ? "S" : "T", i);
+                }
+            }
         }
     }
     if (cc_features.opt_fog) {
@@ -963,6 +985,11 @@ static struct ShaderProgram* gfx_opengl_create_and_load_new_shader(uint64_t shad
     for (int i = 0; i < 2; i++) {
         if (cc_features.used_textures[i]) {
             fs_len += sprintf(fs_buf + fs_len, "INPUT vec2 vTexCoord%d;\n", i);
+            for (int j = 0; j < 2; j++) {
+                if (cc_features.clamp[i][j]) {
+                    fs_len += sprintf(fs_buf + fs_len, "INPUT float vTexClamp%s%d;\n", j == 0 ? "S" : "T", i);
+                }
+            }
         }
     }
     if (cc_features.opt_fog) {
@@ -1068,10 +1095,31 @@ static struct ShaderProgram* gfx_opengl_create_and_load_new_shader(uint64_t shad
             fs_len += sprintf(fs_buf + fs_len,
                               "    vec2 texSize%d = vec2(textureSize(uTex%d, 0));\n", i, i);
 
+            if (!s && !t) {
+                fs_len += sprintf(fs_buf + fs_len, "    vec2 vTexCoordAdj%d = vTexCoord%d;\n", i, i);
+            } else {
+                if (s && t) {
+                    fs_len += sprintf(fs_buf + fs_len,
+                                      "    vec2 vTexCoordAdj%d = clamp(vTexCoord%d, 0.5 / texSize%d, "
+                                      "vec2(vTexClampS%d, vTexClampT%d));\n",
+                                      i, i, i, i, i);
+                } else if (s) {
+                    fs_len += sprintf(fs_buf + fs_len,
+                                      "    vec2 vTexCoordAdj%d = vec2(clamp(vTexCoord%d.s, 0.5 / "
+                                      "texSize%d.s, vTexClampS%d), vTexCoord%d.t);\n",
+                                      i, i, i, i, i);
+                } else {
+                    fs_len += sprintf(fs_buf + fs_len,
+                                      "    vec2 vTexCoordAdj%d = vec2(vTexCoord%d.s, clamp(vTexCoord%d.t, "
+                                      "0.5 / texSize%d.t, vTexClampT%d));\n",
+                                      i, i, i, i, i);
+                }
+            }
+
             if (current_filter_mode == FILTER_THREE_POINT)
-                fs_len += sprintf(fs_buf + fs_len, "    vec4 texVal%d = hookTexture2D(uTex%d, vTexCoord%d, texSize%d, three_point_filter%d);\n", i, i, i, i, i);
+                fs_len += sprintf(fs_buf + fs_len, "    vec4 texVal%d = hookTexture2D(uTex%d, vTexCoordAdj%d, texSize%d, three_point_filter%d);\n", i, i, i, i, i);
             else
-                fs_len += sprintf(fs_buf + fs_len, "    vec4 texVal%d = hookTexture2D(uTex%d, vTexCoord%d, texSize%d);\n", i, i, i, i);
+                fs_len += sprintf(fs_buf + fs_len, "    vec4 texVal%d = hookTexture2D(uTex%d, vTexCoordAdj%d, texSize%d);\n", i, i, i, i);
         }
     }
 
@@ -1208,6 +1256,15 @@ static struct ShaderProgram* gfx_opengl_create_and_load_new_shader(uint64_t shad
             prg->attrib_locations[cnt] = glGetAttribLocation(shader_program, name);
             prg->attrib_sizes[cnt] = 2;
             ++cnt;
+
+            for (int j = 0; j < 2; j++) {
+                if (cc_features.clamp[i][j]) {
+                    sprintf(name, "aTexClamp%s%d", j == 0 ? "S" : "T", i);
+                    prg->attrib_locations[cnt] = glGetAttribLocation(shader_program, name);
+                    prg->attrib_sizes[cnt] = 1;
+                    ++cnt;
+                }
+            }
         }
     }
 
@@ -1311,8 +1368,11 @@ static void gfx_opengl_select_texture(int tile, GLuint texture_id, bool linear_f
     current_textures_linear_filter[tile] = linear_filter;
 }
 
-static void gfx_opengl_upload_texture(const uint8_t* rgba32_buf, uint32_t width, uint32_t height) {
+static void gfx_opengl_upload_texture(const uint8_t* rgba32_buf, uint32_t width, uint32_t height, bool gen_mipmaps) {
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba32_buf);
+    if (gen_mipmaps) {
+        glGenerateMipmap(GL_TEXTURE_2D);
+    }
 }
 
 static uint32_t gfx_cm_to_opengl(uint32_t val) {
@@ -1329,13 +1389,37 @@ static uint32_t gfx_cm_to_opengl(uint32_t val) {
     return 0;
 }
 
-static void gfx_opengl_set_sampler_parameters(int tile, bool linear_filter, uint32_t cms, uint32_t cmt) {
-    const GLint filter = linear_filter && (current_filter_mode == FILTER_LINEAR) ? GL_LINEAR : GL_NEAREST;
+static void gfx_opengl_set_sampler_parameters(int tile, bool linear_filter, uint32_t cms, uint32_t cmt, bool mipmaps) {
+    GLint min_filter;
+    GLint mag_filter;
+
+    if (linear_filter && current_filter_mode == FILTER_LINEAR) {
+        mag_filter = GL_LINEAR;
+        if (mipmaps && current_mipmap_filter_mode != MIPMAP_DISABLED) {
+            min_filter = (current_mipmap_filter_mode == MIPMAP_LINEAR) ? GL_LINEAR_MIPMAP_LINEAR : GL_LINEAR_MIPMAP_NEAREST;
+        } else {
+            min_filter = GL_LINEAR;
+        }
+    } else {
+        mag_filter = GL_NEAREST;
+        if (mipmaps && current_mipmap_filter_mode != MIPMAP_DISABLED) {
+            min_filter = (current_mipmap_filter_mode == MIPMAP_LINEAR) ? GL_NEAREST_MIPMAP_LINEAR : GL_NEAREST_MIPMAP_NEAREST;
+        } else {
+            min_filter = GL_NEAREST;
+        }
+    }
+
     glActiveTexture(GL_TEXTURE0 + tile);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filter);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filter);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, min_filter);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, mag_filter);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, gfx_cm_to_opengl(cms));
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, gfx_cm_to_opengl(cmt));
+
+    if (current_anisotropy_level > 1 && linear_filter && current_filter_mode == FILTER_LINEAR) {
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_ANISOTROPY_EXT, current_anisotropy_level);
+    } else {
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_ANISOTROPY_EXT, 1);
+    }
 }
 
 static void gfx_opengl_set_depth_mode(bool depth_test, bool depth_update, bool depth_compare, bool depth_source_prim, uint16_t zmode) {
@@ -2463,6 +2547,20 @@ FilteringMode gfx_opengl_get_texture_filter(void) {
     return current_filter_mode;
 }
 
+void gfx_opengl_set_mipmap_filter(MipmapFilteringMode mode) {
+    current_mipmap_filter_mode = mode;
+}
+
+void gfx_opengl_set_anisotropy_level(int level) {
+    current_anisotropy_level = level;
+}
+
+int gfx_opengl_get_max_anisotropy_level(void) {
+    GLint max_anisotropy = 1;
+    glGetIntegerv(GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT, &max_anisotropy);
+    return max_anisotropy;
+}
+
 
 
 
@@ -2667,6 +2765,9 @@ struct GfxRenderingAPI gfx_opengl_api = {
         gfx_opengl_delete_texture,
         gfx_opengl_set_texture_filter,
         gfx_opengl_get_texture_filter,
+        gfx_opengl_set_mipmap_filter,
+        gfx_opengl_set_anisotropy_level,
+        gfx_opengl_get_max_anisotropy_level,
         gfx_opengl_set_eye_offsets,
         gfx_opengl_is_multiview,
         gfx_opengl_mirror_to_desktop

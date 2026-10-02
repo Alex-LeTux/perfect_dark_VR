@@ -142,6 +142,7 @@ struct mpweapon g_MpWeapons[NUM_MPWEAPONS] = {
 	.crosshaircolour = 0x00ff0028, \
 	.crosshairsize = 2, \
 	.crosshairhealth = CROSSHAIR_HEALTH_OFF,\
+	.crosshairedgeboundary = 0.7f, \
 	.crosshairhideunlessaiming = false,     \
 	.hidesightzoom = false,     \
     .usereloads = false, \
@@ -604,7 +605,7 @@ void mpInit(bool resetplayers)
 	g_MpSetup.chrslots = 0;
 
 	for (i = 0; i < ARRAYCOUNT(g_Menus); i++) {
-		g_Menus[i].mpsetup.showpresets = 1;
+		g_Menus[i].mpsetupext.showpresets = 1;
 	}
 
 #ifndef PLATFORM_N64

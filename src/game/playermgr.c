@@ -531,7 +531,11 @@ void playermgrAllocatePlayer(s32 index)
 	g_Vars.players[index]->zoominfovyold = 60;
 	g_Vars.players[index]->zoominfovynew = 60;
 	g_Vars.players[index]->fovy = 60;
+#ifndef PLATFORM_N64
+	g_Vars.players[index]->aspect = 640.0f / 480.0f;
+#else
 	g_Vars.players[index]->aspect = 640.0f / (PAL ? 544.0f : 480.0f);
+#endif
 	g_Vars.players[index]->hudmessoff = 0;
 	g_Vars.players[index]->bondmesscnt = -1;
 

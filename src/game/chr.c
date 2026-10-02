@@ -4544,7 +4544,17 @@ void chrTestHit(struct prop *prop, struct shotdata *shotdata, bool isshooting, b
 
 			if (hitpart) {
 				if (chrGetShield(chr) > 0.0f) {
-					var8005efc0 = 10.0f / model->scale;
+#ifndef PLATFORM_N64
+					/**
+					 * var8005efc0 > 0.0f adds a padding to bbox hit detection
+					 * in modelTestBboxNodeForHit() that accounts for a character's
+					 * surrounding shield. We skip this step on PC when checking
+					 * line-of-sight hits to light artifacts because lights should
+					 * be visible through the transparent shield.
+					 */
+					if (g_BgHitXluDisabled == false)
+#endif
+						var8005efc0 = 10.0f / model->scale;
 				}
 
 				child = prop->child;

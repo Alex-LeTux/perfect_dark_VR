@@ -171,7 +171,11 @@ void viConfigureForLegal(void)
 }
 
 const s16 g_ViModeWidths[]  = {FBALLOC_WIDTH_LO,  FBALLOC_WIDTH_LO,  SCREEN_320 * 2};
+#ifndef PLATFORM_N64
+const s16 g_ViModeHeights[] = {FBALLOC_HEIGHT_LO, FBALLOC_HEIGHT_LO, 440 * 2};// VR Fix: identical aspect ratio regardless of ROM region
+#else
 const s16 g_ViModeHeights[] = {FBALLOC_HEIGHT_LO, FBALLOC_HEIGHT_LO, (PAL ? 504 : 440) * 2};// VR
+#endif
 
 /**
  * Allocate the colour framebuffers for the given stage.
@@ -373,22 +377,29 @@ void viUpdateMode(void)
 		var8008dcc0[slot].fldRegs[0].origin = g_ViBackData->bufx * 2;
 		var8008dcc0[slot].fldRegs[1].origin = g_ViBackData->bufx * 2;
 
+#ifdef PLATFORM_N64
 #if PAL
 		var8008dcc0[slot].fldRegs[0].yScale = 1024;
 		var8008dcc0[slot].fldRegs[1].yScale = 1024;
 #else
 		if (IS4MB()) {
-//			var8008dcc0[slot].fldRegs[0].yScale = 1024;
-//			var8008dcc0[slot].fldRegs[1].yScale = 1024;
+			var8008dcc0[slot].fldRegs[0].yScale = 1024;
+			var8008dcc0[slot].fldRegs[1].yScale = 1024;
+		} else {
+			var8008dcc0[slot].fldRegs[0].yScale = g_ViBackData->bufy * 2048 / 440;
+			var8008dcc0[slot].fldRegs[1].yScale = g_ViBackData->bufy * 2048 / 440;
+		}
+#endif
+#else
+		if (IS4MB()) {
             var8008dcc0[slot].fldRegs[0].yScale = 2048;
             var8008dcc0[slot].fldRegs[1].yScale = 2048;
 		} else {
-//			var8008dcc0[slot].fldRegs[0].yScale = g_ViBackData->bufy * 2048 / 440;
-//			var8008dcc0[slot].fldRegs[1].yScale = g_ViBackData->bufy * 2048 / 440;
             var8008dcc0[slot].fldRegs[0].yScale = g_ViBackData->bufy * 4096 / 880;
             var8008dcc0[slot].fldRegs[1].yScale = g_ViBackData->bufy * 4096 / 880;
 		}
 #endif
+
 
 		hstart = var8008dcc0[slot].comRegs.hStart;
 		var8008de08 = var8008dcc0[slot].comRegs.hStart = ADD_LOW_AND_HI_16_MOD(hstart, g_ViTargetHStart);
@@ -439,9 +450,14 @@ void viUpdateMode(void)
 		g_ViCurVStart1 = var8008dcc0[slot].fldRegs[1].vStart = ADD_LOW_AND_HI_16_MOD(reg, g_ViTargetVStart);
 
 		if (g_MainIsBooting) {
+#ifdef PLATFORM_N64
 #if PAL
 			g_ViCurVStart0 = var8008dcc0[slot].fldRegs[0].vStart = ((g_ViTargetVStart + 506) % 0xffff) << 16 | (g_ViTargetVStart + 134) % 0xffff;
 			g_ViCurVStart1 = var8008dcc0[slot].fldRegs[1].vStart = ((g_ViTargetVStart + 508) % 0xffff) << 16 | (g_ViTargetVStart + 132) % 0xffff;
+#else
+			g_ViCurVStart0 = var8008dcc0[slot].fldRegs[0].vStart = ((g_ViTargetVStart + 431) % 0xffff) << 16 | (g_ViTargetVStart + 123) % 0xffff;
+			g_ViCurVStart1 = var8008dcc0[slot].fldRegs[1].vStart = ((g_ViTargetVStart + 433) % 0xffff) << 16 | (g_ViTargetVStart + 121) % 0xffff;
+#endif
 #else
 			g_ViCurVStart0 = var8008dcc0[slot].fldRegs[0].vStart = ((g_ViTargetVStart + 431) % 0xffff) << 16 | (g_ViTargetVStart + 123) % 0xffff;
 			g_ViCurVStart1 = var8008dcc0[slot].fldRegs[1].vStart = ((g_ViTargetVStart + 433) % 0xffff) << 16 | (g_ViTargetVStart + 121) % 0xffff;
