@@ -1673,18 +1673,11 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bo
                 }
             }
 
-            buf_vbo[buf_vbo_len++] = u / tex_width[t];
-            buf_vbo[buf_vbo_len++] = v / tex_height[t];
+            uint32_t tex_w = is_rect ? tex_width[t] : tex_width2[t];
+            uint32_t tex_h = is_rect ? tex_height[t] : tex_height2[t];
 
-            bool clampS = tm & (1 << 2 * t);
-            bool clampT = tm & (1 << (2 * t + 1));
-
-            if (clampS) {
-                buf_vbo[buf_vbo_len++] = (tex_width2[t] - 0.5f) / tex_width[t];
-            }
-            if (clampT) {
-                buf_vbo[buf_vbo_len++] = (tex_height2[t] - 0.5f) / tex_height[t];
-            }
+            buf_vbo[buf_vbo_len++] = u / tex_w;
+            buf_vbo[buf_vbo_len++] = v / tex_h;
         }
 
         if (use_fog) {
