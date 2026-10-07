@@ -24,6 +24,18 @@ body:
       required: true
 
   - type: checkboxes
+    id: rom_id
+    attributes:
+      label: ROM ID
+      description: Select the ROM region/version you are using.
+      options:
+        - label: NTSC
+        - label: PAL
+        - label: JPN
+    validations:
+      required: true
+
+  - type: checkboxes
     id: runtime
     attributes:
       label: Runtime / Platform
@@ -54,5 +66,3 @@ body:
         1.
         2.
         3.
-
-
