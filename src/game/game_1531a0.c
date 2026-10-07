@@ -1413,6 +1413,9 @@ Gfx *text0f154f38(Gfx *gdl, s32 *arg1, struct fontchar *curchar, struct fontchar
 	}
 #endif
 
+#if VERSION == VERSION_JPN_FINAL
+	gDPSetTextureInfoEXT(gdl++, G_TEXTYPE_NONE, 0, 0, 0);
+#endif
 	gDPLoadSync(gdl++);
 	gDPLoadBlock(gdl++, G_TX_LOADTILE, 0, 0, ((curchar->height * 8 + 17) >> 1) - 1, 2048);
 	gDPPipeSync(gdl++);
@@ -1514,7 +1517,8 @@ Gfx *text0f1552d4(Gfx *gdl, f32 x, f32 y, f32 widthscale, f32 heightscale,
     gDPPipeSync(gdl++);
     gDPSetTextureLUT(gdl++, G_TT_IA16);
 
-#if VERSION >= VERSION_JPN_FINAL
+#if VERSION == VERSION_JPN_FINAL
+    gDPSetTextureInfoEXT(gdl++, G_TEXTYPE_NONE, 0, 0, 0);
     gDPSetTextureImage(gdl++, G_IM_FMT_RGBA, G_IM_SIZ_16b, 1, osVirtualToPhysical(var800801d8jf));
 	var80080104jf = true;
 #else
@@ -1550,11 +1554,22 @@ Gfx *text0f1552d4(Gfx *gdl, f32 x, f32 y, f32 widthscale, f32 heightscale,
 
 				prevchar = 'H';
 				text += 1;
-			} else {
+} else {
 				struct fontchar *sp84;
 				struct fontchar *sp80;
 
 				textMapCodeUnitToChar(&text, &sp84, &sp80, chars, &prevchar);
+				
+				// -- JPN FONT TEXTURES FIX --
+#if VERSION != VERSION_JPN_FINAL
+				s32 charIndex = sp84 - chars;
+				if (charIndex >= 0 && charIndex < 256) {
+					u8 fontID = extTexFontID(font);
+					gDPSetTextureInfoEXT(gdl++, G_TEXTYPE_FONT, fontID, charIndex, 0);
+				}
+#endif
+				// --
+
 				gdl = text0f154f38(gdl, &relx, sp84, sp80, font, widthscale, heightscale, fx, fy);
 			}
 		}
@@ -1578,8 +1593,10 @@ Gfx *text0f1552d4(Gfx *gdl, f32 x, f32 y, f32 widthscale, f32 heightscale,
 					relx = 0;
 				}
 			} else if (*text < 0x80) {
+#if VERSION != VERSION_JPN_FINAL
 				u8 fontID = extTexFontID(font);
 				gDPSetTextureInfoEXT(gdl++, G_TEXTYPE_FONT, fontID, *text - 0x21, 0);
+#endif
 				gdl = text0f154f38(gdl, &relx, &chars[*text - 0x21], &chars[prevchar - 0x21], font,
 						widthscale, heightscale, fx, fy);
 				prevchar = *text;
@@ -1662,6 +1679,9 @@ Gfx *text0f15568c(Gfx *gdl, s32 *x, s32 *y, struct fontchar *curchar, struct fon
 			}
 
 			gDPSetTextureImage(gdl++, G_IM_FMT_CI, G_IM_SIZ_16b, 1, curchar->pixeldata);
+#if VERSION == VERSION_JPN_FINAL
+			gDPSetTextureInfoEXT(gdl++, G_TEXTYPE_NONE, 0, 0, 0);
+#endif
 			gDPLoadSync(gdl++);
 			gDPLoadBlock(gdl++, G_TX_LOADTILE, 0, 0, ((curchar->height * 8 + 17) >> 1) - 1, 2048);
 			gDPPipeSync(gdl++);
@@ -1777,6 +1797,9 @@ Gfx *text0f15568c(Gfx *gdl, s32 *x, s32 *y, struct fontchar *curchar, struct fon
             && *x >= savedx
             && curchar->baseline + sp90 + curchar->height >= savedy) {
             gDPSetTextureImage(gdl++, G_IM_FMT_CI, G_IM_SIZ_16b, 1, curchar->pixeldata);
+#if VERSION == VERSION_JPN_FINAL
+            gDPSetTextureInfoEXT(gdl++, G_TEXTYPE_NONE, 0, 0, 0);
+#endif
             gDPLoadSync(gdl++);
             gDPLoadBlock(gdl++, G_TX_LOADTILE, 0, 0, ((curchar->height * 8 + 17) >> 1) - 1, 2048);
             gDPPipeSync(gdl++);
@@ -2018,7 +2041,8 @@ Gfx *textRenderProjected(Gfx *gdl, s32 *x, s32 *y, char *text, struct fontchar *
     gDPPipeSync(gdl++);
     gDPSetTextureLUT(gdl++, G_TT_IA16);
 
-#if VERSION >= VERSION_JPN_FINAL
+#if VERSION == VERSION_JPN_FINAL
+    gDPSetTextureInfoEXT(gdl++, G_TEXTYPE_NONE, 0, 0, 0);
     gDPSetTextureImage(gdl++, G_IM_FMT_RGBA, G_IM_SIZ_16b, 1, osVirtualToPhysical(var800801d8jf));
 	var80080104jf = true;
 #else
@@ -2052,11 +2076,21 @@ Gfx *textRenderProjected(Gfx *gdl, s32 *x, s32 *y, char *text, struct fontchar *
 				*x = savedx;
 				prevchar = 'H';
 				text++;
-			} else {
+} else {
 				struct fontchar *sp78;
 				struct fontchar *sp74;
 
 				textMapCodeUnitToChar(&text, &sp78, &sp74, chars, &prevchar);
+
+				// -- PAL FONT TEXTURES FIX --
+#if VERSION != VERSION_JPN_FINAL
+				s32 charIndex = sp78 - chars;
+				if (charIndex >= 0 && charIndex < 256) {
+					u8 fontID = extTexFontID(font);
+					gDPSetTextureInfoEXT(gdl++, G_TEXTYPE_FONT, fontID, charIndex, 0);
+				}
+#endif                
+				// --
 
 				gdl = text0f15568c(gdl, x, y, sp78, sp74, font, savedx, savedy, width, height, arg9);
 			}
@@ -2081,8 +2115,10 @@ Gfx *textRenderProjected(Gfx *gdl, s32 *x, s32 *y, char *text, struct fontchar *
 
 				*x = savedx;
 			} else if (*text < 0x80) {
+#if VERSION != VERSION_JPN_FINAL
 				u8 fontID = extTexFontID(font);
 				gDPSetTextureInfoEXT(gdl++, G_TEXTYPE_FONT, fontID, *text - 0x21, 0);
+#endif
 				gdl = text0f15568c(gdl, x, y, &chars[*text - 0x21], &chars[prevchar - 0x21], font, savedx, savedy, width, height, arg9);
 				prevchar = *text;
 				text++;
@@ -2169,6 +2205,9 @@ Gfx *textRenderChar(Gfx *gdl, s32 *x, s32 *y, struct fontchar *char1, struct fon
 #endif
 
         gDPSetTextureImage(gdl++, G_IM_FMT_CI, G_IM_SIZ_16b, 1, char1->pixeldata);
+#if VERSION == VERSION_JPN_FINAL
+        gDPSetTextureInfoEXT(gdl++, G_TEXTYPE_NONE, 0, 0, 0);
+#endif
         gDPLoadSync(gdl++);
         gDPLoadBlock(gdl++, G_TX_LOADTILE, 0, 0, ((char1->height * 8 + 17) >> 1) - 1, 2048);
         gDPPipeSync(gdl++);
@@ -2278,6 +2317,9 @@ Gfx *textRender(Gfx *gdl, s32 *x, s32 *y, char *text,
 
     gDPPipeSync(gdl++);
     gDPSetTextureLUT(gdl++, G_TT_IA16);
+#if VERSION == VERSION_JPN_FINAL
+    gDPSetTextureInfoEXT(gdl++, G_TEXTYPE_NONE, 0, 0, 0);
+#endif
     gDPSetTextureImage(gdl++, G_IM_FMT_RGBA, G_IM_SIZ_16b, 1, osVirtualToPhysical(&var8007fb5c));
     gDPLoadSync(gdl++);
     gDPLoadTLUTCmd(gdl++, 6, 31);
@@ -2320,13 +2362,23 @@ Gfx *textRender(Gfx *gdl, s32 *x, s32 *y, char *text,
 			prevchar = 'H';
 			text++;
 		} else {
-			struct fontchar *sp78;
-			struct fontchar *sp74;
+				struct fontchar *sp78;
+				struct fontchar *sp74;
 
-			textMapCodeUnitToChar(&text, &sp78, &sp74, chars, &prevchar);
+				textMapCodeUnitToChar(&text, &sp78, &sp74, chars, &prevchar);
 
-			gdl = textRenderChar(gdl, x, y, sp78, sp74,
-					font, savedx, savedy, width * var8007fad0, height, arg10);
+				// -- PAL FONT TEXTURES FIX --
+#if VERSION != VERSION_JPN_FINAL
+				s32 charIndex = sp78 - chars;
+				if (charIndex >= 0 && charIndex < 256) {
+					u8 fontID = extTexFontID(font);
+					gDPSetTextureInfoEXT(gdl++, G_TEXTYPE_FONT, fontID, charIndex, MASK_FONT_OUTLINE);
+				}
+#endif
+				// -- 
+
+				gdl = textRenderChar(gdl, x, y, sp78, sp74,
+						font, savedx, savedy, width * var8007fad0, height, arg10);
 		}
 	}
 #else
@@ -2341,8 +2393,10 @@ Gfx *textRender(Gfx *gdl, s32 *x, s32 *y, char *text,
 			prevchar = 'H';
 			text++;
 		} else if (*text < 0x80) {
+#if VERSION != VERSION_JPN_FINAL
 			u8 fontID = extTexFontID(font);
 			gDPSetTextureInfoEXT(gdl++, G_TEXTYPE_FONT, fontID, *text - 0x21, MASK_FONT_OUTLINE);
+#endif
 			gdl = textRenderChar(gdl, x, y, &chars[*text - 0x21], &chars[prevchar - 0x21],
 					font, savedx, savedy, width * var8007fad0, height, arg10);
 			prevchar = *text;
@@ -2363,8 +2417,10 @@ Gfx *textRender(Gfx *gdl, s32 *x, s32 *y, char *text,
             sp74.index = codepoint + 0x80;
             sp74.pixeldata = (void *)langGetJpnCharPixels(codepoint);
 
+#if VERSION != VERSION_JPN_FINAL
 			u8 fontID = extTexFontID(font);
 			gDPSetTextureInfoEXT(gdl++, G_TEXTYPE_FONT, fontID, *text - 0x21, MASK_FONT_OUTLINE);
+#endif
 			gdl = textRenderChar(gdl, x, y, &sp74, &sp74, font, savedx, savedy, width * var8007fad0, height, arg10);
 
             text += 2;

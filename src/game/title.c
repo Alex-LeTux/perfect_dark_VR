@@ -417,7 +417,7 @@ Gfx* titleRenderLegal(Gfx* gdl)
                         elem->textptr = VERSION_ROMID;
                     }
                     else if (elem->textid == L_OPTIONS_082) {
-                        elem->textptr = "Perfect Dark (" VERSION_BRANCH ")";
+                        elem->textptr = "Perfect Dark VR (By Alex Le Tux)"; // "Perfect Dark (" VERSION_BRANCH ")";
                     }
 #endif
                     break;

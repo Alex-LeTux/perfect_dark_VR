@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <cstring>
 
 #include "miniz/miniz.h"
 
@@ -29,14 +30,41 @@ extern "C" {
 #include "fs.h"
 }
 
+#include "../vr/vr_log.h"
+
 // ----------------------------------------------------------------------------
 // PLATFORM SPECIFIC KEYWORDS
 // ----------------------------------------------------------------------------
-#ifdef ANDROID
-#define UPDATE_ASSET_KEYWORD "Perfect_Dark_VR_Standalone" // Ensure your Quest APK contains this word
-#else
-#define UPDATE_ASSET_KEYWORD "Perfect_Dark_PCVR"
+
+
+#ifndef VERSION_ROMID
+#define VERSION_ROMID "ntsc-final" 
 #endif
+
+static const char* GetUpdateAssetKeyword() {
+    const char* romId = VERSION_ROMID;
+    
+    // vr_log("Verification VERSION_ROMID : %s", romId);
+    
+    bool isPal = (strstr(romId, "pal") != nullptr || strstr(romId, "PAL") != nullptr);
+    bool isJpn = (strstr(romId, "jpn") != nullptr || strstr(romId, "JPN") != nullptr || strstr(romId, "jp") != nullptr);
+
+    const char* keyword = nullptr;
+
+#ifdef ANDROID
+    if (isPal) keyword = "Perfect_Dark_VR_Standalone_PAL";
+    else if (isJpn) keyword = "Perfect_Dark_VR_Standalone_JPN";
+    else keyword = "Perfect_Dark_VR_Standalone_NTSC"; 
+#else
+    if (isPal) keyword = "Perfect_Dark_PCVR_PAL";
+    else if (isJpn) keyword = "Perfect_Dark_PCVR_JPN";
+    else keyword = "Perfect_Dark_PCVR_NTSC";
+#endif
+
+    // vr_log("Update Keyword ROM ID choisi : %s", keyword);
+
+    return keyword;
+}
 
 // ----------------------------------------------------------------------------
 // STATE VARIABLES
@@ -163,7 +191,7 @@ public:
 // ----------------------------------------------------------------------------
 void FetchUpdateDescWorker() {
     const char* LATEST_URL = "https://api.github.com/repos/Alex-LeTux/perfect_dark_VR/releases/latest";
-    const char* keyword = UPDATE_ASSET_KEYWORD;
+    const char* keyword = GetUpdateAssetKeyword();
 
     std::string json = FetchGitHubReleaseRaw(LATEST_URL);
     std::string version = ExtractJsonValue(json, "tag_name");
@@ -340,7 +368,7 @@ void DownloadAndUpdateWorker() {
     g_UpdateProgress.store(0.0f);
 
     const char* LATEST_URL = "https://api.github.com/repos/Alex-LeTux/perfect_dark_VR/releases/latest";
-    const char* keyword = UPDATE_ASSET_KEYWORD;
+    const char* keyword = GetUpdateAssetKeyword();
 
     // 1. Fetch Download Link
     std::string json = FetchGitHubReleaseRaw(LATEST_URL);

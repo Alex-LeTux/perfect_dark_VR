@@ -244,10 +244,14 @@ struct ExtTexture *getExtTexture(u8 type, u16 id, s32 texnum)
         case G_TEXTYPE_MODEL:
             return lookupModelTex(id, texnum);
         case G_TEXTYPE_FONT: {
+#if VERSION == VERSION_JPN_FINAL
+            return NULL;
+#else
             if (id & IDMASK_FONT_OUTLINE)
                 return &fontOutlineExtTextures[id & ~IDMASK_FONT_OUTLINE][texnum];
 
             return &fontExtTextures[id][texnum];
+#endif
         }
         default:
             sysLogPrintf(LOG_WARNING, "Invalid Texture type: %d, texnum: %04x", type, texnum);
@@ -401,6 +405,9 @@ static void *extTexDecodeThreadFunc(void *arg)
 
 u8 extTexFontID(struct font *font)
 {
+#if VERSION == VERSION_JPN_FINAL
+    return 0xff;
+#else
     if (font == g_FontHandelGothicSm)
         return FONT_HANDELGOTHICSM;
     else if (font == g_FontHandelGothicMd)
@@ -413,6 +420,7 @@ u8 extTexFontID(struct font *font)
         return FONT_NUMERIC;
 
     return 0xff;
+#endif
 }
 
 u8 resolveFontID(const char *fontname)
@@ -760,8 +768,10 @@ s32 extTexInit(void)
                         g_CurrentMaxModels *= 2;
                         modelTextures = sysMemRealloc(modelTextures, g_CurrentMaxModels * sizeof(struct ModelTextures));
                     }
+#if VERSION != VERSION_JPN_FINAL
                 } else if (s == 'f') {
                     readFontTextures(filepath, name);
+#endif
                 }
             } else {
                 s32 texNum = 0;

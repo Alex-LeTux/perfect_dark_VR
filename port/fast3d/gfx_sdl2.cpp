@@ -74,7 +74,10 @@ static bool vsync_enabled = true;
 static int window_width = -1;
 static int window_height = -1;
 
-const char *VR_Version = "v1.9.4-beta";
+const char *VR_Version = "v2.0";
+#ifndef VERSION_ROMID
+#define VERSION_ROMID "ntsc-final" 
+#endif
 
 static uint32_t fullscreen_flag = SDL_WINDOW_FULLSCREEN_DESKTOP;
 static bool fullscreen_state;
@@ -215,7 +218,7 @@ extern "C" void vrShowWaitingWindow(const char *bmpPath) {
 
             // Version text in the top-left corner — absolute position
             ImGui::SetCursorPos(ImVec2(5, 5));
-            ImGui::Text("%s", VR_Version);
+            ImGui::Text("%s - %s", VR_Version, VERSION_ROMID);
 
             // X button in the top-right corner — absolute position
             ImGui::SetCursorPos(ImVec2(waitLogoW - 26, 2));
@@ -753,7 +756,7 @@ static void gfx_sdl_swap_buffers_begin(void) {
             ImGui::PopStyleColor();
 
             // ── CALCULATE THE RIGHT-ALIGNED POSITION ──
-            float version_width = ImGui::CalcTextSize(VR_Version).x;
+            float version_width = ImGui::CalcTextSize(VR_Version).x + 90.0f; // + 90px for the ROMID text
             // Take the total window width, subtract the text width, then subtract a 15px margin.
             float align_right_x = ImGui::GetWindowWidth() - version_width - 450.0f;
             // ─────────────────────────────────────────
@@ -766,7 +769,7 @@ static void gfx_sdl_swap_buffers_begin(void) {
 
                 // ── CALCULATE THE RIGHT-ALIGNED POSITION (Mirror OFF) ──
                 ImGui::SameLine(align_right_x);
-                ImGui::Text("%s", VR_Version);
+                ImGui::Text("%s - %s", VR_Version, VERSION_ROMID);
                 //---------------------------------------------
 
                  // logo image
@@ -840,7 +843,7 @@ static void gfx_sdl_swap_buffers_begin(void) {
                 // ── CALCULATE THE RIGHT-ALIGNED POSITION (Mirror ON) ──
                 float align_right_x = ImGui::GetWindowWidth() - version_width - 15.0f;
                 ImGui::SameLine(align_right_x);
-                ImGui::Text("%s", VR_Version);
+                ImGui::Text("%s - %s", VR_Version, VERSION_ROMID);
             }
 
             ImGui::End();

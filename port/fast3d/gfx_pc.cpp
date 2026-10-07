@@ -100,7 +100,7 @@ extern float vr_get_horizontal_fov_offset_ratio(int eye);
 static float g_vr_internal_scale = 1.0f;
 bool is_weapon_hud = false;
 extern "C" void vr_get_eye_view_proj_gl(int eye, float outVP[16]);
-int VrPauseHub = false;
+int VrPauseHub = true;
 
 // --- VR: culling has to account for the per-eye clip-space shear -------------
 //
@@ -2179,6 +2179,7 @@ static void gfx_dp_load_block(uint8_t tile, uint32_t uls, uint32_t ult, uint32_t
     }
 
     rdp.textures_changed[0] = rdp.textures_changed[1] = true;
+    rdp.texture_to_load.type = G_TEXTYPE_NONE;
 }
 
 static void gfx_dp_load_tile(uint8_t tile, uint32_t uls, uint32_t ult, uint32_t lrs, uint32_t lrt) {
@@ -2863,6 +2864,7 @@ static void gfx_run_dl(Gfx* cmd) {
                 }
                 break;
             case G_COPYFB_EXT:
+                gfx_flush();
                 gfx_copy_framebuffer(C0(11, 11), C0(0, 11), (int16_t)C1(16, 16), (int16_t)C1(0, 16), C0(22, 1));
                 break;
             case G_RDPSETOTHERMODE:

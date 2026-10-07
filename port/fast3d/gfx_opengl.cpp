@@ -67,10 +67,13 @@ static GLint  s_mirror_uloc_tex   = -1;
 static GLint  s_mirror_uloc_layer = -1;
 static GLint  s_mirror_uloc_rect  = -1;
 
+static GLuint s_mv_blit_vao = 0;
 static GLuint mv_blit_prog = 0;
 static GLint mv_blit_uTexLoc = -1;
 static GLint mv_blit_uFlipYLoc = -1;
 static GLint mv_blit_uRectLoc = -1;
+static GLint mv_blit_uLayerLoc = -1;
+static GLint mv_blit_uSbsLoc = -1;
 
 // ============================================================================
 // GLOBAL STATE - gVrMenuH Head XR layer
@@ -461,7 +464,12 @@ static void mv_blit_init() {
     mv_blit_uTexLoc = glGetUniformLocation(mv_blit_prog, "uTex");
     mv_blit_uFlipYLoc = glGetUniformLocation(mv_blit_prog, "uFlipY");
     mv_blit_uRectLoc = glGetUniformLocation(mv_blit_prog, "uRect");
+    mv_blit_uLayerLoc = glGetUniformLocation(mv_blit_prog, "uLayer");
+    mv_blit_uSbsLoc = glGetUniformLocation(mv_blit_prog, "uSbs");
 
+    if (s_mv_blit_vao == 0) {
+        glGenVertexArrays(1, &s_mv_blit_vao);
+    }
 }
 
 
@@ -2424,18 +2432,18 @@ void gfx_opengl_copy_framebuffer(int fb_dst, int fb_src, int left, int top, bool
 
 
 #ifndef __ANDROID__ // if PC
-        // Fix AMD
-        gfx_flush();
-        gl_texture_barrier_safe(); // force visibility of the previous write
+        glFlush(); // Ensure commands written to swapchain are completed
 #endif
 
         glUniform1i(mv_blit_uTexLoc, 0);
         glUniform1i(mv_blit_uFlipYLoc, flip_y ? 1 : 0);
+        if (mv_blit_uLayerLoc >= 0) glUniform1i(mv_blit_uLayerLoc, 0);
+        if (mv_blit_uSbsLoc >= 0)   glUniform1i(mv_blit_uSbsLoc, 0);
 
         // NEW: source rectangle in UV
         glUniform4f(mv_blit_uRectLoc, u0, v0, u1, v1);
 
-        glBindVertexArray(opengl_vao);
+        glBindVertexArray(s_mv_blit_vao);
         glDrawArrays(GL_TRIANGLES, 0, 3);
 
         // Restore GL state

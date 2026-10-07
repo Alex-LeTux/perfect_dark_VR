@@ -218,21 +218,21 @@ Gfx *menugfxRenderBgBlur(Gfx *gdl, u32 colour, s16 arg2, s16 arg3)
     gDPSetRenderMode(gdl++, G_RM_XLU_SURF, G_RM_XLU_SURF2);
 
 #if VERSION >= VERSION_JPN_FINAL
-    width = viGetWidth() * 10;
-	height = viGetHeight() * 10;
+    width = viGetWidth() * 25;
+	height = viGetHeight() * 20;
 
-	*(u16 *)&vertices[0].x = arg2;
-	*(u16 *)&vertices[0].y = arg3;
-	vertices[0].z = -10;
-	*(u16 *)&vertices[1].x = arg2 + SCREEN_320 * 10u + 40;
-	*(u16 *)&vertices[1].y = arg3;
-	vertices[1].z = -10;
-	*(u16 *)&vertices[2].x = arg2 + SCREEN_320 * 10u + 40;
-	*(u16 *)&vertices[2].y = arg3 + SCREEN_240 * 10u + 50;
-	vertices[2].z = -10;
-	*(u16 *)&vertices[3].x = arg2;
-	*(u16 *)&vertices[3].y = arg3 + SCREEN_240 * 10u + 50;
-	vertices[3].z = -10;
+    *(u16 *)&vertices[0].x = arg2;
+    *(u16 *)&vertices[0].y = arg3;
+    vertices[0].z = -9;
+    *(u16 *)&vertices[1].x = (s32)width + arg2 + 40;
+    *(u16 *)&vertices[1].y = arg3;
+    vertices[1].z = -9;
+    *(u16 *)&vertices[2].x = (s32)width + arg2 + 40;
+    *(u16 *)&vertices[2].y = (s32)height + arg3 + 50;
+    vertices[2].z = -9;
+    *(u16 *)&vertices[3].x = arg2;
+    *(u16 *)&vertices[3].y = (s32)height + arg3 + 50;
+    vertices[3].z = -9;
 #elif PAL || !defined(PLATFORM_N64)
 #ifdef PLATFORM_N64
     width = viGetWidth() * 10;
@@ -255,17 +255,17 @@ Gfx *menugfxRenderBgBlur(Gfx *gdl, u32 colour, s16 arg2, s16 arg3)
     vertices[3].z = -9;
 #else
     *(u16 *)&vertices[0].x = arg2;
-	*(u16 *)&vertices[0].y = arg3;
-	vertices[0].z = -10;
-	*(u16 *)&vertices[1].x = arg2 + SCREEN_320 * 10u + 40;
-	*(u16 *)&vertices[1].y = arg3;
-	vertices[1].z = -10;
-	*(u16 *)&vertices[2].x = arg2 + SCREEN_320 * 10u + 40;
-	*(u16 *)&vertices[2].y = arg3 + SCREEN_240 * 10u + 50;
-	vertices[2].z = -10;
-	*(u16 *)&vertices[3].x = arg2;
-	*(u16 *)&vertices[3].y = arg3 + SCREEN_240 * 10u + 50;
-	vertices[3].z = -10;
+    *(u16 *)&vertices[0].y = arg3;
+    vertices[0].z = -9;
+    *(u16 *)&vertices[1].x = (s32)width + arg2 + 40;
+    *(u16 *)&vertices[1].y = arg3;
+    vertices[1].z = -9;
+    *(u16 *)&vertices[2].x = (s32)width + arg2 + 40;
+    *(u16 *)&vertices[2].y = (s32)height + arg3 + 50;
+    vertices[2].z = -9;
+    *(u16 *)&vertices[3].x = arg2;
+    *(u16 *)&vertices[3].y = (s32)height + arg3 + 50;
+    vertices[3].z = -9;
 #endif
 
     vertices[0].s = 0;
