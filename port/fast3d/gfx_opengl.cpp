@@ -63,11 +63,13 @@ extern "C" GLuint vr_get_current_multiview_swapchain_tex();
 
 static GLuint s_mirror_prog  = 0;
 static GLuint s_mirror_vao   = 0;
+static GLuint s_mirror_vbo   = 0;
 static GLint  s_mirror_uloc_tex   = -1;
 static GLint  s_mirror_uloc_layer = -1;
 static GLint  s_mirror_uloc_rect  = -1;
 
 static GLuint s_mv_blit_vao = 0;
+static GLuint s_mv_blit_vbo = 0;
 static GLuint mv_blit_prog = 0;
 static GLint mv_blit_uTexLoc = -1;
 static GLint mv_blit_uFlipYLoc = -1;
@@ -119,21 +121,15 @@ extern GLuint gfx_opengl_get_vr_menu_texture_R(void);
 extern GLuint gfx_opengl_get_vr_menu_texture_H(void);
 //---
 
-// Fullscreen tri, VS without attributes (uses gl_VertexID)
-//#version 300 es if gles, otherwise 330 core
+// Fullscreen tri VS with explicit vertex attribute
 static const char* mv_blit_vs_src =
         "#version 300 es\n"
         "precision highp float;\n"
+        "layout(location = 0) in vec2 aPos;\n"
         "out vec2 vUV;\n"
-        "const vec2 pos[3] = vec2[3](\n"
-        "    vec2(-1.0,-1.0),\n"
-        "    vec2( 3.0,-1.0),\n"
-        "    vec2(-1.0, 3.0)\n"
-        ");\n"
         "void main() {\n"
-        "    vec2 p = pos[gl_VertexID];\n"
-        "    gl_Position = vec4(p, 0.0, 1.0);\n"
-        "    vUV = p * 0.5 + 0.5;\n"
+        "    gl_Position = vec4(aPos, 0.0, 1.0);\n"
+        "    vUV = aPos * 0.5 + 0.5;\n"
         "}\n";
 
 
@@ -457,6 +453,7 @@ static void mv_blit_init() {
     mv_blit_prog = glCreateProgram();
     glAttachShader(mv_blit_prog, vs);
     glAttachShader(mv_blit_prog, fs);
+    glBindAttribLocation(mv_blit_prog, 0, "aPos");
     glLinkProgram(mv_blit_prog);
     glDeleteShader(vs);
     glDeleteShader(fs);
@@ -469,6 +466,22 @@ static void mv_blit_init() {
 
     if (s_mv_blit_vao == 0) {
         glGenVertexArrays(1, &s_mv_blit_vao);
+        glGenBuffers(1, &s_mv_blit_vbo);
+        glBindVertexArray(s_mv_blit_vao);
+        glBindBuffer(GL_ARRAY_BUFFER, s_mv_blit_vbo);
+
+        static const float s_quad_verts[6] = {
+            -1.0f, -1.0f,
+             3.0f, -1.0f,
+            -1.0f,  3.0f
+        };
+        glBufferData(GL_ARRAY_BUFFER, sizeof(s_quad_verts), s_quad_verts, GL_STATIC_DRAW);
+
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float), (void*)0);
+
+        glBindVertexArray(0);
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
     }
 }
 
@@ -2378,24 +2391,30 @@ void gfx_opengl_copy_framebuffer(int fb_dst, int fb_src, int left, int top, bool
         mv_blit_init();
 
         // Minimal GL state backup
-        GLint prevFbo = 0, prevProg = 0;
+        GLint prevFbo = 0, prevProg = 0, prevVao = 0;
         GLint viewport[4];
         GLboolean prevDepthTest = GL_FALSE;
         GLboolean prevDepthMask = GL_FALSE;
         GLboolean prevBlend = GL_FALSE;
+        GLboolean prevScissor = GL_FALSE;
 
         glGetIntegerv(GL_FRAMEBUFFER_BINDING, &prevFbo);
         glGetIntegerv(GL_CURRENT_PROGRAM, &prevProg);
+        glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &prevVao);
         glGetIntegerv(GL_VIEWPORT, viewport);
         glGetBooleanv(GL_DEPTH_TEST, &prevDepthTest);
         glGetBooleanv(GL_DEPTH_WRITEMASK, &prevDepthMask);
         glGetBooleanv(GL_BLEND, &prevBlend);
+        glGetBooleanv(GL_SCISSOR_TEST, &prevScissor);
 
 
         // Calculation of normalized UVs corresponding to the source rectangle
         float u0, v0, u1, v1;
 
-        if (left >= 0 && top >= 0) {
+        extern s32 g_PrevFrameFb;
+        bool is_fullscreen = (fb_dst == g_PrevFrameFb) || (left < 0 || top < 0) || (left == 0 && top == 0 && dst.width >= src.width);
+
+        if (!is_fullscreen && (left >= 0 && top >= 0)) {
             // Sub-rectangle (invisible cloak, FB 5-19 effects)
             u0 = (float)srcX0 / (float)src.width;
             v0 = (float)srcY0 / (float)src.height;
@@ -2440,14 +2459,17 @@ void gfx_opengl_copy_framebuffer(int fb_dst, int fb_src, int left, int top, bool
         if (mv_blit_uLayerLoc >= 0) glUniform1i(mv_blit_uLayerLoc, 0);
         if (mv_blit_uSbsLoc >= 0)   glUniform1i(mv_blit_uSbsLoc, 0);
 
-        // NEW: source rectangle in UV
+        // source rectangle in UV
         glUniform4f(mv_blit_uRectLoc, u0, v0, u1, v1);
 
         glBindVertexArray(s_mv_blit_vao);
         glDrawArrays(GL_TRIANGLES, 0, 3);
 
+        // Unbind texture array from GL_TEXTURE0 so it doesn't leak into subsequent draws
+        glBindTexture(GL_TEXTURE_2D_ARRAY, 0);
+
         // Restore GL state
-        glBindVertexArray(0);
+        glBindVertexArray((GLuint)prevVao);
         glUseProgram(prevProg);
         glBindFramebuffer(GL_FRAMEBUFFER, prevFbo);
         glViewport(viewport[0], viewport[1], viewport[2], viewport[3]);
@@ -2455,7 +2477,7 @@ void gfx_opengl_copy_framebuffer(int fb_dst, int fb_src, int left, int top, bool
         if (prevDepthTest) glEnable(GL_DEPTH_TEST); else glDisable(GL_DEPTH_TEST);
         glDepthMask(prevDepthMask);
         if (prevBlend) glEnable(GL_BLEND); else glDisable(GL_BLEND);
-        glEnable(GL_SCISSOR_TEST);
+        if (prevScissor) glEnable(GL_SCISSOR_TEST); else glDisable(GL_SCISSOR_TEST);
 
 
         return;
@@ -2538,6 +2560,7 @@ static void gfx_opengl_init_mirror_shader() {
     s_mirror_prog = glCreateProgram();
     glAttachShader(s_mirror_prog, vs);
     glAttachShader(s_mirror_prog, fs);
+    glBindAttribLocation(s_mirror_prog, 0, "aPos");
     glLinkProgram(s_mirror_prog);
     glDeleteShader(vs);
     glDeleteShader(fs);
@@ -2547,8 +2570,25 @@ static void gfx_opengl_init_mirror_shader() {
     s_mirror_uloc_rect  = glGetUniformLocation(s_mirror_prog, "uRect");
     s_mirror_uloc_sbs = glGetUniformLocation(s_mirror_prog, "uSbs");
 
-    // Empty VAO required for the fullscreen triangle trick
-    glGenVertexArrays(1, &s_mirror_vao);
+    if (s_mirror_vao == 0) {
+        glGenVertexArrays(1, &s_mirror_vao);
+        glGenBuffers(1, &s_mirror_vbo);
+        glBindVertexArray(s_mirror_vao);
+        glBindBuffer(GL_ARRAY_BUFFER, s_mirror_vbo);
+
+        static const float s_quad_verts[6] = {
+            -1.0f, -1.0f,
+             3.0f, -1.0f,
+            -1.0f,  3.0f
+        };
+        glBufferData(GL_ARRAY_BUFFER, sizeof(s_quad_verts), s_quad_verts, GL_STATIC_DRAW);
+
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float), (void*)0);
+
+        glBindVertexArray(0);
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
+    }
 #endif
 }
 
