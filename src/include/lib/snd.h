@@ -35,6 +35,11 @@ void sndStartMp3ByFilenum(u32 filenum);
 void sndAdjust(struct sndstate **handle, bool ismp3, s32 vol, s32 pan, s32 soundnum, f32 pitch, s32 fxbus, s32 fxmix, bool forcefxmix);
 struct sndstate *snd00010718(struct sndstate **handle, s32 flags, s32 volume, s32 pan, s32 soundnum, f32 pitch, s32 fxbus, s32 fxmix, bool forcefxmix);
 struct sndstate *sndStart(s32 arg0, s16 sound, struct sndstate **handle, s32 volume, s32 pan, f32 pitch, s32 fxbus, s32 fxmix);
+
+/* VR: notes a sound start with its caller; the position mark writes the last 10 s of them to the
+ * PD-VRR log (sndDumpRecent) */
+void sndNoteRecent(s32 sound, s32 kind, void *caller);
+void sndDumpRecent(void);
 void sndStartMp3(s16 soundnum, s32 volume, s32 pan, s32 responseflags);
 void sndPlayNosedive(s32 seconds);
 void sndStopNosedive(void);

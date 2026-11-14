@@ -33,6 +33,8 @@ void handTickAttack(s32 handnum);
 void handsTickAttack(void);
 void propExecuteTickOperation(struct prop *prop, s32 op);
 struct prop *propFindForInteract(bool eyespy);
+/* VR: the object a grip grab would take now (propFindForInteract's target when grabbable), or NULL */
+struct prop *propFindForGripGrab(void);
 void propFindForUplink(void);
 bool currentPlayerInteract(bool eyespy);
 void propPause(struct prop *prop);

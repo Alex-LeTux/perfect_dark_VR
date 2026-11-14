@@ -14,6 +14,11 @@ extern bool VrWeaponRecoil;
 #define WORLDSCALE_MIN    0.50f
 #define WORLDSCALE_MAX    1.50f
 extern float VrSetWorldScale;
+// Top walking speed as a fraction of the original's, for players who want slower
+// movement; full stick deflection reaches this
+#define WALKSPEED_MIN     0.25f
+#define WALKSPEED_MAX     1.00f
+extern float VrWalkSpeed;
 extern int VrPauseHub;
 
 // Your standing EYE height in cm -- where your eyes are off the floor, roughly
@@ -30,9 +35,16 @@ extern float VrPlayerHeight;
 // character you are playing, so Elvis is short and Mr Blonde towers.
 extern bool VrMatchCharacterHeight;
 extern float VrUseSnapTurn;
+extern int VrStickTurn;         // 0: the stick does not turn the player (smooth or snap); the headset still does
 extern bool VrTwoHandAim;       // two-handed weapons aim along the line between both controllers
 extern int VrStickClickToCrouch;
-extern int VrLeftHandedMode;
+extern int VrLeftHandedPref;    // the user's saved left-handed setting
+// The holster layout (vr_holster.c): the slot at each body zone, in the order off-hand hip,
+// gun-hand shoulder, chest, gun-hand hip, off-hand shoulder; slots 0-2 guns 1-3, 3 gadgets,
+// 4 throwables. Relative to the gun hand, so the left-handed setting mirrors it.
+#define HOLSTER_LAYOUT_SPOTS 5
+extern int VrHolsterLayout[HOLSTER_LAYOUT_SPOTS];
+extern int VrLeftHandedMode;    // runtime gun side: follows the pref, holsters flip it per draw
 extern int VrSwapJoysticks;
 extern int VrHideArms;
 
@@ -46,7 +58,7 @@ extern float VrHudDistance;
 extern float VrGunOffX;         // grip fit trim in the controller frame, game units
 extern float VrGunOffY;
 extern float VrGunOffZ;
-extern float VrArmElbowTuck;    // 0..1, how tightly the elbow is pinned toward the body
+extern float VrArmElbowTuck;    // 0..1, how much of the solved elbow the forearm takes (0: the animation's)
 extern float VrArmBodyFollow;   // how fast the smoothed torso yaw chases the head (spin comfort)
 extern int   VrFistClench;      // close the off-hand while the left grip is squeezed
 extern float VrFistClenchAmt;   // runtime 0..1 clench amount (not persisted)

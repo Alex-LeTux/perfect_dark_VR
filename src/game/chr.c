@@ -6492,6 +6492,24 @@ Gfx *chrRenderCloak(Gfx *gdl, struct prop *chrprop, struct prop *thisprop)
 	return gdl;
 }
 
+/**
+ * VR: whether a shielded chr's idle shimmer is drawn: only for the player's enemies, and never in a
+ * cutscene (Joanna's own body is drawn there).
+ */
+static bool chrShieldShimmers(struct chrdata *chr)
+{
+	struct chrdata *playerchr;
+
+	if (g_Vars.tickmode == TICKMODE_CUTSCENE || g_Vars.currentplayer == NULL
+			|| g_Vars.currentplayer->prop == NULL) {
+		return false;
+	}
+
+	playerchr = g_Vars.currentplayer->prop->chr;
+
+	return playerchr != NULL && chr != playerchr && chrCompareTeams(playerchr, chr, COMPARE_ENEMIES);
+}
+
 Gfx *chrRenderShield(Gfx *gdl, struct chrdata *chr, u32 alpha)
 {
 	if (chrGetShield(chr) > 0 && g_Vars.lvupdate240 > 0) {
@@ -6502,8 +6520,11 @@ Gfx *chrRenderShield(Gfx *gdl, struct chrdata *chr, u32 alpha)
 		}
 	}
 
+	// VR: the idle shimmer (10 of every 300 renders) reads as red boxes flickering over the bones in
+	// the headset, so it shows only on the player's enemies out of cutscenes, where it tells them
+	// apart as shielded; a hit on a shield still flashes on anyone (Task J3)
 	if ((chr->hidden2 & CHRH2FLAG_SHIELDHIT)
-			|| (chrGetShield(chr) > 0 && chr->cmcount < 10)
+			|| (chrGetShield(chr) > 0 && chr->cmcount < 10 && chrShieldShimmers(chr))
 			|| (chr->cloakfadefrac > 0 && !chr->cloakfadefinished)) {
 		if (chrGetShield(chr) > 0 && g_Vars.lvupdate240 > 0) {
 			s32 numiterations = (rngRandom() % 4) + 1;

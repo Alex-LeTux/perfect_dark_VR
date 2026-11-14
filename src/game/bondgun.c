@@ -1,6 +1,7 @@
 #include <ultra64.h>
 
 #include <math.h>
+#include <stdio.h>
 #include "../../port/vr/vr_input.h"
 
 #include "constants.h"
@@ -19,6 +20,9 @@
 #include "game/quaternion.h"
 #include "game/game_097aa0.h"
 #include "game/bondgun.h"
+#include "game/vr_holster.h"
+#include "game/vr_reload.h"
+#include "game/vr_reload_data.h"
 #include "game/gunfx.h"
 #include "game/game_0b0fd0.h"
 #include "game/modeldef.h"
@@ -102,6 +106,10 @@ extern int vr_button_R_grip;
 extern int vr_button_L_grip;
 int weaponnum = 0;
 int handnum = 0;
+// VR: the weapon whose file bgunTickGunLoad is loading, set only around its fileLoadToAddr, for the
+// gun file preprocess (filemodel.c drops the fists model's left hand, and the laser's right hand, by
+// weapon); -1 otherwise, when the preprocess reads the global weaponnum as before
+s32 g_VrGunLoadWeaponnum = -1;
 struct coord velocity = { 0, 0, 0 };
 extern int VrLeftHandedMode;
 int VrHideArms = 0;
@@ -117,6 +125,7 @@ static struct guncmd vr_hand_grip_anim[2] = {
         { GUNCMD_PLAYANIMATION, 0, 1002, 20000 },
         { GUNCMD_END }
 };
+// The fist was open (grip released) last tick: the next grip press plays the clench
 bool vr_is_R_fist = false;
 bool vr_is_L_fist = false;
 bool vr_grip_for_unarmed = false;
@@ -143,6 +152,37 @@ bool vr_L_func_secondary_knife = false;
 bool vr_L_knife_sec_anim_run = false;
 bool vr_L_trigger = false;
 
+// VR knife (Task H3b): a slash started by a swing plays its animation from the stroke. Both of the
+// slash's animations (ANIM_GUN_KNIFE_SLASH and the 50% ANIM_GUN_KNIFE_EQUIP, the script's random
+// pick) wind the knife back over frames 0 to 20 and swing it through 20 to 27, and the script's hit
+// (gunscript_waittime(24, 2)) comes at frame 24: from frame 0 the hit landed 24 frames (0.4 s)
+// after the swing that started it. From frame 20 it lands 4 frames (67 ms) after, in the stroke.
+// Set per engine hand by the swing's slash, taken by the animation's load (bgun0f0981e8).
+#define VR_KNIFE_STROKE_FRAME 20.0f
+static bool vr_knife_fromstroke[2];
+
+// VR: the DY357s (Magnum and LX) fire from a cocked hammer (Task J10, the user: "the two magnums have
+// an awkward delay between when the user pulls the trigger and when the gun fires"). Their fire
+// animation (ANIM_GUN_DY357_SHOOT, 26 frames) is a double-action pull: the hammer goes back 58 degrees
+// over frames 0 to 9 and falls over 10 and 11, and the script's shot (gunscript_waittime(12, 2)) comes
+// at frame 12, 12 frames (0.2 s) after the pull; the Falcon 2's script has no such wait and fires on
+// the pull. From frame 9 the hammer falls at once and the shot goes off 2 frames (33 ms) after the
+// pull, with the hammer. Taken by the animation's load (bgun0f0981e8) in the attack state only: the
+// equip animation is the same one.
+#define VR_DY357_COCKED_FRAME 9.0f
+
+// VR: the knife's throw wind-up runs in the idle state, so a switch can take the knife away mid
+// wind-up: a flag left set would throw the next knife drawn on its first tick, trigger up
+void bgunKnifeReset(void)
+{
+    vr_R_func_secondary_knife = false;
+    vr_R_knife_sec_anim_run = false;
+    vr_L_func_secondary_knife = false;
+    vr_L_knife_sec_anim_run = false;
+    vr_knife_fromstroke[HAND_RIGHT] = false;
+    vr_knife_fromstroke[HAND_LEFT] = false;
+}
+
 // VR Trow Grenade / Mine etc -----------------------------------------
 #define VR_THROW_HISTORY_FRAMES 15
 #define VR_THROW_HISTORY_MAX    64
@@ -160,6 +200,53 @@ static int vr_ThrowHistoryCount[2] = {0, 0};
 bool vr_throw_cancelled = false;
 bool VrMotionThrowing = true;
 
+// VR: with holsters (manual reload on) the three bugs throw by motion as well (user decision): they
+// have no fire animation, so the wind-up is the wait in HANDSTATEMINOR_ATTACK_THROW_1 while the
+// trigger is held (as the ECM mine), and the release throws with the swing (vr_throw). The
+// projectile is the same bug object as the aimed throw's, so the scripts that look for it on an
+// object (if_weapon_thrown_on_object) still see it.
+static bool vrBugMotionThrow(s32 weaponnum)
+{
+    return VrMotionThrowing && vrHolsterActive()
+        && (weaponnum == WEAPON_COMMSRIDER
+            || weaponnum == WEAPON_TRACERBUG
+            || weaponnum == WEAPON_TARGETAMPLIFIER);
+}
+
+// VR: the weapons the motion throw releases with the swing (vr_throw at THROW_1) and spawns with
+// that velocity (bgunCreateThrownProjectile). The one list for the release, the spawn, the swing
+// samples and the trigger-held wait, so they cannot drift apart.
+static bool vrMotionThrowWeapon(s32 weaponnum, s32 weaponfunc)
+{
+    switch (weaponnum) {
+    case WEAPON_GRENADE:
+    case WEAPON_NBOMB:
+    case WEAPON_ECMMINE:
+    case WEAPON_PROXIMITYMINE:
+    case WEAPON_TIMEDMINE:
+    case WEAPON_REMOTEMINE:
+        return true;
+    case WEAPON_LAPTOPGUN:
+    case WEAPON_DRAGON:
+    case WEAPON_COMBATKNIFE:
+        return weaponfunc == FUNC_SECONDARY;
+    }
+
+    return vrBugMotionThrow(weaponnum);
+}
+
+// The grenade, the N-bomb and the timed, proximity and remote mines hold their wind-up in the fire
+// animation (gunscript_waitforzreleased); the other motion throws wait in THROW_1 while the trigger
+// is held
+static bool vrThrowWindsUpInAnim(s32 weaponnum)
+{
+    return weaponnum == WEAPON_GRENADE
+        || weaponnum == WEAPON_NBOMB
+        || weaponnum == WEAPON_TIMEDMINE
+        || weaponnum == WEAPON_PROXIMITYMINE
+        || weaponnum == WEAPON_REMOTEMINE;
+}
+
 // VR Laser Dot ------------------------------------------------------
 static f32 old_dotposX[2];
 static f32 old_dotposY[2];
@@ -168,12 +255,9 @@ static bool old_dotpos_init[2] = { false, false };
 bool show_laser_dot[2]  = { false, false };
 bool VrlaserDotForALL = false;
 
-// VR enable manual reloading ----------------------------------------
+// VR manual reload: also turns on the body holsters (draw from the left hip or over the right
+// shoulder). The two work together or not at all.
 bool VrManualReloading = false;
-
-// VrDebug Manual Reloading -------------------------------------------
-bool VRDebugMtxPos = false;
-int axis = 0;
 
 // ===== VR gun / hand placement ==============================================================
 // The geometry here was established by measurement rather than guesswork and is now baked in.
@@ -182,36 +266,72 @@ int axis = 0;
 float VrGunOffX = 2.35f;       // grip fit trim in the controller frame, game units
 float VrGunOffY = -13.02f;
 float VrGunOffZ = -4.39f;
-float VrArmElbowTuck  = 0.80f; // 0..1, how tightly the elbow is pinned toward the body
+float VrArmElbowTuck  = 1.00f; // 0..1, how much of the solved elbow the forearm takes (0: the animation's)
 float VrArmBodyFollow = 0.02f; // how fast the torso yaw chases the head (spin comfort)
 int   VrFistClench    = 1;     // close the off-hand while the left grip is squeezed
 
 // --- Baked constants: measured/tuned, deliberately not user-facing --------------------------
-#define VR_ARM_ELBOW_SWING    0.0f   // legacy aim-follow factor in vr_wrist_rot, superseded by the tuck
-#define VR_FIST_SIDE         -1.0f   // elbow-tuck outboard direction for the mirrored fists hand
+#define VR_FIST_SIDE         -1.0f   // the mirrored fists hand's arm side for vr_wrist_rot
 #define VR_FIST_ROLL         80.0f   // fists grip roll about the forearm axis (degrees)
 #define VR_FIST_ROLL_CLENCH -80.0f   // extra roll blended in as the fist closes
 
 // --- Runtime state (not settings) -----------------------------------------------------------
-// Smoothed torso yaw. This is what makes the elbow anchor spin-safe: a quick glance leaves the
+// Smoothed torso yaw. This is what makes the shoulders (vr_arm_solve) spin-safe: a quick glance leaves the
 // torso behind so the anchor holds still, while a sustained physical turn drags it around with
 // you. Counter-rotating by ABSOLUTE head yaw was the bug -- a 360 spin unwound the elbows.
 static float VrBodyYaw = 0.0f;
+f32 vrGetBodyYaw(void) { return VrBodyYaw; } // for vr_reload.c (shoulder clip point)
 float VrFistClenchAmt = 0.0f;  // 0 = open, 1 = closed; eased, shared by the pose and render paths
-float offsetX = 0.0f;
-float offsetY = 0.0f;
-float offsetZ = 0.0f;
-static float sSnapRotOffsetX = 0.0f;  // pitch correction
-static float sSnapRotOffsetY = 0.0f;  // yaw correction
-static float sSnapRotOffsetZ = 0.0f;  // roll correction
-static int   sSnapRotAxis    = 0;
 //Vr Recoil -----------------------------------------------------------
 void vrRecoilNotifyShotFired(int handnum);
 extern bool VrWeaponRecoil;
 bool VR_FUNC_SECONDARY = false; // For vr_input.cpp / recoil
 //---
 float zRollAngle = 0.0f;
-extern int gripPressed;
+// VR: the gun's turn about its model's x and y, with zRollAngle as the z (mtx4LoadRotation's angles),
+// set per hand by vr_gun_pos_rot; only the Laser with holsters has them (Task H3a)
+static float vrGunTurnX = 0.0f;
+static float vrGunTurnY = 0.0f;
+
+// VR: the per-weapon turn (vrGunTurnX, vrGunTurnY, zRollAngle) applied in the gun's model frame, after
+// the controller's rotation
+static void vrGunTurnApply(Mtxf *posrotmtx)
+{
+    if (zRollAngle != 0.0f || vrGunTurnX != 0.0f || vrGunTurnY != 0.0f) {
+        struct coord rot = { vrGunTurnX, vrGunTurnY, zRollAngle };
+        Mtxf turn;
+        Mtxf tmp;
+        mtx4LoadIdentity(&turn);
+        mtx4LoadRotation(&rot, &turn);
+        mtx4MultMtx4(posrotmtx, &turn, &tmp);
+        *posrotmtx = tmp;
+    }
+}
+
+// VR: the Laser's offset with the grip trim (VrGunOffX, Y, Z: in the controller's frame) turned back by
+// the turn (vrGunTurnX, vrGunTurnY, zRollAngle), so that the placement, which turns the offset with the
+// gun (posrotmtx after vrGunTurnApply, bgun0f0a5550), leaves the trim in the controller's frame as on
+// the guns with no turn (Task H5b). The trim's x is the one the render keeps: it takes VrGunOffX off
+// on the hand it takes for the mirrored copy (handToMirror there; the Laser is DUALFLIP)
+static void vrGunTrimUnturn(s32 handnum, struct coord *off)
+{
+    struct coord rot = { vrGunTurnX, vrGunTurnY, zRollAngle };
+    Mtxf turn;
+    f32 t[3];
+    s32 handToMirror = VrLeftHandedMode ? HAND_RIGHT : HAND_LEFT;
+
+    t[0] = handnum == handToMirror ? 0.0f : VrGunOffX;
+    t[1] = VrGunOffY;
+    t[2] = VrGunOffZ;
+
+    mtx4LoadIdentity(&turn);
+    mtx4LoadRotation(&rot, &turn);
+
+    // turn.m[i] is where the turn takes axis i, so the turn's inverse takes t to { turn.m[i] . t }
+    off->x += turn.m[0][0] * t[0] + turn.m[0][1] * t[1] + turn.m[0][2] * t[2] - t[0];
+    off->y += turn.m[1][0] * t[0] + turn.m[1][1] * t[1] + turn.m[1][2] * t[2] - t[1];
+    off->z += turn.m[2][0] * t[0] + turn.m[2][1] * t[1] + turn.m[2][2] * t[2] - t[2];
+}
 //----
 
 #define GUNLOADSTATE_FLUX     0
@@ -432,9 +552,135 @@ static bool vrLaserDotAllowed(s32 weaponnum)
         case WEAPON_COMBATBOOST:
         case WEAPON_EXPLOSIVES:
         case WEAPON_SKEDARBOMB:
+        case WEAPON_NIGHTVISION:
+        case WEAPON_XRAYSCANNER:
+        case WEAPON_IRSCANNER:
+        case WEAPON_EYESPY:
+        case WEAPON_DISGUISE40:
+        case WEAPON_DISGUISE41:
             return false;
         default:
             return true;
+    }
+}
+
+// VR: a device, disguise or door decoder held from the chest pouch is its own model at
+// the controller, no hands. Each row: the model point that sits at the grip, in model units (the
+// middle of its vertices), and its size against the guns' 0.1 (the prop's world scale over 0.1: the
+// goggles' model is drawn at 0.75 in the world). The root position node's offset is left out: with
+// an anim (a held gun model always has one) modelUpdatePositionNodeMtx never applies the root's
+// pos, so taking back the goggles' 13 cm and the IR scanner's 1.3 m head-height offsets put them
+// that far (65 cm at their scale) below the hand. Read from the ROM's models (PchrnightsightZ,
+// PxrayspecsZ, GirscannerZ, PrussdarZ, PchrcloakerZ, CeyespyZ, PchrbriefcaseZ); tune here.
+struct vrheldfit {
+    s32 weaponnum;
+    f32 scale;
+    f32 x;
+    f32 y;
+    f32 z;
+    f32 hold[3]; // where it sits from the grip, cm: inward (toward the other hand), up, forward
+    f32 roll;    // degrees about the controller's forward, its top turned inward
+};
+
+// The user's marks (hand, then where the object should be; left hand, controller level), 2026-10-22:
+// the CamSpy 4.1 in, 4.2 up, 8.5 ahead, which the other objects follow; the briefcase 5.4 in, 11.1 up,
+// 1.2 ahead. The model's +z is the controller's forward (the gun's -z is its back). The briefcase,
+// marked again with the controller's rotation (left hand): rolled 87 degrees with its top inward,
+// then moved 14.1 cm outward by a third pair (sideways only): 2.6 out, 6.0 up, 3.3 back; its middle,
+// not its handle, sits there.
+#define VR_HELD_HOLD { 4.1f, 4.2f, 8.5f }
+
+static const struct vrheldfit g_VrHeldFits[] = {
+    { WEAPON_NIGHTVISION,    5.0f,   0.0f,    0.5f,    0.0f, VR_HELD_HOLD }, // 40 x 9 x 26 units: 20 cm wide
+    { WEAPON_XRAYSCANNER,    5.0f,   0.0f,    0.5f,    0.0f, VR_HELD_HOLD }, // the same frames
+    { WEAPON_IRSCANNER,      0.5f,   0.0f,    0.5f,    0.0f, VR_HELD_HOLD }, // a 406 unit visor: 20 cm wide
+    { WEAPON_RTRACKER,       2.0f,   0.5f,    0.5f,    0.0f, VR_HELD_HOLD }, // 59 x 19 x 100 units, 0.2 in the world
+    { WEAPON_CLOAKINGDEVICE, 1.0f,   0.0f,    0.0f,    0.0f, VR_HELD_HOLD }, // a 184 unit disc
+    { WEAPON_EYESPY,         1.0f, -14.5f,   73.5f,   -0.5f, VR_HELD_HOLD }, // the drone, 217 x 147 x 83 units
+    // 380 x 99 x 384 units: 38 cm
+    { WEAPON_DISGUISE40,     1.0f, -11.0f,    5.5f,  -80.0f, { -2.6f, 6.0f, -3.3f }, 87.0f },
+    { WEAPON_DISGUISE41,     1.0f, -11.0f,    5.5f,  -80.0f, { -2.6f, 6.0f, -3.3f }, 87.0f },
+    { WEAPON_DOORDECODER,    1.0f,   0.0f,    0.0f,    0.0f, VR_HELD_HOLD }, // 102 x 26 x 134 units
+    { WEAPON_COMMSRIDER,     1.0f,   0.0f,    0.0f,    0.0f, VR_HELD_HOLD }, // PchrbugZ, held from the chest pouch
+    { WEAPON_EXPLOSIVES,     1.0f,   0.0f,    0.0f,    0.0f, VR_HELD_HOLD }, // PexplosivebrickZ
+    // G5 Building's Detonator only (vrHolsterIsG5Detonator): the detonator's box middle in its own
+    // matrix's frame (GremotemineZ part 0x29, matrices 34 to 36: 32 x 173 x 71 units), placed by
+    // vrG5DetonatorPlace
+    { WEAPON_REMOTEMINE,     1.0f,   2.0f,   28.4f,   15.5f, VR_HELD_HOLD },
+};
+
+// Centres and sizes a held device's model on mtx, the hand's model matrix after the guns' 0.1 scale
+static void vrHeldFitApply(s32 weaponnum, Mtxf *mtx)
+{
+    s32 i, j;
+
+    for (i = 0; i < ARRAYCOUNT(g_VrHeldFits); i++) {
+        const struct vrheldfit *fit = &g_VrHeldFits[i];
+
+        if (fit->weaponnum != weaponnum) {
+            continue;
+        }
+
+        for (j = 0; j < 3; j++) {
+            // The axes are 0.1 long here, so 10 per cm. With +y up and +z forward the model's +x
+            // is the right hand's left, its inward, and the left hand's model is mirrored.
+            mtx->m[3][j] += (fit->hold[0] * mtx->m[0][j] + fit->hold[1] * mtx->m[1][j]
+                    + fit->hold[2] * mtx->m[2][j]) * 10.0f;
+        }
+
+        if (fit->roll != 0.0f) {
+            // The top (+y) toward the inward side, which is the model's -x here (the headset
+            // showed +x rolling it the wrong way)
+            f32 c = cosf(fit->roll * (M_PI / 180.0f));
+            f32 s = -sinf(fit->roll * (M_PI / 180.0f));
+
+            for (j = 0; j < 3; j++) {
+                f32 x = mtx->m[0][j];
+                f32 y = mtx->m[1][j];
+
+                mtx->m[0][j] = c * x - s * y;
+                mtx->m[1][j] = c * y + s * x;
+            }
+        }
+
+        for (j = 0; j < 3; j++) {
+            mtx->m[3][j] -= (fit->x * mtx->m[0][j] + fit->y * mtx->m[1][j] + fit->z * mtx->m[2][j]) * fit->scale;
+        }
+
+        mtx00015f04(fit->scale, mtx);
+        return;
+    }
+}
+
+// VR: G5 Building's Detonator (vrHolsterIsG5Detonator) is the remote mine's model, whose detonator
+// (part 0x29) is on matrices 34 to 36 under the left hand. bgun0f098030 hides the arms and the
+// mine; here the detonator's matrices go on the grip as a held device's (root, the hand's matrix
+// with its g_VrHeldFits row applied), the button (35) and the antenna (36) at their rest offsets
+// from 34. The model's other matrices draw nothing then.
+#define VR_DETONATOR_MTX 34
+
+static void vrG5DetonatorPlace(Mtxf *matrices, s32 nummatrices, Mtxf *root)
+{
+    static const f32 offsets[3][3] = {
+        { 0.0f, 0.0f, 0.0f },
+        { 0.0f, 67.78f, -2.64f },
+        { -228.25f, 56.85f, -12.94f },
+    };
+    s32 i, j;
+
+    if (nummatrices < VR_DETONATOR_MTX + 3) {
+        return;
+    }
+
+    for (i = 0; i < 3; i++) {
+        Mtxf *mtx = &matrices[VR_DETONATOR_MTX + i];
+
+        mtx4Copy(root, mtx);
+
+        for (j = 0; j < 3; j++) {
+            mtx->m[3][j] += offsets[i][0] * root->m[0][j] + offsets[i][1] * root->m[1][j]
+                + offsets[i][2] * root->m[2][j];
+        }
     }
 }
 
@@ -444,7 +690,6 @@ static bool vrLaserDotAllowed(s32 weaponnum)
 static s32 s_gunMovableMtxIndices[VR_MAX_GUN_PARTS];
 static s32 s_gunMovableCount = 0;
 static bool s_vrPartHidden[VR_MAX_GUN_PARTS] = {false};
-static bool MtxReplacePart = false;
 
 
 void vrHideGunParts(Mtxf *matrices, s32 handnum)
@@ -482,39 +727,33 @@ s32 LeftHandMtx[] = {
 };
 
 
-s32 LeftHandAndMagMtx[] = {
-        17, 18,19,20,21,22,23,24,25,26,27,28,29,30,31,32, //Lhand
-        42, // Magazine Lhand
-        -1 // End of the list
-};
+// The left hand and the clip it holds: the clip's matrices are the owned gun's row's heldmtx (42 for
+// the Falcon 2, 39 for the MagSec 4, 38 for the Mauler and the Tranquilizer) and, for a part skinned
+// to a run of them, up to heldmtxlast (the Phoenix's orb: 37 to 39), written into the list on each
+// call. A run that is backwards or longer than VR_RELOAD_HELD_MTX_MAX keeps heldmtx alone
+// (vrReloadResetAll warns).
+static const s32 *vrLeftHandAndMagMtx(const struct vrreloaddef *def)
+{
+    // Lhand (17 to 32), the row's held matrices, the end of the list
+    static s32 list[16 + VR_RELOAD_HELD_MTX_MAX + 1];
+    s32 n = def->heldmtxlast - def->heldmtx + 1;
+    s32 i;
 
-s32 RightHandAndMagMtx[] = {
-        38, // Magazine Rhand
-        1,2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, // Rhand
-        -1 // End of the list
-};
+    if (def->heldmtxlast < 0 || n < 1 || n > VR_RELOAD_HELD_MTX_MAX) {
+        n = 1;
+    }
 
-s32 LeftHandAndSlideMtx[] = {
-        17, 18,19,20,21,22,23,24,25,26,27,28,29,30,31,32, //Lhand
-        37, // slide
-        -1 // End of the list
-};
+    for (i = 0; i < 16; i++) {
+        list[i] = 17 + i;
+    }
 
-s32 LeftHandAndRightMagMtx[] = {
-        17, 18,19,20,21,22,23,24,25,26,27,28,29,30,31,32, //Lhand
-        38, // Magazine Rhand
-        -1 // End of the list
-};
+    for (i = 0; i < n; i++) {
+        list[16 + i] = def->heldmtx + i;
+    }
 
-s32 RightMagMtx[] = {
-        38, // Magazine Rhand
-        -1 // End of the list
-};
-
-s32 LeftMagMtx[] = {
-        42, // Magazine Lhand
-        -1 // End of the list
-};
+    list[16 + n] = -1;
+    return list;
+}
 
 s32 ArmsMtx[] = {
         1, 17,// Arms
@@ -533,10 +772,6 @@ void vrHideAllExcept(const s32 *keepList)
                 keep = true;
                 break;
             }
-        }
-        // If manual reloading is disabled, force the hiding of matrix 38
-        if (!VrManualReloading && mtxindex == 38) {
-            keep = false;
         }
         s_vrPartHidden[i] = !keep;
     }
@@ -620,13 +855,6 @@ void vrBuildMtxPartsList(struct hand *hand, struct modeldef *modeldef, bool filt
 
 
 Mtxf vr_sp234, vr_sp284, vr_sp2c4, vr_sp164, vr_sp124;
-// VR moves the left hand position during the animation to match the real hand position
-void vrApplyReloadOffset(Mtxf *mtx, float ox, float oy, float oz)
-{
-    mtx->m[3][0] += mtx->m[0][0] * ox + mtx->m[1][0] * oy + mtx->m[2][0] * oz;
-    mtx->m[3][1] += mtx->m[0][1] * ox + mtx->m[1][1] * oy + mtx->m[2][1] * oz;
-    mtx->m[3][2] += mtx->m[0][2] * ox + mtx->m[1][2] * oy + mtx->m[2][2] * oz;
-}
 
 
 // Global VrCopyWep / VrCopyHand variables - The unarmed left hand
@@ -642,8 +870,11 @@ Mtxf g_VrCopyWepSp2c4;
 struct model g_VrCopyHandModel;
 struct modeldef *g_VrCopyHandModeldef = NULL;
 static bool vrSwitchCopyGun = true;
+// Own anim state for the clip-in-hand pose, so holding the reload frame never touches the right
+// hand's real gun animation (hand->anim).
+static struct anim g_VrClipHoldAnim;
+static bool g_VrClipHoldAnimReady = false;
 static bool vrSwitchGun = true;
-static float VrCopyScale = 0.0f;
 
 // Persistent real pointer (sysMemAlloc), separate from g_VrCopyWepModel.matrices
 // which is reassigned every frame to a gfxAllocate buffer for rendering.
@@ -665,22 +896,51 @@ struct anim      g_VrFistAnim;      // own anim state, so the clench can't distu
 struct modeldef *g_VrFistModeldef = NULL;
 static u32      *g_VrFistRwdatasAlloc = NULL;
 static s32       g_VrFistFilenum = -1;
-Mtxf             g_VrFistSp2c4;
+static Mtxf      g_VrFistSp2c4;
+static Mtxf      g_VrFistOpenSp2c4; // the same root with the open hand's roll, for vrReloadNoteFistWrist
+// The open-pose pass's matrices: never drawn, so not from display-list memory. The fists model has
+// 33 matrices (measured above); a larger one gets no capture.
+#define VR_FIST_OPEN_MAX_MTX 40
+static Mtxf      g_VrFistOpenMtx[VR_FIST_OPEN_MAX_MTX];
 static bool      g_VrFistReady = false;
 
-
-#define VR_MAG_R_MTX_INDEX 38
-#ifndef M_PI_2f
-#define M_PI_2f 1.5707963267948966f
-#endif
-
-static void quaternionConjugate_XR(const XrQuaternionf *q, XrQuaternionf *out)
+// The fists root from the free left-hand frame for a clench amount (0 open, 1 closed): the grip roll
+// about the hand's own forward axis, to line the thumb up with the controller (the clenched anim-1002
+// hand sits at a different orientation than the rest pose, so the roll follows the clench), then the
+// mirror and the model scale. Safe at the root (unlike the legacy hand, whose origin sat at the
+// elbow so a root roll swung the wrist): this is a first-class hand model and vr_wrist_rot re-aims
+// the forearm afterwards, so the arm stays connected.
+static void vrFistRoot(const Mtxf *base, f32 clench, Mtxf *out)
 {
-    out->x = -q->x;
-    out->y = -q->y;
-    out->z = -q->z;
-    out->w =  q->w;
+    float a = (VR_FIST_ROLL + clench * VR_FIST_ROLL_CLENCH) * (float) (M_PI / 180.0);
+    float ca, sa;
+    s32 c;
+
+    *out = *base;
+
+    if (VrLeftHandedMode) {
+        a = -a;
+    }
+
+    ca = cosf(a);
+    sa = sinf(a);
+
+    for (c = 0; c < 3; c++) {          // rotate rows 0/1 about row 2 (local forward)
+        float va = out->m[0][c];
+        float vb = out->m[1][c];
+        out->m[0][c] = va * ca - vb * sa;
+        out->m[1][c] = va * sa + vb * ca;
+    }
+
+    // Render bones 1-16 (the RIGHT hand) mirrored, exactly how the unarmed left hand is built
+    // (mtx00015e24 negates row 0).
+    if (!VrLeftHandedMode) {
+        mtx00015e24(-1, out);
+    }
+
+    mtx00015f04(0.10000001f, out);
 }
+
 
 static void quaternionMul_XR(const XrQuaternionf *a, const XrQuaternionf *b, XrQuaternionf *out)
 {
@@ -691,103 +951,6 @@ static void quaternionMul_XR(const XrQuaternionf *a, const XrQuaternionf *b, XrQ
 }
 
 
-
-static struct coord gVrBeltPosForDetection = {0};
-
-static void vrPlaceRightMagOnBelt(void)
-{
-    if (!g_VrCopyWepModeldef || !g_VrCopyWepModel.matrices)
-        return;
-
-    Mtxf *magMtx = &g_VrCopyWepModel.matrices[VR_MAG_R_MTX_INDEX];
-
-    // 1) Total head-to-world quaternion: qTotal = vr_joy_rot_Q ⊗ vr_HMD_rot_Q
-    XrQuaternionf qJoy  = vr_joy_rot_Q;
-    XrQuaternionf qHead = vr_HMD_rot_Q;
-    XrQuaternionf qTotal;
-    quaternionMul_XR(&qJoy, &qHead, &qTotal);
-
-    XrQuaternionf qTotalInv;
-    quaternionConjugate_XR(&qTotal, &qTotalInv);
-
-    // 2) World forward direction from qTotal
-    struct coord fwd_world = { 0.0f, 0.0f, 1.0f };
-    vr_rotate_vector_by_quaternion(&fwd_world, &qTotal); // [file:2]
-
-    // Pure yaw (headset + joystick)
-    float yaw = atan2f(fwd_world.x, fwd_world.z);
-
-    // 3) Yaw-only quaternion in WORLD space
-    XrQuaternionf qYaw;
-    qYaw.x = 0.0f;
-    qYaw.y = sinf(yaw * 0.5f);
-    qYaw.z = 0.0f;
-    qYaw.w = cosf(yaw * 0.5f);
-
-    // 4) Local rotation (HEAD space) = qTotal^-1 ⊗ qYaw
-    XrQuaternionf qLocal;
-    quaternionMul_XR(&qTotalInv, &qYaw, &qLocal);
-
-    // Local axes (in HEAD space), before scaling
-    struct coord right = { 1.0f, 0.0f, 0.0f };
-    struct coord up    = { 0.0f, 1.0f, 0.0f };
-    struct coord fwd   = { 0.0f, 0.0f,-1.0f };
-
-    vr_rotate_vector_by_quaternion(&right, &qLocal);
-    vr_rotate_vector_by_quaternion(&up,    &qLocal);
-    vr_rotate_vector_by_quaternion(&fwd,   &qLocal);
-
-    // Correction: 90° around local Y
-    float angle = M_PI_2f;
-    XrQuaternionf qCorrection = {
-            .x = 0.0f,
-            .y = sinf(angle * 0.5f),
-            .z = 0.0f,
-            .w = cosf(angle * 0.5f)
-    };
-
-    XrQuaternionf qLocalCorrected;
-    quaternionMul_XR(&qLocal, &qCorrection, &qLocalCorrected);
-
-    vr_rotate_vector_by_quaternion(&right, &qLocalCorrected);
-    vr_rotate_vector_by_quaternion(&up,    &qLocalCorrected);
-    vr_rotate_vector_by_quaternion(&fwd,   &qLocalCorrected);
-
-
-    // 5) Belt offset (in the reference "body" coordinate system)
-    struct coord belt_body = {
-            0.0f,   // Left / Right
-            -25.0f,  // Down
-            3.0f    // Forward / backward
-    };
-
-    // World : yaw‑only
-    struct coord belt_world = belt_body;
-    vr_rotate_vector_by_quaternion(&belt_world, &qYaw);
-
-    // Local (head) : qTotal^-1 * belt_world
-    struct coord belt_head = belt_world;
-    vr_rotate_vector_by_quaternion(&belt_head, &qTotalInv);
-    gVrBeltPosForDetection = belt_head;
-    // 6) Écrire la rotation unitaire (axes normalisés, scale = 1)
-    magMtx->m[0][0] = right.x;  magMtx->m[0][1] = right.y;  magMtx->m[0][2] = right.z;
-    magMtx->m[1][0] = up.x;     magMtx->m[1][1] = up.y;     magMtx->m[1][2] = up.z;
-    magMtx->m[2][0] = fwd.x;    magMtx->m[2][1] = fwd.y;    magMtx->m[2][2] = fwd.z;
-
-    // 7) Apply scale
-    mtx00015f04(0.10000001f, magMtx);
-
-    // 8) Translation = belt offset in HEAD space
-    magMtx->m[3][0] = belt_head.x;
-    magMtx->m[3][1] = belt_head.y;
-    magMtx->m[3][2] = belt_head.z;
-
-    magMtx->m[0][3] = 0.0f;
-    magMtx->m[1][3] = 0.0f;
-    magMtx->m[2][3] = 0.0f;
-    magMtx->m[3][3] = 1.0f;
-
-}
 
 static void rotvec(float *vx, float *vy, float *vz,
                    float qw, float qx, float qy, float qz)
@@ -800,71 +963,8 @@ static void rotvec(float *vx, float *vy, float *vz,
     *vz += qw*tz + qx*ty - qy*tx;
 }
 
-static void apply_wrist_rot(struct hand *hand, Mtxf *armMtx, Mtxf *handMtx,
-                            float sign, const float t, float bg_scale) {
-
-
-    float pivotX = handMtx->m[3][0];
-    float pivotY = handMtx->m[3][1];
-    float pivotZ = handMtx->m[3][2];
-    float armTx  = armMtx->m[3][0];
-    float armTy  = armMtx->m[3][1];
-    float armTz  = armMtx->m[3][2];
-
-    float dax = pivotX - armTx;
-    float day = pivotY - armTy;
-    float daz = pivotZ - armTz;
-    float clen = sqrtf(dax*dax + day*day + daz*daz);
-    if (clen < 0.0001f) return;
-
-    float cx = dax / clen;
-    float cy = day / clen;
-    float cz = daz / clen;
-
-    float tvx = (hand->posrotmtx.m[3][0] * bg_scale) - armTx;
-    float tvy = (hand->posrotmtx.m[3][1] * bg_scale) - armTy;
-    float tvz = (hand->posrotmtx.m[3][2] * bg_scale) - armTz;
-    float tvlen = sqrtf(tvx*tvx + tvy*tvy + tvz*tvz);
-    if (tvlen < 0.0001f) return;
-    tvx /= tvlen;
-    tvy /= tvlen;
-    tvz /= tvlen;
-
-    float dot = cx*tvx + cy*tvy + cz*tvz;
-    if (dot < -1.0f) dot = -1.0f;
-    if (dot >  1.0f) dot =  1.0f;
-    if (dot > 0.9999f) return;
-
-    float ax = cy*tvz - cz*tvy;
-    float ay = cz*tvx - cx*tvz;
-    float az = cx*tvy - cy*tvx;
-    float alen = sqrtf(ax*ax + ay*ay + az*az);
-    if (alen < 0.0001f) return;
-    ax /= alen; ay /= alen; az /= alen;
-
-    float partAngle = acosf(dot) * t;
-    float s  = sign * sinf(partAngle * 0.5f);
-    float qw = cosf(partAngle * 0.5f);
-    float qx = ax * s;
-    float qy = ay * s;
-    float qz = az * s;
-
-    rotvec(&armMtx->m[0][0], &armMtx->m[0][1], &armMtx->m[0][2], qw, qx, qy, qz);
-    rotvec(&armMtx->m[1][0], &armMtx->m[1][1], &armMtx->m[1][2], qw, qx, qy, qz);
-    rotvec(&armMtx->m[2][0], &armMtx->m[2][1], &armMtx->m[2][2], qw, qx, qy, qz);
-    rotvec(&dax, &day, &daz, qw, qx, qy, qz);
-
-    armMtx->m[3][0] = pivotX - dax;
-    armMtx->m[3][1] = pivotY - day;
-    armMtx->m[3][2] = pivotZ - daz;
-    handMtx->m[3][0] = pivotX;
-    handMtx->m[3][1] = pivotY;
-    handMtx->m[3][2] = pivotZ;
-
-}
-
-// Tuck the elbow by ROTATING the forearm bone about the wrist (handMtx pivot) toward a body-anchor
-// DIRECTION, preserving the forearm length. Rotating about the pivot keeps the wrist vertex fixed
+// Turn the forearm bone about the wrist (handMtx pivot) toward a point (the solved elbow), by blend
+// of the angle, preserving the forearm length. Rotating about the pivot keeps the wrist vertex fixed
 // (joint stays connected -- unlike a raw position set, which compresses the bone and tears the wrist).
 // Only the direction of (ax,ay,az) matters; distance is ignored because length is preserved.
 static void tuck_elbow(Mtxf *armMtx, Mtxf *handMtx, float ax, float ay, float az, float blend) {
@@ -898,174 +998,296 @@ static void tuck_elbow(Mtxf *armMtx, Mtxf *handMtx, float ax, float ay, float az
 
 
 
-// primarySide: +1 when matrices[1]/[2] is the RIGHT hand (main gun), -1 when it's the LEFT hand
-// (dual-wield copy weapon) -- mirrors the elbow-tuck outboard direction so left/right stay symmetric.
-void vr_wrist_rot(struct hand *hand, struct modeldef *modeldef, Mtxf *matrices, float bg_scale, float primarySide) {
+// The arm: the hands model draws a forearm (matrix 1, its origin the elbow) and a hand (matrix 2,
+// the wrist), 17 and 18 for the left arm, and no upper arm. The gun animation welds the forearm to
+// the hand, so on its own it swings with the controller. vr_arm_solve finds the elbow from a
+// shoulder placed from the body (an upper arm and the model's forearm, bent down, out, back and
+// toward the hand's little finger side) and turns the forearm about the wrist onto it. The turn away from the
+// animation's forearm stays under a real wrist's bend: past it the forearm follows the hand instead
+// of the shoulder, which shows nowhere, as no upper arm is drawn. Measured on the ntsc-final hands
+// (GcombathandslodZ, tools/vr_measure): the hand bone 329.9 model units (33.0 cm) along the
+// forearm, and the knuckles along the hand bone's x, the little finger toward -x on the right hand
+// (matrix 2) and +x on the left (18, its mirror).
+#define VR_ARM_FOREARM_CM   32.99f  // elbow to wrist in the hands model
+#define VR_ARM_UPPER_CM     27.0f   // shoulder to elbow: 60 cm of reach with the forearm
+#define VR_ARM_SHOULDER_X   18.0f   // the shoulder joint in the body frame (vrBodyPoint: cm from
+#define VR_ARM_SHOULDER_Y  -24.0f   // the head, x toward the arm's side, y up, z back)
+#define VR_ARM_SHOULDER_Z    8.0f
+#define VR_ARM_POLE_DOWN     1.0f   // the elbow bends down,
+#define VR_ARM_POLE_OUT      0.4f   // out to the arm's side,
+#define VR_ARM_POLE_BACK     0.5f   // back,
+#define VR_ARM_POLE_FINGER   0.5f   // and toward the hand's little finger side (under 1: see below)
+#define VR_ARM_MAX_BEND_DEG 60.0f   // the most the forearm turns from the animation's at the wrist
 
-    if (VrHideArms) return;
+static f32 vr_arm_norm(f32 *v)
+{
+    f32 len = sqrtf(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
 
-    const float t = VR_ARM_ELBOW_SWING;   // legacy aim-follow; the elbow tuck below replaced it
-    bool grip = false;
-    if(VrTwoHandsGun(g_Vars.currentplayer->gunctrl.weaponnum)){
-        grip = get_button_state(0, "grip");
+    if (len > 0.0001f) {
+        v[0] /= len;
+        v[1] /= len;
+        v[2] /= len;
     }
 
-    float leftT    = grip ?  1.0f : t;     // less movement with grip
-    if (hand->state == HANDSTATE_RELOAD){
-        leftT = 0.0f;
+    return len;
+}
+
+// v less its part along unit u, normalized; the length before normalizing
+static f32 vr_arm_perp(f32 *v, const f32 *u)
+{
+    f32 dot = v[0] * u[0] + v[1] * u[1] + v[2] * u[2];
+
+    v[0] -= dot * u[0];
+    v[1] -= dot * u[1];
+    v[2] -= dot * u[2];
+
+    return vr_arm_norm(v);
+}
+
+// The forearm (armmtx) turned about the wrist (handmtx) onto the solved elbow. side: the arm's
+// physical side, +1 right, -1 left. finger: the little finger's side along the hand bone's x, -1
+// for a right hand's bone (2) and +1 for a left hand's (18). The matrices' rows carry the mirror a
+// mirrored hand is drawn with, so the drawn little finger is that side of the stored row either way.
+static void vr_arm_solve(Mtxf *matrices, s32 armmtx, s32 handmtx, f32 side, f32 finger)
+{
+    Mtxf *arm = &matrices[armmtx];
+    Mtxf *hand = &matrices[handmtx];
+    f32 body[3], shoulder[3], down[3], out[3], back[3];
+    f32 anim[3], u[3], pole[3], fing[3], f[3];
+    f32 lf, lu, k, d, along, r, dot, bend, turn;
+    f32 maxbend = VR_ARM_MAX_BEND_DEG * (f32) (M_PI / 180.0);
+    s32 i;
+
+    for (i = 0; i < 3; i++) {
+        anim[i] = arm->m[3][i] - hand->m[3][i];  // wrist to elbow, as animated
+        fing[i] = finger * hand->m[0][i];
     }
-    // Right Hand and arm
-    apply_wrist_rot(hand, &matrices[1], &matrices[2], 1.0f, t, bg_scale);
-    // Left Hand and arm
-    apply_wrist_rot(hand, &matrices[17], &matrices[18], 1.0f, leftT, bg_scale);
 
-    // ELBOW TUCK: [ARMDIAG] proved the elbow bone (matrices[1]/[17]) is rigidly welded to the gun and
-    // swings ~68u with its rotation, while the hand bone ([2]/[18]) stays put -- so the built-in IK
-    // (which only nudges ~12u) can never keep up. Rotate the forearm about the WRIST toward a body-
-    // stable anchor DIRECTION (view space = head/shoulder-stable): down + back toward the torso, and
-    // outboard (right for RH, left for LH). Length-preserving so the wrist joint stays connected.
-    if (VrArmElbowTuck > 0.0f) {
+    lf = vr_arm_norm(anim);
 
-        float handDir = VrLeftHandedMode ? -1.0f : 1.0f;
+    if (lf < 0.0001f || vr_arm_norm(fing) < 0.0001f) {
+        return;
+    }
 
-        // Mirror the outboard (x) direction by primarySide AND handDir
-        float outX = 8.0f * primarySide * handDir;
+    // Matrix units per cm: the gun's matrices are camera space times bg_scale, the copy model's and
+    // the fists' have no bg_scale, and the forearm is drawn the model's length in each
+    k = lf / VR_ARM_FOREARM_CM;
+    lu = VR_ARM_UPPER_CM * k;
 
-        // The anchor offset is expressed in VIEW space, which rotates with the head -- so head yaw
-        // would drag the anchor sideways and the elbow would swim the opposite way. Counter-rotate it
-        // about view-up by the head yaw RELATIVE to the smoothed torso, so it is body-stable without
-        // coming unstuck when you physically turn (absolute yaw here unwound the elbows over a 360).
-        f32 ox = outX, oz = 12.0f;
-        {
-            f32 w = gRawHeadQ.w, y = gRawHeadQ.y;
-            f32 n = sqrtf(w*w + y*y);
-            if (n > 1e-6f) {
-                w /= n; y /= n;
-                if (w < 0.0f) { w = -w; y = -y; }
-                f32 rel = 2.0f * atan2f(y, w) - VrBodyYaw;
-                while (rel >  (f32)M_PI) rel -= 2.0f * (f32)M_PI;
-                while (rel < -(f32)M_PI) rel += 2.0f * (f32)M_PI;
-                f32 ca = cosf(-rel), sa = sinf(-rel);
-                f32 nx =  ox * ca + oz * sa;
-                f32 nz = -ox * sa + oz * ca;
-                ox = nx; oz = nz;
-            }
+    body[0] = VR_ARM_SHOULDER_X * side;
+    body[1] = VR_ARM_SHOULDER_Y;
+    body[2] = VR_ARM_SHOULDER_Z;
+    vrBodyPointMirror(body, 0, shoulder);
+
+    for (i = 0; i < 3; i++) {
+        u[i] = shoulder[i] * k - hand->m[3][i];  // wrist to shoulder
+    }
+
+    d = vr_arm_norm(u);
+
+    if (d < 0.0001f) {
+        return;
+    }
+
+    // The elbow's circle about the wrist-shoulder line: a reach past the arm's length straightens
+    // the arm toward the shoulder
+    if (d > (lu + lf) * 0.999f) {
+        d = (lu + lf) * 0.999f;
+    }
+
+    if (d < fabsf(lu - lf) + 0.001f * lf) {
+        d = fabsf(lu - lf) + 0.001f * lf;
+    }
+
+    along = (lf * lf - lu * lu + d * d) / (2.0f * d);
+    r = lf * lf - along * along;
+    r = r > 0.0f ? sqrtf(r) : 0.0f;
+
+    // The elbow's side on that circle: down, out and back from the body, normalized across the
+    // wrist-shoulder line, plus the little finger's side at half that, so the hand's roll moves
+    // the elbow but can never cancel the body's hints (the old fixed direction flipped where it
+    // pointed against the forearm). Undefined only with the shoulder straight along the body's
+    // hints from the wrist (the hand up and across the face), where it takes the side.
+    body[0] = 0.0f;
+    body[1] = -1.0f;
+    body[2] = 0.0f;
+    vrBodyPointMirror(body, 0, down);
+    body[0] = side;
+    body[1] = 0.0f;
+    vrBodyPointMirror(body, 0, out);
+    body[0] = 0.0f;
+    body[2] = 1.0f;
+    vrBodyPointMirror(body, 0, back);
+
+    for (i = 0; i < 3; i++) {
+        pole[i] = down[i] * VR_ARM_POLE_DOWN + out[i] * VR_ARM_POLE_OUT + back[i] * VR_ARM_POLE_BACK;
+    }
+
+    if (vr_arm_perp(pole, u) < 0.001f) {
+        if (vr_arm_perp(out, u) < 0.001f) {
+            return;
         }
 
-        tuck_elbow(&matrices[1], &matrices[2],
-                   matrices[2].m[3][0] + ox, matrices[2].m[3][1] - 15.0f, matrices[2].m[3][2] + oz,
-                   VrArmElbowTuck);
-        tuck_elbow(&matrices[17], &matrices[18],
-                   matrices[18].m[3][0] - ox, matrices[18].m[3][1] - 15.0f, matrices[18].m[3][2] + oz,
-                   VrArmElbowTuck);
+        pole[0] = out[0];
+        pole[1] = out[1];
+        pole[2] = out[2];
     }
+
+    // Not normalized across the line: a finger along it fades out rather than swinging the elbow
+    dot = fing[0] * u[0] + fing[1] * u[1] + fing[2] * u[2];
+
+    for (i = 0; i < 3; i++) {
+        pole[i] += (fing[i] - dot * u[i]) * VR_ARM_POLE_FINGER;
+    }
+
+    vr_arm_perp(pole, u);
+
+    for (i = 0; i < 3; i++) {
+        f[i] = (u[i] * along + pole[i] * r) / lf;  // wrist to the solved elbow, unit
+    }
+
+    // The wrist's bend: a turn from the animation's forearm up to maxbend is taken whole; past it
+    // the turn falls back to none at a forearm opposite the animation's, so the turn's direction,
+    // undefined there, never flips the forearm (a hand turned against the arm keeps its forearm)
+    dot = anim[0] * f[0] + anim[1] * f[1] + anim[2] * f[2];
+    bend = acosf(dot > 1.0f ? 1.0f : dot < -1.0f ? -1.0f : dot);
+
+    if (bend > maxbend) {
+        turn = maxbend * ((f32) M_PI - bend) / ((f32) M_PI - maxbend);
+
+        if (vr_arm_perp(f, anim) < 0.0001f) {
+            return;
+        }
+
+        for (i = 0; i < 3; i++) {
+            f[i] = anim[i] * cosf(turn) + f[i] * sinf(turn);
+        }
+    }
+
+    tuck_elbow(arm, hand, hand->m[3][0] + f[0], hand->m[3][1] + f[1], hand->m[3][2] + f[2], VrArmElbowTuck);
 }
 
+// primarySide: +1 when matrices[1]/[2] is the gun-hand side's arm (the RIGHT hand's gun), -1 when
+// it is the other side's (the dual-wield copy weapon, the fists); mirrored by the left-handed mode.
+//
+// The arms are matrices 1 and 2 (right) and 17 and 18 (left) of a model with hands: the hands model
+// has 33 matrices (bones 1 to 32) and is drawn with its gun model's matrix array, which holds the gun
+// model's nummatrices (bgun0f0a5550), so a gun drawn with hands has more than 32. A gun with fewer has
+// no hands and is left alone: the classic KL01313, KF7 Special, DMC and RC-P45 models have 4 matrices,
+// the ZZT 5 and the AR53 3 (ntsc-final ROM), so 17 and 18 are past the end of the array, and 1 and 2
+// are the muzzle position (part 0x32) and its child (0x50), which the solve would move. The fists
+// (unarmed) are loaded as the gun model, with no hands model, and have 33 matrices: they have arms.
+#define VR_HAND_MTX_LAST 32
 
-
-// Size = number of matrices in the model
-#define VR_RELOAD_SNAP_MAX_MATRICES 64
-
-static Mtxf sVrReloadMtxSnapA[VR_RELOAD_SNAP_MAX_MATRICES]; // no anim
-static Mtxf sVrReloadMtxSnapB[VR_RELOAD_SNAP_MAX_MATRICES]; // anim frame N
-static int  sVrReloadSnapCount = 0;   // = gVrCopyWepModeldef->nummatrices
-static float sVrReloadTransT   = 0.0f; // 0.0 = A, 1.0 = B
-static float sVrReloadTransSpd = 0.08f; // transition speed
-static bool  sVrReloadTransActive = false;
-static Mtxf g_VrLeftHandFreeSp2c4; // Free left hand position (before snap)
-
-static void mtxfLerp(const Mtxf *a, const Mtxf *b, float t, Mtxf *out)
+// VR: a model with hands: its matrix array holds the hands' bones 1 to 32 (see above)
+static bool vrModelHasHands(const struct modeldef *modeldef)
 {
-    float it = 1.0f - t;
-    // rotation/scale
-    out->m[0][0] = a->m[0][0]*it + b->m[0][0]*t;
-    out->m[0][1] = a->m[0][1]*it + b->m[0][1]*t;
-    out->m[0][2] = a->m[0][2]*it + b->m[0][2]*t;
-    out->m[1][0] = a->m[1][0]*it + b->m[1][0]*t;
-    out->m[1][1] = a->m[1][1]*it + b->m[1][1]*t;
-    out->m[1][2] = a->m[1][2]*it + b->m[1][2]*t;
-    out->m[2][0] = a->m[2][0]*it + b->m[2][0]*t;
-    out->m[2][1] = a->m[2][1]*it + b->m[2][1]*t;
-    out->m[2][2] = a->m[2][2]*it + b->m[2][2]*t;
-    // Translation
-    out->m[3][0] = a->m[3][0]*it + b->m[3][0]*t;
-    out->m[3][1] = a->m[3][1]*it + b->m[3][1]*t;
-    out->m[3][2] = a->m[3][2]*it + b->m[3][2]*t;
+    return modeldef != NULL && modeldef->nummatrices > VR_HAND_MTX_LAST;
+}
 
-    out->m[0][3] = a->m[0][3];
-    out->m[1][3] = a->m[1][3];
-    out->m[2][3] = a->m[2][3];
-    out->m[3][3] = a->m[3][3];
+void vr_wrist_rot(struct modeldef *modeldef, Mtxf *matrices, float primarySide) {
+    f32 side = primarySide * (VrLeftHandedMode ? -1.0f : 1.0f);
+
+    if (VrHideArms || VrArmElbowTuck <= 0.0f) return;
+
+    if (matrices == NULL || !vrModelHasHands(modeldef)) return;
+
+    vr_arm_solve(matrices, 1, 2, side, -1.0f);
+    vr_arm_solve(matrices, 17, 18, -side, 1.0f);
+}
+
+// Manual reload: the copy model's left arm, holding a clip, placed as the free fists' arm
+// (vrReloadPlaceHeldArm), is solved as the fists' arm: the fists' visible arm is their matrix 1,
+// on the off-hand's side (VR_FIST_SIDE); vr_wrist_rot's 17 on the copy model would be the other
+// side's. Task F9c.
+static void vr_tuck_held_arm(Mtxf *matrices, s32 armmtx, s32 handmtx) {
+    if (VrHideArms || VrArmElbowTuck <= 0.0f) return;
+
+    vr_arm_solve(matrices, armmtx, handmtx, VR_FIST_SIDE * (VrLeftHandedMode ? -1.0f : 1.0f), 1.0f);
 }
 
 
 
-#define VR_RELOAD_MAX_ZONES 3
+static Mtxf g_VrLeftHandFreeSp2c4; // Free left hand position: the clip-in-hand pose is drawn there
 
-// Description of the snap configuration for a weapon + zone
-typedef struct VrReloadZoneConfig {
-    // --- Zone detection ---
-    float zoneOffX;         // Zone offset relative to the right hand
-    float zoneOffY;
-    float zoneOffZ;
-    float zoneRadius;       // 0.0f => zone inactive
-
-    // --- Snap configuration ---
-    bool  valid;
-    float ox, oy, oz;       // Left hand base offset (resting position)
-
-    float oxDeltaMax;       // MAX relative offset from ox
-    float oxDeltaMin;       // MIN relative offset from ox
-    float oyDeltaMax;       // MAX relative offset from oy
-    float oyDeltaMin;       // MIN relative offset from oy
-    float ozDeltaMax;       // MAX relative offset from oz
-    float ozDeltaMin;       // MIN relative offset from oz
-
-    float deltaOXScale;     // Interpolation factor on X (0.0f = no movement)
-    float deltaOYScale;     // Interpolation factor on Y
-    float deltaOZScale;     // Interpolation factor on Z
-    int mainDelatScale;     // Main movement axis
-
-    const s32 *partsToShowId; // Hand/weapon parts to display
-
-    float rot[3][3];        // Relative L->R matrix
-    float animFrameStart;   // Starting frame (magazine inserted position)
-    float animFrameEnd;     // Ending frame (magazine removed position)
-
-    float snapOffsetX;      // Relative L->R matrix
-    float snapOffsetY;      // Starting frame (magazine inserted position)
-    float snapOffsetZ;      // Ending frame (magazine removed position)
-    bool holdSnap;
-
-    int sound1;             // Reload sound 1
-    int sound2;             // Reload sound 2
-} VrReloadZoneConfig;
-
-
-extern float gVrReloadPullLocalX;
-extern float gVrReloadPullLocalY;
-extern float gVrReloadPullLocalZ;
-
-// Inline helper to read the correct axis
-static float vrGetReloadPull(int axis) {
-    if (axis == 0) return gVrReloadPullLocalX;
-    if (axis == 1) return gVrReloadPullLocalY;
-    return gVrReloadPullLocalZ;
-}
-
-bool VrGrabMagBelt = false;
-bool  VrInReloadLoop   = false;
-static bool  VrReloadGrip     = false;
 static bool  VrTwoHandGrip     = false;
-static bool  sVrSnapReload    = false;
-static bool  VrReloadDisable  = false;
-static bool  sVrSnap          = false;
-static bool  sVrPrevGrip      = false;
-static bool  VrInReloadZone   = false;
-static bool sVrForceSnapRecapture = false;
-static int ReloadZone = 0;
-static float sReloadPullBase  = 0.0f;
-static float sReloadYDistBase = 0.0f;
+// The free hand's grip has held a clip, slapped or racked, and is not yet let go: not the support hand
+static bool  VrTwoHandReloadGrip = false;
+
+// The gun hand's gun is aimed with both hands. The scopes and the zoom read only this: the lens
+// shows (vrScopeBegin), the Sniper Rifle's and the Farsight's zoom work (bondmove.c) and the gun
+// hand's rotation is smoothed (vr_input.cpp) only while it is true. The grip alone never counts:
+// with holsters it is held the whole time a gun is in the hand. Today it is the rifle-only gate
+// (VrTwoHandsGun and the free hand's grip, VrTwoHandGrip), so the pistols with a scope (the MagSec 4,
+// the Falcon 2 Scope) never qualify (Stage D, which would have extended it, was dropped; the Falcon 2
+// Scope's lens shows one-handed instead, vrScopeBegin). With the Farsight or the Rocket Launcher it
+// also puts the player in sight mode (bondmove.c, Task J8a). A free
+// hand holding a clip is reloading, not aiming. In VR always, holsters on or off.
+// VrTwoHandGrip is written only while bgun0f0a5550 draws the gun, which it skips in cutscenes, the
+// eyespy, menus and while the hand is hidden, but controller_pose and vr_update_head_tracking read
+// this every frame: so the states where the gun is not drawn or used (vrScopeBegin's) are false here.
+// The gun is the right hand's (bgunGetWeaponNum), as bondmove.c's zoom gates read it.
+bool vrTwoHandAiming(void)
+{
+    struct player *player = g_Vars.currentplayer;
+
+    if (!player
+        || player->cameramode != CAMERAMODE_DEFAULT
+        || player->activemenumode != AMMODE_CLOSED
+        || player->gunctrl.passivemode
+        || player->bondhealth <= 0.0f) {
+        return false;
+    }
+
+    if (!VrTwoHandGrip || !VrTwoHandsGun(bgunGetWeaponNum(HAND_RIGHT))) {
+        return false;
+    }
+
+    return !vrReloadHandHoldsClip(HAND_RIGHT);
+}
+
+// The free hand grips a two-handed gun as its support hand (VrTwoHandGrip): the grip held, and not a
+// grip that holds or has held a clip, slapped or racked, not yet let go (VrTwoHandReloadGrip). For
+// the support hand's effects that read the grip each shot (the halved spread, the two-hand recoil
+// profile in vr_input.cpp, the support hand's fire buzz in input.c). As VrTwoHandGrip, it is written
+// only while bgun0f0a5550 draws the gun.
+bool vrTwoHandGripHeld(void)
+{
+    return VrTwoHandGrip;
+}
+
+// A new level or life: a reload grip latched before it (VrTwoHandReloadGrip) does not carry over
+void bgunTwoHandReset(void)
+{
+    VrTwoHandReloadGrip = false;
+}
+
+// The game's own full screen zoom is on: the Farsight's, the one zoom gun without a lens (the lens
+// guns keep the default view, playerUpdateZoom), in sight mode and aimed with two hands (bondmove.c
+// gates its zoom on that). vr_openxr.cpp steadies the head only then.
+bool vrZoomViewOn(void)
+{
+    struct player *player = g_Vars.currentplayer;
+
+    return player && player->insightaimmode
+        && bgunGetWeaponNum(HAND_RIGHT) == WEAPON_FARSIGHT && vrTwoHandAiming();
+}
+
+// The CMP150's Follow Lock-on, its secondary function, in the gun hand (Task J7, the user: "how are we
+// supposed to use cmp's lock on aiming behavior if we cant two handed aim?"). The original locks
+// targets only in sight mode (R held) and then swivels the crosshair onto the first locked one, and
+// shots go to the crosshair. In VR no grip holding a gun sends R (vrHolsterGripAimBlocked), the
+// CMP150 is not two-handed, and shots go where the controller points, so the lock never started and
+// a lock would steer nothing. Sight mode gives the CMP150 nothing else (no zoom, the same spread), so
+// with this function selected targets lock without it (sightTick) and the shots go to the target the
+// original would follow (bgunCalculatePlayerShotSpread)
+bool vrCmpFollowLockOn(void)
+{
+    struct player *player = g_Vars.currentplayer;
+
+    return player != NULL && bgunGetWeaponNum(HAND_RIGHT) == WEAPON_CMP150
+        && player->hands[HAND_RIGHT].gset.weaponfunc == FUNC_SECONDARY;
+}
 
 // ===== TWO-HANDED AIMING ====================================================================
 // Two-handed weapons aim along the line between the two controllers, not just the primary
@@ -1212,354 +1434,274 @@ static void vrBuildGunRotation(s32 handnum, struct hand *hand, const f32 quat[4]
                 out->m[1][0], out->m[1][1], out->m[1][2]);
 }
 
-// Current snap offsets
-static float RELOAD_SNAP_OX        = 0.0f;
-static float RELOAD_SNAP_OY        = 0.0f;
-static float RELOAD_SNAP_OZ        = 0.0f;
-static float RELOAD_SNAP_OX_MAX    = 0.0f;
-static float RELOAD_SNAP_OX_MIN    = 0.0f;
-static float RELOAD_SNAP_OY_MAX    = 0.0f;
-static float RELOAD_SNAP_OY_MIN    = 0.0f;
-static float RELOAD_SNAP_OZ_MAX    = 0.0f;
-static float RELOAD_SNAP_OZ_MIN    = 0.0f;
-static float RELOAD_DELTA_OX_SCALE = 0.0f;
-static float RELOAD_DELTA_OY_SCALE = 2.0f;
-static float RELOAD_DELTA_OZ_SCALE = 0.8f;
-static float RELOAD_ANIM_FRAME_START = 0.0f;
-static float RELOAD_ANIM_FRAME_END   = 0.0f;
-
-
-static float VrReloadSnapRot[3][3] = {
-        { 1.0f, 0.0f, 0.0f },
-        { 0.0f, 1.0f, 0.0f },
-        { 0.0f, 0.0f, 1.0f },
+// ===== THE GUNS' KICK (Tasks G0d and H4) ==================================================
+// User, 2026-10-19: "shotgun also has so much kick when fired that it needs to move more in space by
+// the player or something, right now having just the hand jerk up seems odd". The engine's recoil is
+// zero for the Shotgun (recoildist and recoilangle 0); the kick seen was its fire animation (the gun
+// and the model's hands 8 cm back and 5 down at frames 7 to 10, then an 80 degree muzzle-up pump
+// flourish with the trigger hand dropping 14 cm, back by frame 72: not played while manual reload
+// pumps it, bgunTickIncAttackingShoot) and vr_input.cpp's spring on the gun controller's pose (up to 23
+// degrees and 20 cm, its translation not turned into the gun's frame, discarded by the two-hand aim:
+// off while this kick runs, GetRecoilProfileForWeapon). With manual reload on (vrGunKickDef) the drawn
+// gun pose is kicked instead: back along the barrel and the muzzle up, with about a degree sideways
+// at random, each shaped A (t/tp) e^(1-t/tp) with tp 40 ms (the peak at 40 ms, under 10% by 200 ms),
+// timed in game time so it is the same at any frame rate. Applied to hand->posrotmtx after vrBuildGunRotation, by both of its writers
+// (vr_gun_pos_rot and the recoil frames of bgun0f09aba4), so the two-hand aim keeps it and everything
+// drawn from that matrix (the gun, its hands, the reload's grab areas captured from it) moves with
+// it. gCtrlPos and gCtrlQuat are untouched: the aim's hand line, the holsters and the free hand's
+// grabs stay on the real controllers. Never the camera. The gun turns about the gun controller (the
+// grip offset's pivot in the render). The shot's own direction is read before the kick starts; a
+// double blast's second shell, 13 ticks on, leaves within 0.7 degrees of it.
+//
+// The revolvers (Task H4), user, 2026-10-20: "revolver works but the kick on it feels so awkward in
+// VR". The DY357's fire animation hardly moves the gun (0.75 degrees); the kick was the engine's recoil
+// (bgun0f09aba4: the muzzle 35 degrees up over 8 ticks and back over 16, the LX's 24, in 60 Hz steps,
+// on the gun controller's pose) plus vr_input.cpp's spring (12.7 degrees and 3 cm): about 48 degrees
+// at 139 ms, a half-second drift and judder at 72 or 90 Hz. The DY357 and DY357-LX now kick as the
+// Shotgun does, with their own values, whatever the reload setting (the user's complaint was the feel
+// in VR, and their fire animation plays either way: the hammer, the cylinder and the finger). The
+// engine's turn and push are zeroed for a gun with a kick (bgun0f09aba4; its timing, so the lockout
+// between shots, is unchanged) and the spring is off (vrGunKickOwnsRecoil). The kick is kept per hand:
+// a pair's left revolver kicks too and buzzes its own controller. The render mirrors a gun side's model
+// by negating its x row after posrotmtx (bgun0f0a5550), so the kick's turns about the gun's own axes
+// hold on either hand: the muzzle goes up, the side turn (random either way) is only mirrored.
+struct vrgunkick {
+    f32 peak60ths;      // tp
+    f32 end60ths;       // the kick ends, about 1% of the peak left (t/tp 7.5)
+    f32 back2hcm;       // back along the barrel, the support hand gripping ...
+    f32 back1hcm;       // ... one-handed
+    f32 rise2hdeg;      // the muzzle up
+    f32 rise1hdeg;
+    f32 sidedeg;        // sideways, at random either way up to this
+    f32 buzz1amp;       // the shot: a hard buzz on the controller of the hand that fired, and on the
+    f32 buzz1secs;      // support controller while it grips ...
+    f32 buzz2amp;       // ... then a softer one
+    f32 buzz2secs;
+    f32 buzz2at60ths;
 };
 
-void VrSetReloadSnapRot(
-        float a00, float a01, float a02,
-        float a10, float a11, float a12,
-        float a20, float a21, float a22)
+// The Shotgun (Task G0d): the peak at 40 ms, under 10% by 200 ms
+static const struct vrgunkick sVrKickShotgun = {
+    .peak60ths = 2.4f, .end60ths = 18.0f,
+    .back2hcm = 5.0f, .back1hcm = 7.0f, .rise2hdeg = 6.0f, .rise1hdeg = 10.0f, .sidedeg = 1.0f,
+    .buzz1amp = 1.0f, .buzz1secs = 0.07f, .buzz2amp = 0.4f, .buzz2secs = 0.12f, .buzz2at60ths = 4.2f,
+};
+
+// The DY357 and DY357-LX (Task H4): the peak at 50 ms, under 10% by 245 ms; one-handed guns, so the
+// gripping values are the same. Over by 375 ms, before the next shot can go (the lockout: 44 ticks,
+// the LX 62)
+static const struct vrgunkick sVrKickRevolver = {
+    .peak60ths = 3.0f, .end60ths = 22.5f,
+    .back2hcm = 4.0f, .back1hcm = 4.0f, .rise2hdeg = 20.0f, .rise1hdeg = 20.0f, .sidedeg = 1.5f,
+    .buzz1amp = 1.0f, .buzz1secs = 0.07f, .buzz2amp = 0.5f, .buzz2secs = 0.15f, .buzz2at60ths = 4.2f,
+};
+
+// Per hand (HAND_RIGHT, HAND_LEFT)
+static f32  sVrKickT[2] = { -1.0f, -1.0f };     // 60ths of game time since the shot; -1: no kick
+static s32  sVrKickFrame[2] = { -1, -1 };       // lvframenum of its last step (once per frame)
+static const struct vrgunkick *sVrKickDef[2];   // the gun's kick that started it
+static f32  sVrKickBack[2];                     // this shot's amplitudes: cm, degrees, degrees (the
+static f32  sVrKickRise[2];                     // side signed)
+static f32  sVrKickSide[2];
+static bool sVrKickBuzz2[2];                    // the second buzz is still to come
+
+// The kick of the hand's gun, or NULL. The Shotgun on the gun hand while the player pumps it (manual
+// reload's pumpaction row), the same test that skips its fire animation (bgunTickIncAttackingShoot):
+// with manual reload off it plays its fire animation, with its own kick, and keeps vr_input.cpp's
+// spring and the engine's rumble. The revolvers in either hand (the left one of a pair while that hand
+// is in use), whatever the reload setting
+static const struct vrgunkick *vrGunKickDef(s32 handnum)
 {
-    VrReloadSnapRot[0][0] = a00;
-    VrReloadSnapRot[0][1] = a01;
-    VrReloadSnapRot[0][2] = a02;
-    VrReloadSnapRot[1][0] = a10;
-    VrReloadSnapRot[1][1] = a11;
-    VrReloadSnapRot[1][2] = a12;
-    VrReloadSnapRot[2][0] = a20;
-    VrReloadSnapRot[2][1] = a21;
-    VrReloadSnapRot[2][2] = a22;
+    struct player *player = g_Vars.currentplayer;
+    struct vrreloaddef *def;
+    s32 weaponnum;
+
+    // VR is single-player: these statics never follow another player's gun
+    if (player == NULL || g_Vars.currentplayernum != 0 || handnum < 0 || handnum >= 2) {
+        return NULL;
+    }
+
+    if (handnum == HAND_LEFT && !player->hands[HAND_LEFT].inuse) {
+        return NULL;
+    }
+
+    if (handnum == HAND_RIGHT) {
+        def = vrReloadOwnedDef(HAND_RIGHT);
+
+        if (def != NULL && def->pumpaction) {
+            return &sVrKickShotgun;
+        }
+    }
+
+    weaponnum = player->hands[handnum].gset.weaponnum;
+
+    if (weaponnum == WEAPON_DY357MAGNUM || weaponnum == WEAPON_DY357LX) {
+        return &sVrKickRevolver;
+    }
+
+    return NULL;
 }
 
+// For vr_input.cpp: the gun hand's recoil is this kick, so its spring stays off (a pair is one weapon,
+// so the gun hand's answer holds for the left gun too)
+bool vrGunKickOwnsRecoil(void)
+{
+    return vrGunKickDef(HAND_RIGHT) != NULL;
+}
 
+// The two buzzes: on the controller of the hand that fired (the left hand's on the off controller,
+// trigger_haptic_vibration flipping both for the gun side), and on the support controller while it
+// grips the gun hand's gun
+static void vrGunKickBuzz(s32 handnum, f32 amp, f32 secs)
+{
+    if (handnum == HAND_LEFT) {
+        vrReloadBuzz(VRR_CTRL_OFF, amp, secs);
+        return;
+    }
 
-// Reload zone table per weapon
+    vrReloadBuzz(VRR_CTRL_GUN, amp, secs);
+
+    if (VrTwoHandsGun(g_Vars.currentplayer->gunctrl.weaponnum) && vrTwoHandGripHeld()) {
+        vrReloadBuzz(VRR_CTRL_OFF, amp, secs);
+    }
+}
+
+// A shot of a hand's gun (bgun0f09a6f8): the kick restarts, two-handed while the support hand grips
+// the gun hand's gun, and the first buzz. The engine's rumble for the shot is not sent for such a gun:
+// its rumble pak pulses (2 frames on, 4 off, inputRumble) stop the controllers' haptics between them
+static void vrGunKickStart(s32 handnum, s32 weaponnum)
+{
+    const struct vrgunkick *kick = vrGunKickDef(handnum);
+    bool twohand;
+
+    if (kick == NULL) {
+        return;
+    }
+
+    twohand = handnum == HAND_RIGHT && VrTwoHandsGun(weaponnum) && vrTwoHandGripHeld();
+
+    sVrKickT[handnum] = 0.0f;
+    sVrKickFrame[handnum] = g_Vars.lvframenum;
+    sVrKickDef[handnum] = kick;
+    sVrKickBack[handnum] = twohand ? kick->back2hcm : kick->back1hcm;
+    sVrKickRise[handnum] = twohand ? kick->rise2hdeg : kick->rise1hdeg;
+    sVrKickSide[handnum] = ((s32) (rngRandom() % 2001) - 1000) * (kick->sidedeg / 1000.0f);
+    sVrKickBuzz2[handnum] = true;
+
+    vrGunKickBuzz(handnum, kick->buzz1amp, kick->buzz1secs);
+}
+
+// The kick on a freshly built hand->posrotmtx (rows: the gun model's x, y and z, its forward, in the
+// matrix's frame, the render drawing it turned by Ry180; row 3 the gun's place, cm, view space).
+// Steps the kick's time once per frame (none passes while paused), plays the second buzz and ends the
+// kick past its end or when the hand holds another gun (or none)
+static void vrGunKickApply(s32 handnum, struct hand *hand)
+{
+    Mtxf *m = &hand->posrotmtx;
+    const struct vrgunkick *kick;
+    f32 u, k, back, a, b, ca, sa, cb, sb;
+    s32 j;
+
+    if (handnum < 0 || handnum >= 2 || sVrKickT[handnum] < 0.0f) {
+        return;
+    }
+
+    kick = sVrKickDef[handnum];
+
+    if (vrGunKickDef(handnum) != kick) {
+        sVrKickT[handnum] = -1.0f;
+        return;
+    }
+
+    if (sVrKickFrame[handnum] != g_Vars.lvframenum) {
+        sVrKickFrame[handnum] = g_Vars.lvframenum;
+        sVrKickT[handnum] += g_Vars.lvupdate60freal;
+
+        if (sVrKickBuzz2[handnum] && sVrKickT[handnum] >= kick->buzz2at60ths) {
+            sVrKickBuzz2[handnum] = false;
+            vrGunKickBuzz(handnum, kick->buzz2amp, kick->buzz2secs);
+        }
+
+        if (sVrKickT[handnum] > kick->end60ths) {
+            sVrKickT[handnum] = -1.0f;
+            return;
+        }
+    }
+
+    // The recoil setting turns the motion off; the buzz stays
+    if (!VrWeaponRecoil) {
+        return;
+    }
+
+    u = sVrKickT[handnum] / kick->peak60ths;
+    k = u * expf(1.0f - u);
+    back = sVrKickBack[handnum] * k;
+    a = sVrKickRise[handnum] * k * (M_PI / 180.0f);
+    b = sVrKickSide[handnum] * k * (M_PI / 180.0f);
+    ca = cosf(a);
+    sa = sinf(a);
+    cb = cosf(b);
+    sb = sinf(b);
+
+    // Back along the barrel as it points before the turn: its view-space direction is the z row
+    // turned by Ry180 (x and z negated), so back is the row with y negated
+    m->m[3][0] += m->m[2][0] * back;
+    m->m[3][1] -= m->m[2][1] * back;
+    m->m[3][2] += m->m[2][2] * back;
+
+    // The muzzle up, a turn about the gun's own x that tips its forward (z) toward its up (y); then
+    // sideways about its own y. Local turns, so they hold whatever the aim and the gun side
+    for (j = 0; j < 3; j++) {
+        f32 y = m->m[1][j];
+        f32 z = m->m[2][j];
+
+        m->m[1][j] = ca * y - sa * z;
+        m->m[2][j] = sa * y + ca * z;
+    }
+
+    for (j = 0; j < 3; j++) {
+        f32 x = m->m[0][j];
+        f32 z = m->m[2][j];
+
+        m->m[0][j] = cb * x - sb * z;
+        m->m[2][j] = sb * x + cb * z;
+    }
+}
+
 // NOTE: adjust the size according to your enum (e.g. last weapon + 1)
 #define NUM_WEAPONS 64
-static const VrReloadZoneConfig gVrReloadZones[NUM_WEAPONS][VR_RELOAD_MAX_ZONES] = {
 
-        [WEAPON_FALCON2_SILENCER][0] = { // Zone 0
-                // Detection
-                .zoneOffX     = -10.106f,
-                .zoneOffY     =  -10.917f,
-                .zoneOffZ     =  9.934f,
-                .zoneRadius   =  10.0f,
-
-                // Snap
-                .valid        = true,
-                .ox           =  8.6528f,
-                .oy           = -2.6214f,
-                .oz           = -4.2495f,
-
-                .rot = {
-                        { -0.0929f,  0.9026f, -0.3280f },
-                        { -0.9772f,  0.0087f,  0.2123f },
-                        {  0.2030f,  0.3338f,  0.9205f },
-                },
-
-                .oxDeltaMax   =  0.0f,
-                .oxDeltaMin   =  0.0f,
-                .oyDeltaMax   =  0.0f,
-                .oyDeltaMin   = -11.3786f,
-                .ozDeltaMax   =  0.0f,
-                .ozDeltaMin   = -3.5505f,
-
-                .deltaOXScale =  0.0f,
-                .deltaOYScale =  2.0f,
-                .deltaOZScale =  0.8f,
-                .mainDelatScale = 1, // X = 0, Y = 1, Z = 2
-
-                .partsToShowId = LeftHandAndMagMtx,
-
-                .animFrameStart = 18.0f,
-                .animFrameEnd   = 18.0f,
-
-                .snapOffsetX = 30.0f,  // Left hand position offset when removing the magazine
-                .snapOffsetY = 0.0f,
-                .snapOffsetZ = -5.0f,
-                .holdSnap = false,
-
-                .sound1 = 472,
-                .sound2 = 473,
-        },
-
-
-        [WEAPON_FALCON2_SILENCER][1] = { // Zone 1
-                // Detection
-                .zoneOffX     = -9.840f,
-                .zoneOffY     =  15.376f,
-                .zoneOffZ     =  -0.598f,
-                .zoneRadius   =  10.0f,
-
-                // Snap
-                .valid        = true,
-                .ox           =  1.2657f,
-                .oy           =  2.5778f,
-                .oz           =  8.7933f,
-
-                .rot = {
-                        { 0.9878f, -0.0088f, -0.1554f},
-                        {-0.1556f, -0.0210f, -0.9876f},
-                        { 0.0055f,  0.9998f, -0.0221f},
-                },
-
-                .oxDeltaMax   =  0.0f,
-                .oxDeltaMin   =  0.0f,
-                .oyDeltaMax   =  0.0f,
-                .oyDeltaMin   =  0.0f,
-                .ozDeltaMax   =  0.0f,
-                .ozDeltaMin   = -4.0f,
-
-                .deltaOXScale =  0.0f,
-                .deltaOYScale =  0.0f,
-                .deltaOZScale =  2.0f,
-                .mainDelatScale = 2, // X = 0, Y = 1, Z = 2
-
-                .partsToShowId = LeftHandAndSlideMtx,
-
-                .animFrameStart = 62.0f,
-                .animFrameEnd   = 62.0f,
-
-                .snapOffsetX = 0.0f,
-                .snapOffsetY = 0.0f,
-                .snapOffsetZ = 0.0f,
-                .holdSnap = true,
-
-                .sound1 = 475,
-                .sound2 = -1,
-        },
-
-        [WEAPON_FALCON2][0] = {
-                // Detection
-                .zoneOffX     = -10.106f,
-                .zoneOffY     =  -10.917f,
-                .zoneOffZ     =  9.934f,
-                .zoneRadius   =  10.0f,
-
-                // Snap
-                .valid        = true,
-                .ox           =  8.6528f,
-                .oy           = -2.6214f,
-                .oz           = -4.2495f,
-
-                .rot = {
-                        { -0.0929f,  0.9026f, -0.3280f },
-                        { -0.9772f,  0.0087f,  0.2123f },
-                        {  0.2030f,  0.3338f,  0.9205f },
-                },
-
-                .oxDeltaMax   =  0.0f,
-                .oxDeltaMin   =  0.0f,
-                .oyDeltaMax   =  0.0f,
-                .oyDeltaMin   = -11.3786f,
-                .ozDeltaMax   =  0.0f,
-                .ozDeltaMin   = -3.5505f,
-
-                .deltaOXScale =  0.0f,
-                .deltaOYScale =  2.0f,
-                .deltaOZScale =  0.8f,
-                .mainDelatScale = 1, // X = 0, Y = 1, Z = 2
-
-                .partsToShowId = LeftHandAndMagMtx,
-
-                .animFrameStart = 18.0f,
-                .animFrameEnd   = 18.0f,
-
-                .snapOffsetX = 30.0f,
-                .snapOffsetY = 0.0f,
-                .snapOffsetZ = -5.0f,
-                .holdSnap = false,
-
-                .sound1 = 472,
-                .sound2 = 473,
-        },
-
-        [WEAPON_FALCON2][1] = {
-                // Détection
-                .zoneOffX     = -9.840f,
-                .zoneOffY     =  15.376f,
-                .zoneOffZ     =  -0.598f,
-                .zoneRadius   =  10.0f,
-
-                // Snap
-                .valid        = true,
-                .ox           =  1.2657f,
-                .oy           =  2.5778f,
-                .oz           =  8.7933f,
-
-                .rot = {
-                        {0.9878f,-0.0076f,-0.1555f},
-                        {-0.1556f,-0.0131f,-0.9877f},
-                        {0.0055f,0.9999f,-0.0141f},
-                },
-
-                .oxDeltaMax   =  0.0f,
-                .oxDeltaMin   =  0.0f,
-                .oyDeltaMax   =  0.0f,
-                .oyDeltaMin   =  0.0f,
-                .ozDeltaMax   =  0.0f,
-                .ozDeltaMin   = -4.0f,
-
-                .deltaOXScale =  0.0f,
-                .deltaOYScale =  0.0f,
-                .deltaOZScale =  2.0f,
-                .mainDelatScale = 2, // X = 0, Y = 1, Z = 2
-
-                .partsToShowId = LeftHandAndSlideMtx,
-
-                .animFrameStart = 62.0f,
-                .animFrameEnd   = 62.0f,
-
-                .snapOffsetX = 0.0f,
-                .snapOffsetY = 0.0f,
-                .snapOffsetZ = 0.0f,
-                .holdSnap = true,
-
-                .sound1 = 475,
-                .sound2 = -1,
-        },
-
-        [WEAPON_FALCON2_SCOPE][0] = {
-                // Détection
-                .zoneOffX     = -10.106f,
-                .zoneOffY     =  -10.917f,
-                .zoneOffZ     =  9.934f,
-                .zoneRadius   =  10.0f,
-
-                // Snap
-                .valid        = true,
-                .ox           = 7.3827f,
-                .oy           = -1.1455f,
-                .oz           = -3.3488f,
-
-                .rot = {
-                        {-0.0593f,0.9662f,-0.2507f},
-                        {-0.9734f,-0.0003f,0.2292f},
-                        {0.2214f,0.2576f,0.9405f},
-                },
-
-                .oxDeltaMax   =  0.0f,
-                .oxDeltaMin   =  0.0f,
-                .oyDeltaMax   =  0.0f,
-                .oyDeltaMin   = -11.3786f,
-                .ozDeltaMax   =  0.0f,
-                .ozDeltaMin   = -3.5505f,
-
-                .deltaOXScale =  0.0f,
-                .deltaOYScale =  2.0f,
-                .deltaOZScale =  0.8f,
-                .mainDelatScale = 1, // X = 0, Y = 1, Z = 2
-
-
-                .partsToShowId = LeftHandAndMagMtx,
-
-                .animFrameStart = 18.0f,
-                .animFrameEnd   = 18.0f,
-
-                .snapOffsetX = 30.0f,
-                .snapOffsetY = 0.0f,
-                .snapOffsetZ = -5.0f,
-                .holdSnap = false,
-
-                .sound1 = 472,
-                .sound2 = 473,
-        },
-
-        [WEAPON_FALCON2_SCOPE][1] = {
-                // Détection
-                .zoneOffX     = -9.840f,
-                .zoneOffY     =  15.376f,
-                .zoneOffZ     =  -0.598f,
-                .zoneRadius   =  10.0f,
-
-                // Snap
-                .valid        = true,
-                .ox           =  1.0865f,
-                .oy           =  2.5839f,
-                .oz           =  8.9714f,
-
-                .rot = {
-                        {0.9895f, -0.0489f, -0.1357f},
-                        {-0.1369f, -0.0227f, -0.9903f},
-                        {0.0454f, 0.9985f, -0.0291f},
-                },
-
-                .oxDeltaMax   =  0.0f,
-                .oxDeltaMin   =  0.0f,
-                .oyDeltaMax   =  0.0f,
-                .oyDeltaMin   =  0.0f,
-                .ozDeltaMax   =  0.0f,
-                .ozDeltaMin   = -4.0f,
-
-                .deltaOXScale =  0.0f,
-                .deltaOYScale =  0.0f,
-                .deltaOZScale =  2.0f,
-                .mainDelatScale = 2, // X = 0, Y = 1, Z = 2
-
-                .partsToShowId = LeftHandAndSlideMtx,
-
-                .animFrameStart = 62.0f,
-                .animFrameEnd   = 62.0f,
-
-                .snapOffsetX = 0.0f,
-                .snapOffsetY = 0.0f,
-                .snapOffsetZ = 0.0f,
-                .holdSnap = true,
-
-                .sound1 = 475,
-                .sound2 = -1,
-        },
-
-        // TODO: WEAPON_LAPTOPGUN, WEAPON_DRAGON...
-};
-
-
-
-
-
-// Runtime table of automatically resolved animIds
-static int gVrResolvedAnimId[NUM_WEAPONS][VR_RELOAD_MAX_ZONES];
+// Reload animation id per weapon and ammo slot, resolved when the copy-weapon model loads. Only
+// guns with a manual reload row get one, per row (the SuperDragon: the rifle's and the grenade
+// magazine's, Task F9e): the clip-in-hand pose holds a frame of it.
+static int gVrResolvedAnimId[NUM_WEAPONS][2];
 static bool gVrAnimIdsResolved[NUM_WEAPONS] = {false};
 
-// Resolves the animId of a weapon/zone using bgunStartAnimation on a temporary hand
-static int vrGetReloadAnimIdForWeapon(s32 wep, int zone)
+// Resolves the reload animId of the right hand's gun's ammo slot (an ammoindex: the magazine's reload
+// script) using bgunStartAnimation on a temporary hand
+static int vrGetReloadAnimIdForWeapon(s32 ammoindex)
 {
 
     struct hand *rightHand = &g_Vars.currentplayer->hands[HAND_RIGHT];
-    struct weaponfunc *func = weaponGetFunction(&rightHand->gset, FUNC_PRIMARY);
-    if (!func || func->ammoindex < 0) return -1;
+    if (ammoindex < 0 || ammoindex >= 2) return -1;
 
     struct handweaponinfo info;
     bgunGetWeaponInfo(&info, HAND_RIGHT);
     if (!info.definition) return -1;
 
-    if (!info.definition->ammos[func->ammoindex]->reload_animation) return -1;
+    if (!info.definition->ammos[ammoindex] || !info.definition->ammos[ammoindex]->reload_animation) return -1;
 
+    // The single-gun reload, also for a pair: the command list switches to the dual-wield reload
+    // while the left hand is in use (bgun0f098884), and the hold frame is a frame of the single one
+    // (in a pair the clip hand was drawn from the dual anim's frame, rotated and far off the hand)
+    struct hand *leftHand = &g_Vars.currentplayer->hands[HAND_LEFT];
+    s32 leftinuse = leftHand->inuse;
     struct hand tempHand = *rightHand;
     tempHand.animload = -1;
-    bgunStartAnimation(info.definition->ammos[func->ammoindex]->reload_animation, HAND_RIGHT, &tempHand);
+    leftHand->inuse = false;
+    bgunStartAnimation(info.definition->ammos[ammoindex]->reload_animation, HAND_RIGHT, &tempHand);
+    leftHand->inuse = leftinuse;
 
-//    LOGI("[VR ReloadAnimId] weapon=%d zone=%d -> animId=%d\n", wep, zone, (int)tempHand.animload);
     return (int)tempHand.animload;
 }
 
@@ -1567,986 +1709,17 @@ static int vrGetReloadAnimIdForWeapon(s32 wep, int zone)
 void vrResolveReloadAnimIds(s32 wep)
 {
     if (wep < 0 || wep >= NUM_WEAPONS) return;
-    for (int z = 0; z < VR_RELOAD_MAX_ZONES; z++) {
-        const VrReloadZoneConfig *cfg = &gVrReloadZones[wep][z];
-        if (cfg->valid) {
-            gVrResolvedAnimId[wep][z] = vrGetReloadAnimIdForWeapon(wep, z);
-        } else {
-            gVrResolvedAnimId[wep][z] = -1;
-        }
+    for (s32 ammo = 0; ammo < 2; ammo++) {
+        gVrResolvedAnimId[wep][ammo] = vrReloadGetDef(wep, ammo) != NULL ? vrGetReloadAnimIdForWeapon(ammo) : -1;
     }
     gVrAnimIdsResolved[wep] = true;
 }
 
 
-// Helper macro to read the resolved animId
-#define VR_ANIM_ID(wep, zone) \
-    (gVrAnimIdsResolved[(wep)] ? gVrResolvedAnimId[(wep)][(zone)] : -1)
+// Helper macro to read the resolved animId of a gun's row (its ammo slot, the row's ammoindex)
+#define VR_ANIM_ID(wep, ammo) \
+    (gVrAnimIdsResolved[(wep)] && (ammo) >= 0 && (ammo) < 2 ? gVrResolvedAnimId[(wep)][(ammo)] : -1)
 
-
-
-
-float DebugAnimFrame = 0.0f;
-void VrDebugAnimFrame(){
-
-    if(get_button_state(0, "y")) {
-        DebugAnimFrame = DebugAnimFrame - 0.1f;
-    }
-
-    if (get_button_state(1, "grip")) {
-        DebugAnimFrame = DebugAnimFrame + 0.1f;
-
-    }
-
-}
-
-
-
-// Helper: captures snapA and snapB, starts the A→B or B→A transition
-// if reverse=true:  snapA = current pose, snapB = rest pose (return transition)
-// if reverse=false: snapA = rest pose,    snapB = snap pose (forward transition)
-static void vrStartReloadTransition(struct hand *rightHand, bool reverse) {
-    if (g_VrCopyWepModeldef == NULL || g_VrCopyWepModel.matrices == NULL) return;
-
-    if (!VrReloadGrip) return;
-
-    int nMtx = g_VrCopyWepModeldef->nummatrices;
-    if (nMtx > VR_RELOAD_SNAP_MAX_MATRICES) nMtx = VR_RELOAD_SNAP_MAX_MATRICES;
-    sVrReloadSnapCount = nMtx;
-
-    struct modelrenderdata rdTmp;
-    memset(&rdTmp, 0, sizeof(rdTmp));
-    rdTmp.unk00 = &g_VrCopyWepSp2c4;
-    rdTmp.unk10 = g_VrCopyWepModel.matrices;
-    rdTmp.unk20 = 3;
-
-    // --- Rest pose (no animation) ---
-    Mtxf snapRest[VR_RELOAD_SNAP_MAX_MATRICES];
-    g_VrCopyWepModel.anim = NULL;
-
-    if (reverse) {
-        // For the return transition, use the free position (not snapped)
-        rdTmp.unk00 = &g_VrLeftHandFreeSp2c4;
-    }
-
-    modelUpdateRelations(&g_VrCopyWepModel);
-    modelSetMatricesWithAnim(&rdTmp, &g_VrCopyWepModel);
-    for (int i = 0; i < nMtx; i++)
-        mtx4Copy(&g_VrCopyWepModel.matrices[i], &snapRest[i]);
-
-// --- Snap pose (with animation + sp2c4B) ---
-    Mtxf snapSnap[VR_RELOAD_SNAP_MAX_MATRICES];
-    if (rightHand && rightHand->inuse) {
-        Mtxf *R = &rightHand->cammtx;
-        float lenX = sqrtf(
-                R->m[0][0] * R->m[0][0] + R->m[0][1] * R->m[0][1] + R->m[0][2] * R->m[0][2]);
-        float lenY = sqrtf(
-                R->m[1][0] * R->m[1][0] + R->m[1][1] * R->m[1][1] + R->m[1][2] * R->m[1][2]);
-        float lenZ = sqrtf(
-                R->m[2][0] * R->m[2][0] + R->m[2][1] * R->m[2][1] + R->m[2][2] * R->m[2][2]);
-        float rx0 = R->m[0][0] / lenX, rx1 = R->m[0][1] / lenX, rx2 = R->m[0][2] / lenX;
-        float ry0 = R->m[1][0] / lenY, ry1 = R->m[1][1] / lenY, ry2 = R->m[1][2] / lenY;
-        float rz0 = R->m[2][0] / lenZ, rz1 = R->m[2][1] / lenZ, rz2 = R->m[2][2] / lenZ;
-
-        float lsX = sqrtf(g_VrCopyWepSp2c4.m[0][0] * g_VrCopyWepSp2c4.m[0][0] +
-                          g_VrCopyWepSp2c4.m[0][1] * g_VrCopyWepSp2c4.m[0][1] +
-                          g_VrCopyWepSp2c4.m[0][2] * g_VrCopyWepSp2c4.m[0][2]);
-        float lsY = sqrtf(g_VrCopyWepSp2c4.m[1][0] * g_VrCopyWepSp2c4.m[1][0] +
-                          g_VrCopyWepSp2c4.m[1][1] * g_VrCopyWepSp2c4.m[1][1] +
-                          g_VrCopyWepSp2c4.m[1][2] * g_VrCopyWepSp2c4.m[1][2]);
-        float lsZ = sqrtf(g_VrCopyWepSp2c4.m[2][0] * g_VrCopyWepSp2c4.m[2][0] +
-                          g_VrCopyWepSp2c4.m[2][1] * g_VrCopyWepSp2c4.m[2][1] +
-                          g_VrCopyWepSp2c4.m[2][2] * g_VrCopyWepSp2c4.m[2][2]);
-
-        Mtxf sp2c4B;
-        mtx4Copy(&g_VrCopyWepSp2c4, &sp2c4B);
-        sp2c4B.m[0][0] = (rx0 * VrReloadSnapRot[0][0] + ry0 * VrReloadSnapRot[1][0] +
-                          rz0 * VrReloadSnapRot[2][0]) * lsX;
-        sp2c4B.m[0][1] = (rx1 * VrReloadSnapRot[0][0] + ry1 * VrReloadSnapRot[1][0] +
-                          rz1 * VrReloadSnapRot[2][0]) * lsX;
-        sp2c4B.m[0][2] = (rx2 * VrReloadSnapRot[0][0] + ry2 * VrReloadSnapRot[1][0] +
-                          rz2 * VrReloadSnapRot[2][0]) * lsX;
-        sp2c4B.m[1][0] = (rx0 * VrReloadSnapRot[0][1] + ry0 * VrReloadSnapRot[1][1] +
-                          rz0 * VrReloadSnapRot[2][1]) * lsY;
-        sp2c4B.m[1][1] = (rx1 * VrReloadSnapRot[0][1] + ry1 * VrReloadSnapRot[1][1] +
-                          rz1 * VrReloadSnapRot[2][1]) * lsY;
-        sp2c4B.m[1][2] = (rx2 * VrReloadSnapRot[0][1] + ry2 * VrReloadSnapRot[1][1] +
-                          rz2 * VrReloadSnapRot[2][1]) * lsY;
-        sp2c4B.m[2][0] = (rx0 * VrReloadSnapRot[0][2] + ry0 * VrReloadSnapRot[1][2] +
-                          rz0 * VrReloadSnapRot[2][2]) * lsZ;
-        sp2c4B.m[2][1] = (rx1 * VrReloadSnapRot[0][2] + ry1 * VrReloadSnapRot[1][2] +
-                          rz1 * VrReloadSnapRot[2][2]) * lsZ;
-        sp2c4B.m[2][2] = (rx2 * VrReloadSnapRot[0][2] + ry2 * VrReloadSnapRot[1][2] +
-                          rz2 * VrReloadSnapRot[2][2]) * lsZ;
-        sp2c4B.m[3][0] =
-                R->m[3][0] + rx0 * RELOAD_SNAP_OX + ry0 * RELOAD_SNAP_OY + rz0 * RELOAD_SNAP_OZ;
-        sp2c4B.m[3][1] =
-                R->m[3][1] + rx1 * RELOAD_SNAP_OX + ry1 * RELOAD_SNAP_OY + rz1 * RELOAD_SNAP_OZ;
-        sp2c4B.m[3][2] =
-                R->m[3][2] + rx2 * RELOAD_SNAP_OX + ry2 * RELOAD_SNAP_OY + rz2 * RELOAD_SNAP_OZ;
-
-        rdTmp.unk00 = &sp2c4B;
-
-        s32 _wep = g_Vars.currentplayer->gunctrl.weaponnum;
-        int _id = VR_ANIM_ID(_wep, ReloadZone);
-        struct hand tempHand = *rightHand;
-        tempHand.animload = -1;
-        modelSetAnimation(&tempHand.gunmodel, RELOAD_ANIM_FRAME_START > 0 ? _id : -1,
-                          false, RELOAD_ANIM_FRAME_START, 0, 0.0f);
-        g_VrCopyWepModel.anim = tempHand.gunmodel.anim;
-
-        modelUpdateRelations(&g_VrCopyWepModel);
-        modelSetMatricesWithAnim(&rdTmp, &g_VrCopyWepModel);
-        for (int i = 0; i < nMtx; i++)
-            mtx4Copy(&g_VrCopyWepModel.matrices[i], &snapSnap[i]);
-
-        rdTmp.unk00 = &g_VrCopyWepSp2c4;
-
-    }
-
-
-// Assign A and B depending on the direction
-    if (!reverse) {
-        // Forward: rest → snap
-        for (int i = 0; i < nMtx; i++) {
-            mtx4Copy(&snapRest[i], &sVrReloadMtxSnapA[i]);
-            mtx4Copy(&snapSnap[i], &sVrReloadMtxSnapB[i]);
-        }
-    } else {
-        // Return: current pose → rest
-        for (int i = 0; i < nMtx; i++) {
-            mtx4Copy(&g_VrCopyWepModel.matrices[i], &sVrReloadMtxSnapA[i]);
-            mtx4Copy(&snapRest[i],                  &sVrReloadMtxSnapB[i]);
-        }
-    }
-
-    sVrReloadTransT      = 0.0f;
-    sVrReloadTransSpd    = reverse ? 0.07f : 0.05f;
-    sVrReloadTransActive = true;
-
-
-}
-
-
-
-
-// Apply the snap configuration (offset + matrix + animation) for the current weapon/zone
-static void vrApplyReloadSnapConfig(struct hand *rightHand)
-{
-    const VrReloadZoneConfig *cfg = NULL;
-
-    if (ReloadZone >= 0 && ReloadZone < VR_RELOAD_MAX_ZONES &&
-        weaponnum >= 0 && weaponnum < NUM_WEAPONS)
-    {
-        cfg = &gVrReloadZones[g_Vars.currentplayer->gunctrl.weaponnum][ReloadZone];
-        if (!cfg->valid) cfg = NULL;
-    }
-
-
-    if (cfg) {
-        RELOAD_SNAP_OX        = cfg->ox;
-        RELOAD_SNAP_OY        = cfg->oy;
-        RELOAD_SNAP_OZ        = cfg->oz;
-
-        RELOAD_SNAP_OX_MAX    = cfg->ox + cfg->oxDeltaMax;
-        RELOAD_SNAP_OX_MIN    = cfg->ox + cfg->oxDeltaMin;
-        RELOAD_SNAP_OY_MAX    = cfg->oy + cfg->oyDeltaMax;
-        RELOAD_SNAP_OY_MIN    = cfg->oy + cfg->oyDeltaMin;
-        RELOAD_SNAP_OZ_MAX    = cfg->oz + cfg->ozDeltaMax;
-        RELOAD_SNAP_OZ_MIN    = cfg->oz + cfg->ozDeltaMin;
-
-        RELOAD_DELTA_OX_SCALE = cfg->deltaOXScale;
-        RELOAD_DELTA_OY_SCALE = cfg->deltaOYScale;
-        RELOAD_DELTA_OZ_SCALE = cfg->deltaOZScale;
-
-
-        RELOAD_ANIM_FRAME_START = cfg->animFrameStart;
-        RELOAD_ANIM_FRAME_END   = cfg->animFrameEnd;
-
-        VrSetReloadSnapRot(
-                cfg->rot[0][0], cfg->rot[0][1], cfg->rot[0][2],
-                cfg->rot[1][0], cfg->rot[1][1], cfg->rot[1][2],
-                cfg->rot[2][0], cfg->rot[2][1], cfg->rot[2][2]);
-
-
-
-    } else {
-        RELOAD_SNAP_OX        = 0.0f;
-        RELOAD_SNAP_OY        = 0.0f;
-        RELOAD_SNAP_OZ        = 0.0f;
-        RELOAD_SNAP_OX_MAX    = 0.0f;
-        RELOAD_SNAP_OX_MIN    = 0.0f;
-        RELOAD_SNAP_OY_MAX    = 0.0f;
-        RELOAD_SNAP_OY_MIN    = 0.0f;
-        RELOAD_SNAP_OZ_MAX    = 0.0f;
-        RELOAD_SNAP_OZ_MIN    = 0.0f;
-        RELOAD_DELTA_OX_SCALE = 0.0f;
-        RELOAD_DELTA_OY_SCALE = 2.0f;
-        RELOAD_DELTA_OZ_SCALE = 0.8f;
-        RELOAD_ANIM_FRAME_START = 0.0f;
-        RELOAD_ANIM_FRAME_END   = 0.0f;
-        VrSetReloadSnapRot(1, 0, 0, 0, 1, 0, 0, 0, 1);
-    }
-
-    if (cfg && rightHand && rightHand->inuse
-        && g_VrCopyWepModeldef != NULL && !VrReloadDisable)
-    {
-        vrStartReloadTransition(rightHand, false);
-    }
-
-}
-
-
-
-
-
-// Flag: the magazine has been removed and is being held in hand (not yet dropped or reinserted)
-static bool sVrMagInHand = false;
-
-void vrReloadAmmoOnly(s32 handnum)
-{
-    struct player *player = g_Vars.currentplayer;
-    struct hand *hand = &player->hands[handnum];
-    struct handweaponinfo info;
-
-    bgunGetWeaponInfo(&info, handnum);
-    bgun0f098f8c(&info, hand);
-}
-
-// Store the contents of the ejected magazine
-static s32 sSavedMagAmmo   = 0;
-static s32 sSavedMagWeapon = WEAPON_NONE; // pour vérifier que c'est la même arme
-static bool sVrChamberEmpty = false;  // true = chambre vide, slide requis
-// true = a magazine is physically inserted in the weapon (mechanical state)
-// false = magazine removed (held in hand or dropped)
-static bool sVrMagPhysicallyInGun = true;
-
-void vrEjectMag(s32 handnum) {
-    struct player *player = g_Vars.currentplayer;
-    struct hand *hand = &player->hands[handnum];
-    struct handweaponinfo info;
-    bgunGetWeaponInfo(&info, handnum);
-
-    // If the magazine is already no longer in the weapon, or already in the hand,
-    // do nothing (prevents multiple ejections).
-    if (!sVrMagPhysicallyInGun || sVrMagInHand) {
-        return;
-    }
-
-    struct weaponfunc *func = weaponGetFunction(&hand->gset, FUNC_PRIMARY);
-    if (!func || func->ammoindex < 0) {
-        sSavedMagAmmo   = 0;
-        sSavedMagWeapon = WEAPON_NONE;
-        sVrMagInHand    = false;
-        sVrMagPhysicallyInGun = false;
-        return;
-    }
-
-    s32 ammoindex = func->ammoindex;
-    s32 loaded = hand->loadedammo[ammoindex];
-
-    if (loaded <= 0) {
-        // Empty magazine: still consider it as removed
-        sSavedMagAmmo   = 0;
-        sSavedMagWeapon = WEAPON_NONE;
-        sVrMagInHand    = true;
-        sVrMagPhysicallyInGun = false;
-        return;
-    }
-
-    // Cas normal : chargeur avec balles
-    sSavedMagAmmo   = loaded;
-    sSavedMagWeapon = hand->gset.weaponnum;
-    hand->loadedammo[ammoindex] = 1;  // Keep 1 round in the chamber
-    sVrMagInHand    = true;
-    sVrMagPhysicallyInGun = false;
-}
-
-void vrReinsertSavedMag(s32 handnum) {
-    struct player *player = g_Vars.currentplayer;
-    struct hand *hand = &player->hands[handnum];
-
-    // If a magazine is already physically in the weapon, reject the reinsertion
-    if (sVrMagPhysicallyInGun) {
-        return;
-    }
-
-    if (sSavedMagAmmo <= 0 || hand->gset.weaponnum != sSavedMagWeapon) {
-        return;
-    }
-
-    struct weaponfunc *func = weaponGetFunction(&hand->gset, FUNC_PRIMARY);
-    if (!func || func->ammoindex < 0) return;
-
-    s32 ammoindex = func->ammoindex;
-
-    hand->loadedammo[ammoindex] = sSavedMagAmmo;
-
-    sSavedMagAmmo   = 0;
-    sSavedMagWeapon = WEAPON_NONE;
-    sVrMagInHand    = false;
-    sVrMagPhysicallyInGun = true;   // Magazine reinserted
-}
-
-
-
-// Return the bullets from the held magazine to the ammo reserve (magazine dropped without being reinserted)
-static void vrDropMagToReserve(s32 handnum) {
-// Empty magazine: nothing to return to the reserve, just clean up
-    if (sSavedMagAmmo <= 0 || sSavedMagWeapon == WEAPON_NONE) {
-        sSavedMagAmmo = 0;
-        sSavedMagWeapon = WEAPON_NONE;
-        sVrMagPhysicallyInGun = false;
-        return;
-    }
-
-    struct player *player = g_Vars.currentplayer;
-    struct hand *hand = &player->hands[handnum];
-    if (hand->gset.weaponnum != sSavedMagWeapon) return;
-
-    struct weaponfunc *func = weaponGetFunction(&hand->gset, FUNC_PRIMARY);
-    if (!func || func->ammoindex < 0) return;
-
-    struct handweaponinfo info;
-    bgunGetWeaponInfo(&info, handnum);
-    s32 ammoindex = func->ammoindex;
-    s32 ammoType = info.gunctrl->ammotypes[ammoindex];
-
-    s32 toReturn = sSavedMagAmmo - 1;  // -1 because the round in the chamber remains in the weapon
-    if (toReturn > 0)
-        player->ammoheldarr[ammoType] += toReturn;
-
-    sSavedMagAmmo = 0;
-    sSavedMagWeapon = WEAPON_NONE;
-    sVrMagPhysicallyInGun = false; // Magazine dropped (with bullets)
-}
-
-static void vrInsertFullMag(s32 handnum) {
-    struct player *player = g_Vars.currentplayer;
-    struct hand *hand = &player->hands[handnum];
-    struct handweaponinfo info;
-    bgunGetWeaponInfo(&info, handnum);
-
-    struct weaponfunc *func = weaponGetFunction(&hand->gset, FUNC_PRIMARY);
-    if (!func || func->ammoindex < 0) return;
-
-    s32 ammoindex = func->ammoindex;
-    s32 inChamber = hand->loadedammo[ammoindex];
-
-    if (inChamber == 0) {
-        // Empty chamber: do nothing, the slide will handle everything
-        sVrChamberEmpty = true;
-        return;
-    }
-
-    // Chamber already loaded: fill the magazine normally
-    sVrChamberEmpty = false;
-    s32 ammoType = info.gunctrl->ammotypes[ammoindex];
-    s32 clipSize = hand->clipsizes[ammoindex];
-    s32 toLoad = clipSize - inChamber;
-    if (toLoad <= 0) return;
-    if (toLoad > player->ammoheldarr[ammoType])
-        toLoad = player->ammoheldarr[ammoType];
-    player->ammoheldarr[ammoType] -= toLoad;
-    hand->loadedammo[ammoindex] = inChamber + toLoad;
-}
-
-static bool sVrReloadFromBelt = false;
-static bool sVrBeltMagOut = false;
-static bool sSoundPlayed = false;
-bool magOutFirstTime = false;
-
-
-void vrReloadZoneInput(struct hand *rightHand, struct hand *leftHand){
-
-    const VrReloadZoneConfig *cfg = NULL;
-    if (ReloadZone >= 0 && ReloadZone < VR_RELOAD_MAX_ZONES &&
-        weaponnum >= 0 && weaponnum < NUM_WEAPONS)
-    {
-        cfg = &gVrReloadZones[g_Vars.currentplayer->gunctrl.weaponnum][ReloadZone];
-        if (!cfg->valid) cfg = NULL;
-    }
-
-    if(!VrGrabMagBelt && !sVrMagPhysicallyInGun){
-        VrReloadGrip = false;
-        return;
-    }
-
-    if (VrInReloadZone && !VrInReloadLoop && VrReloadGrip) {
-
-        VrInReloadLoop = true;
-        sVrSnapReload = true;
-        VrReloadDisable = false;
-        sVrPrevGrip = false;
-        sVrReloadTransActive = false;
-        sVrReloadTransT = 0.0f;
-        sVrForceSnapRecapture = true;
-        sSoundPlayed = false;
-
-        sReloadPullBase = vrGetReloadPull(cfg->mainDelatScale);
-        sReloadYDistBase = leftHand->posrotmtx.m[3][1] - rightHand->posrotmtx.m[3][1];
-
-        // Load the snap configuration (fills RELOADSNAP*, VrReloadSnapRot, anim)
-        // but cancel the transition it starts
-        vrApplyReloadSnapConfig(rightHand);
-        sVrReloadTransActive = false;
-        sVrReloadTransT = 0.0f;
-
-        if (sVrBeltMagOut) {
-            VrGrabMagBelt = false;
-            sVrBeltMagOut = false;
-            sVrReloadFromBelt = true;
-
-            // Shift sReloadPullBase so that newOY starts at OY_MIN
-            // (magazine removed, outside the weapon)
-            // newOY = OY_MAX + (pull - pullBase) * scale
-            // We want newOY = OY_MIN when pull = currentPull
-            // => pullBase = currentPull - (OY_MIN - OY_MAX) / scale
-            if (RELOAD_DELTA_OY_SCALE != 0.0f) {
-                float pullOffset =
-                        (RELOAD_SNAP_OY_MIN - RELOAD_SNAP_OY_MAX) / RELOAD_DELTA_OY_SCALE;
-                sReloadPullBase -= pullOffset;
-                // Now delta = -pullOffset at startup, so newOY = OY_MAX + (-pullOffset) * scale = OY_MIN
-            }
-
-            magOutFirstTime = true;
-            sVrSnap = false;
-        } else {
-            // === NORMAL CASE ===
-            // Eject the magazine and start the visual transition
-            // (vrApplyReloadSnapConfig has already started vrStartReloadTransition)
-            magOutFirstTime = false;
-            sVrSnap = false;
-            sVrReloadTransActive = true;
-
-        }
-
-    }
-    else if (!VrInReloadZone && !VrInReloadLoop && VrReloadGrip && !VrGrabMagBelt) {
-        VrReloadDisable = true;
-    }
-
-
-
-// --- Tick: follow the movement according to the right hand ---
-    if (VrInReloadLoop && !VrReloadDisable && VrReloadGrip) {
-        float delta = vrGetReloadPull(cfg->mainDelatScale) - sReloadPullBase;
-
-        if (!VRDebugMtxPos) {
-            if (!sVrReloadFromBelt) {
-                float baseYDist = sReloadYDistBase;
-                if (baseYDist < 0.0f) baseYDist = -baseYDist;
-
-                float offX = cfg->snapOffsetX - baseYDist * 5;
-                float offY = cfg->snapOffsetY;
-                float offZ = cfg->snapOffsetZ;
-
-                vrApplyReloadOffset(&vr_sp2c4, offX, offY, offZ);
-            }
-        }
-
-        float newOX = RELOAD_SNAP_OX_MAX + delta * RELOAD_DELTA_OX_SCALE;
-        float newOY = RELOAD_SNAP_OY_MAX + delta * RELOAD_DELTA_OY_SCALE;
-        float newOZ = RELOAD_SNAP_OZ_MAX + delta * RELOAD_DELTA_OZ_SCALE;
-
-
-        // OX
-        if (RELOAD_DELTA_OX_SCALE != 0.0f) {
-            if (newOX < RELOAD_SNAP_OX_MIN) {
-                newOX = RELOAD_SNAP_OX_MIN;
-                if (cfg->mainDelatScale == 0) { // 0 = AXE X
-                    if (sVrSnap && !sSoundPlayed) {
-                        sndStart(var80095200, cfg->sound1, 0, -1, -1, -1, -1, -1);
-                        sSoundPlayed = true;
-                    }
-                    sVrSnap = cfg->holdSnap;
-                    magOutFirstTime = true;
-                }
-            } else {
-                if (cfg->mainDelatScale == 1) { // 0 = AXE X
-                    if (!sVrSnap && magOutFirstTime) {
-                        sndStart(var80095200, cfg->sound2, 0, -1, -1, -1, -1, -1);
-                    }
-                    sVrSnap = true;
-                    magOutFirstTime = false;
-                    sSoundPlayed = false;
-                }
-            }
-            if (newOX > RELOAD_SNAP_OX_MAX) {
-                newOX = RELOAD_SNAP_OX_MAX;
-            }
-            RELOAD_SNAP_OX = newOX;
-        }
-
-
-        // OY (+ snap)
-        if (RELOAD_DELTA_OY_SCALE != 0.0f) {
-            if (newOY < RELOAD_SNAP_OY_MIN) {
-                newOY = RELOAD_SNAP_OY_MIN;
-
-                if (cfg->mainDelatScale == 1 ) { // 1 = AXE Y
-                    if (sVrSnap && !sSoundPlayed) {
-                        sndStart(var80095200, cfg->sound1, 0, -1, -1, -1, -1, -1);
-                        vrEjectMag(HAND_RIGHT);
-                        sSoundPlayed = true;
-                    }
-                    sVrSnap = cfg->holdSnap;
-                    magOutFirstTime = true;
-                }
-
-            } else {
-                if (cfg->mainDelatScale == 1) { // 1 = AXE Y
-                    if (!sVrSnap && magOutFirstTime) {
-                        sndStart(var80095200, cfg->sound2, 0, -1, -1, -1, -1, -1);
-                    }
-                    if (sVrReloadFromBelt) {
-                        vrInsertFullMag(HAND_RIGHT);  // Belt magazine → full magazine
-                        sVrReloadFromBelt = false;
-                    } else {
-                        vrReinsertSavedMag(HAND_RIGHT); // Same magazine reinserted → restore the exact contents
-                    }
-                    sVrMagInHand = false;
-                    sVrSnap = true;
-                    magOutFirstTime = false;
-                    sSoundPlayed = false;
-
-                }
-            }
-            if (newOY > RELOAD_SNAP_OY_MAX) {
-                newOY = RELOAD_SNAP_OY_MAX;
-            }
-            RELOAD_SNAP_OY = newOY;
-        }
-
-        // OZ
-        if (RELOAD_DELTA_OZ_SCALE != 0.0f) {
-            if (newOZ < RELOAD_SNAP_OZ_MIN) {
-                newOZ = RELOAD_SNAP_OZ_MIN;
-
-                if (cfg->mainDelatScale == 2) { // 2 = AXE Z
-                    if (sVrSnap && !sSoundPlayed) {
-                        sndStart(var80095200, cfg->sound1, 0, -1, -1, -1, -1, -1);
-                        sSoundPlayed = true;
-                    }
-                    sVrSnap = cfg->holdSnap;
-                    magOutFirstTime = true;
-                }
-            } else {
-                if (cfg->mainDelatScale == 2) { // 2 = AXE Z
-                    if (!sVrSnap && magOutFirstTime) {
-                        sndStart(var80095200, cfg->sound2, 0, -1, -1, -1, -1, -1);
-                    }
-
-                    // If the chamber was empty, chamber a round now
-                    if (sVrChamberEmpty) {
-                        struct hand *hand = &g_Vars.currentplayer->hands[HAND_RIGHT];
-                        struct handweaponinfo info;
-                        bgunGetWeaponInfo(&info, HAND_RIGHT);
-                        struct weaponfunc *func = weaponGetFunction(&hand->gset, FUNC_PRIMARY);
-                        if (func && func->ammoindex >= 0) {
-                            s32 ammoindex = func->ammoindex;
-                            s32 ammoType = info.gunctrl->ammotypes[ammoindex];
-                            s32 clipSize = hand->clipsizes[ammoindex];
-                            s32 toLoad = clipSize;
-                            if (toLoad > g_Vars.currentplayer->ammoheldarr[ammoType])
-                                toLoad = g_Vars.currentplayer->ammoheldarr[ammoType];
-                            g_Vars.currentplayer->ammoheldarr[ammoType] -= toLoad;
-                            hand->loadedammo[ammoindex] = toLoad;
-                        }
-                        sVrChamberEmpty = false;
-                    }
-
-                    sVrSnap = true;
-                    magOutFirstTime = false;
-                    sSoundPlayed = false;
-                }
-            }
-            if (newOZ > RELOAD_SNAP_OZ_MAX) {
-                newOZ = RELOAD_SNAP_OZ_MAX;
-            }
-            RELOAD_SNAP_OZ = newOZ;
-        }
-    }
-
-
-
-    if (VrInReloadLoop && !VrReloadDisable && !VrReloadGrip && magOutFirstTime) {
-        const VrReloadZoneConfig *cfg = &gVrReloadZones[weaponnum][ReloadZone];
-        if (cfg->valid) {
-            // Only reload if: magazine properly reinserted AND chamber is not empty
-            // If sVrChamberEmpty, wait for the slide zone before validating
-            if (!cfg->holdSnap && !sVrMagInHand && !sVrChamberEmpty) {
-                vrReloadAmmoOnly(HAND_RIGHT);
-            }
-        }
-    }
-
-    // Full reset when the grip is released (exiting the loop)
-    if (VrInReloadLoop && !VrReloadGrip) {
-
-        RELOAD_SNAP_OX = RELOAD_SNAP_OX_MAX;
-        RELOAD_SNAP_OY = RELOAD_SNAP_OY_MAX;
-        RELOAD_SNAP_OZ = RELOAD_SNAP_OZ_MAX;
-
-        if (rightHand) {
-            modelSetAnimFrame(&rightHand->gunmodel, 0);
-        }
-
-        // If the magazine was held in hand and not reinserted → return it to the reserve
-        if (sVrMagInHand) {
-            vrDropMagToReserve(HAND_RIGHT);
-            sVrMagInHand = false;
-        }
-
-        VrInReloadLoop   = false;
-        sVrSnap          = false;
-        sVrSnapReload    = false;
-        sVrReloadFromBelt = false;
-        ReloadZone = -1;
-
-        // Return transition: current pose → rest
-        if (g_VrCopyWepModeldef != NULL && g_VrCopyWepModel.matrices != NULL && !VrReloadDisable) {
-            vrStartReloadTransition(rightHand, true);
-
-        } else {
-            sVrReloadTransActive  = false;
-            sVrReloadTransT       = 0.0f;
-            g_VrCopyWepModel.anim = NULL;
-        }
-
-        VrReloadDisable  = false;
-    }
-
-}
-
-
-void vrReloadZone(void) {
-    struct hand *rightHand = &g_Vars.currentplayer->hands[HAND_RIGHT];
-    struct hand *leftHand  = &g_Vars.currentplayer->hands[HAND_LEFT];
-    float rx = rightHand->posrotmtx.m[3][0], ry = rightHand->posrotmtx.m[3][1], rz = rightHand->posrotmtx.m[3][2];
-    float lx = leftHand->posrotmtx.m[3][0],  ly = leftHand->posrotmtx.m[3][1],  lz = leftHand->posrotmtx.m[3][2];
-
-    VrInReloadZone = false;
-
-// Do not change zone during an active reload
-    if (VrInReloadLoop) {
-        // Continuer à gérer la zone déjà active
-        if (ReloadZone >= 0 && ReloadZone < VR_RELOAD_MAX_ZONES) {
-            const VrReloadZoneConfig *cfg = &gVrReloadZones[weaponnum][ReloadZone];
-            if (cfg->zoneRadius > 0.0f) {
-                float zonex = rx + rightHand->posrotmtx.m[0][0]*cfg->zoneOffX + rightHand->posrotmtx.m[0][1]*cfg->zoneOffY + rightHand->posrotmtx.m[0][2]*cfg->zoneOffZ;
-                float zoney = ry + rightHand->posrotmtx.m[1][0]*cfg->zoneOffX + rightHand->posrotmtx.m[1][1]*cfg->zoneOffY + rightHand->posrotmtx.m[1][2]*cfg->zoneOffZ;
-                float zonez = rz + rightHand->posrotmtx.m[2][0]*cfg->zoneOffX + rightHand->posrotmtx.m[2][1]*cfg->zoneOffY + rightHand->posrotmtx.m[2][2]*cfg->zoneOffZ;
-                float dx = lx - zonex, dy = ly - zoney, dz = lz - zonez;
-                VrInReloadZone = sqrtf(dx*dx + dy*dy + dz*dz) <= cfg->zoneRadius;
-            }
-        }
-        vrReloadZoneInput(rightHand, leftHand);
-        return;
-    }
-
-
-// NOT reloading: scan ALL zones to find the one the hand is touching
-    for (int z = 0; z < VR_RELOAD_MAX_ZONES; z++) {
-        const VrReloadZoneConfig *cfg = &gVrReloadZones[weaponnum][z];
-        if (cfg->zoneRadius <= 0.0f || !cfg->valid) continue;
-
-        float zonex = rx + rightHand->posrotmtx.m[0][0]*cfg->zoneOffX + rightHand->posrotmtx.m[0][1]*cfg->zoneOffY + rightHand->posrotmtx.m[0][2]*cfg->zoneOffZ;
-        float zoney = ry + rightHand->posrotmtx.m[1][0]*cfg->zoneOffX + rightHand->posrotmtx.m[1][1]*cfg->zoneOffY + rightHand->posrotmtx.m[1][2]*cfg->zoneOffZ;
-        float zonez = rz + rightHand->posrotmtx.m[2][0]*cfg->zoneOffX + rightHand->posrotmtx.m[2][1]*cfg->zoneOffY + rightHand->posrotmtx.m[2][2]*cfg->zoneOffZ;
-        float dx = lx - zonex, dy = ly - zoney, dz = lz - zonez;
-
-        if (sqrtf(dx*dx + dy*dy + dz*dz) <= cfg->zoneRadius) {
-            VrInReloadZone = true;
-            ReloadZone = z;  // <-- dynamic selection of the touched zone
-            break;
-        }
-    }
-
-    vrReloadZoneInput(rightHand, leftHand);
-    float wx = lx - rx;
-    float wy = ly - ry;
-    float wz = lz - rz;
-
-    float local_x = rightHand->posrotmtx.m[0][0] * wx
-                    + rightHand->posrotmtx.m[1][0] * wy
-                    + rightHand->posrotmtx.m[2][0] * wz;
-
-    float local_y = rightHand->posrotmtx.m[0][1] * wx
-                    + rightHand->posrotmtx.m[1][1] * wy
-                    + rightHand->posrotmtx.m[2][1] * wz;
-
-    float local_z = rightHand->posrotmtx.m[0][2] * wx
-                    + rightHand->posrotmtx.m[1][2] * wy
-                    + rightHand->posrotmtx.m[2][2] * wz;
-
-/*    if (get_button_state(0, "grip")){
-        LOGI("Debug ReloadZone local: X=%.3f Y=%.3f Z=%.3f\n", local_x, local_y, local_z);
-    }*/
-}
-
-static float sVrSnapOX      = 0.f;
-static float sVrSnapOY      = 0.f;
-static float sVrSnapOZ      = 0.f;
-static float sVrSnapRel[3][3];
-static float sSnapRelBase[3][3];
-static bool sDebugEditRot = false; // false = position, true = rotation
-static bool sPrevThumbClick = false;
-
-void vrApplyTwoHandGrip(struct hand *rightHand, struct hand *leftHand, Mtxf *L)
-{
-
-    Mtxf *R = &rightHand->cammtx;
-
-    float lenX = sqrtf(R->m[0][0]*R->m[0][0] + R->m[0][1]*R->m[0][1] + R->m[0][2]*R->m[0][2]);
-    float lenY = sqrtf(R->m[1][0]*R->m[1][0] + R->m[1][1]*R->m[1][1] + R->m[1][2]*R->m[1][2]);
-    float lenZ = sqrtf(R->m[2][0]*R->m[2][0] + R->m[2][1]*R->m[2][1] + R->m[2][2]*R->m[2][2]);
-    if (lenX < 0.0001f || lenY < 0.0001f || lenZ < 0.0001f) return;
-
-    float rx0=R->m[0][0]/lenX, rx1=R->m[0][1]/lenX, rx2=R->m[0][2]/lenX;
-    float ry0=R->m[1][0]/lenY, ry1=R->m[1][1]/lenY, ry2=R->m[1][2]/lenY;
-    float rz0=R->m[2][0]/lenZ, rz1=R->m[2][1]/lenZ, rz2=R->m[2][2]/lenZ;
-
-    if ((VrReloadGrip && !sVrPrevGrip) || sVrForceSnapRecapture) {
-        sVrForceSnapRecapture = false;
-        if (!VRDebugMtxPos) {
-            if (sVrSnapReload) {
-                // Only recapture if sVrSnap is not already active.
-                // If sVrSnap is already true, the block below already updates
-                // sVrSnapOX/OY/OZ naturally every frame → no jump.
-                if (!sVrSnap) {
-                    sVrSnapOX = RELOAD_SNAP_OX + offsetX;
-                    sVrSnapOY = RELOAD_SNAP_OY + offsetY;
-                    sVrSnapOZ = RELOAD_SNAP_OZ + offsetZ;
-                }
-                for (int i = 0; i < 3; i++)
-                    for (int j = 0; j < 3; j++) {
-                        sVrSnapRel[i][j] = VrReloadSnapRot[i][j];
-                        sSnapRelBase[i][j] = VrReloadSnapRot[i][j];
-                    }
-            }
-        } else {
-            // --- NORMAL CASE: capture from the current L position ---
-            float dx = L->m[3][0] - R->m[3][0];
-            float dy = L->m[3][1] - R->m[3][1];
-            float dz = L->m[3][2] - R->m[3][2];
-            sVrSnapOX = dx*rx0 + dy*rx1 + dz*rx2;
-            sVrSnapOY = dx*ry0 + dy*ry1 + dz*ry2;
-            sVrSnapOZ = dx*rz0 + dy*rz1 + dz*rz2;
-
-            float lsX = sqrtf(L->m[0][0]*L->m[0][0] + L->m[0][1]*L->m[0][1] + L->m[0][2]*L->m[0][2]);
-            float lsY = sqrtf(L->m[1][0]*L->m[1][0] + L->m[1][1]*L->m[1][1] + L->m[1][2]*L->m[1][2]);
-            float lsZ = sqrtf(L->m[2][0]*L->m[2][0] + L->m[2][1]*L->m[2][1] + L->m[2][2]*L->m[2][2]);
-            if (lsX < 0.0001f || lsY < 0.0001f || lsZ < 0.0001f) return;
-            float lx0=L->m[0][0]/lsX, lx1=L->m[0][1]/lsX, lx2=L->m[0][2]/lsX;
-            float ly0=L->m[1][0]/lsY, ly1=L->m[1][1]/lsY, ly2=L->m[1][2]/lsY;
-            float lz0=L->m[2][0]/lsZ, lz1=L->m[2][1]/lsZ, lz2=L->m[2][2]/lsZ;
-
-            sVrSnapRel[0][0] = rx0*lx0 + rx1*lx1 + rx2*lx2;
-            sVrSnapRel[0][1] = rx0*ly0 + rx1*ly1 + rx2*ly2;
-            sVrSnapRel[0][2] = rx0*lz0 + rx1*lz1 + rx2*lz2;
-            sVrSnapRel[1][0] = ry0*lx0 + ry1*lx1 + ry2*lx2;
-            sVrSnapRel[1][1] = ry0*ly0 + ry1*ly1 + ry2*ly2;
-            sVrSnapRel[1][2] = ry0*lz0 + ry1*lz1 + ry2*lz2;
-            sVrSnapRel[2][0] = rz0*lx0 + rz1*lx1 + rz2*lx2;
-            sVrSnapRel[2][1] = rz0*ly0 + rz1*ly1 + rz2*ly2;
-            sVrSnapRel[2][2] = rz0*lz0 + rz1*lz1 + rz2*lz2;
-
-//            LOGI("TWOHAND: L final pos=(%.4f, %.4f, %.4f)\n",
-//                 L->m[3][0], L->m[3][1], L->m[3][2]);
-        }
-
-/*        if (get_button_state(0, "y")) {
-            LOGI("[SNAP_CAPTURE] #define RELOAD_SNAP_OX %.4ff\n", sVrSnapOX);
-            LOGI("[SNAP_CAPTURE] #define RELOAD_SNAP_OY %.4ff\n", sVrSnapOY);
-            LOGI("[SNAP_CAPTURE] #define RELOAD_SNAP_OZ %.4ff\n", sVrSnapOZ);
-            LOGI("[SNAP_CAPTURE] static const float kReloadSnapRel[3][3] = "
-                 "{\n{%.4ff,%.4ff,%.4ff},\n{%.4ff,%.4ff,%.4ff},\n{%.4ff,%.4ff,%.4ff},\n},\n",
-                 sVrSnapRel[0][0], sVrSnapRel[0][1], sVrSnapRel[0][2],
-                 sVrSnapRel[1][0], sVrSnapRel[1][1], sVrSnapRel[1][2],
-                 sVrSnapRel[2][0], sVrSnapRel[2][1], sVrSnapRel[2][2]);
-            LOGI("[SNAPB twohand] snap captured (reload=%d)\n", sVrSnapReload);
-        }*/
-    }
-    if (!VRDebugMtxPos) {
-        sVrPrevGrip = VrReloadGrip;
-
-        if (sVrSnap) {
-
-/*
-// Toggle mode on thumbstick click (rising edge only)
-        bool thumbClick = get_button_state(0, "thumbstick_click");
-        if (thumbClick && !sPrevThumbClick) {
-            sDebugEditRot = !sDebugEditRot;
-            LOGI("Debug mode: %s", sDebugEditRot ? "ROTATION" : "POSITION");
-        }
-        sPrevThumbClick = thumbClick;
-
-// Y button: change axis
-        if (get_button_state(0, "y")) {
-            if (sDebugEditRot) {
-                sSnapRotAxis++;
-                if (sSnapRotAxis > 2) sSnapRotAxis = 0;
-            } else {
-                axis++;
-                if (axis > 2) axis = 0;
-            }
-        }
-
-// Trigger: increment
-        if (get_button_state(0, "trigger")) {
-            if (sDebugEditRot) {
-                if (sSnapRotAxis == 0) sSnapRotOffsetX += 0.001f;
-                if (sSnapRotAxis == 1) sSnapRotOffsetY += 0.001f;
-                if (sSnapRotAxis == 2) sSnapRotOffsetZ += 0.001f;
-            } else {
-                if (axis == 0) offsetX += 0.001f;
-                if (axis == 1) offsetY += 0.001f;
-                if (axis == 2) offsetZ += 0.001f;
-            }
-        }
-
-// B: decrement
-        if (get_button_state(1, "b")) {
-            if (sDebugEditRot) {
-                if (sSnapRotAxis == 0) sSnapRotOffsetX -= 0.001f;
-                if (sSnapRotAxis == 1) sSnapRotOffsetY -= 0.001f;
-                if (sSnapRotAxis == 2) sSnapRotOffsetZ -= 0.001f;
-            } else {
-                if (axis == 0) offsetX -= 0.001f;
-                if (axis == 1) offsetY -= 0.001f;
-                if (axis == 2) offsetZ -= 0.001f;
-            }
-        }*/
-
-//            LOGI("offsetX %.2f offsetY %.2f offsetZ %.2f", offsetX, offsetY, offsetZ);
-
-            // Correction matrix
-            float cx = cosf(sSnapRotOffsetX), sx = sinf(sSnapRotOffsetX);
-            float cy = cosf(sSnapRotOffsetY), sy = sinf(sSnapRotOffsetY);
-            float cz = cosf(sSnapRotOffsetZ), sz = sinf(sSnapRotOffsetZ);
-            float c[3][3] = {
-                    { cy*cz,             cy*sz,             -sy    },
-                    { sx*sy*cz - cx*sz,  sx*sy*sz + cx*cz,  sx*cy },
-                    { cx*sy*cz + sx*sz,  cx*sy*sz - sx*cz,  cx*cy }
-            };
-
-
-
-
-            // sVrSnapRel = sSnapRelBase (config) * correction
-            for (int i = 0; i < 3; i++)
-                for (int j = 0; j < 3; j++)
-                    sVrSnapRel[i][j] = sSnapRelBase[i][0] * c[0][j]
-                                       + sSnapRelBase[i][1] * c[1][j]
-                                       + sSnapRelBase[i][2] * c[2][j];
-            // Corrected matrix = sSnapRelBase * current correction
-            float logR[3][3];
-            for (int i = 0; i < 3; i++)
-                for (int j = 0; j < 3; j++)
-                    logR[i][j] = sSnapRelBase[i][0] * c[0][j]
-                                 + sSnapRelBase[i][1] * c[1][j]
-                                 + sSnapRelBase[i][2] * c[2][j];
-
-/*
-            LOGI(".rot = {\n"
-                 "    {%.4ff, %.4ff, %.4ff},\n"
-                 "    {%.4ff, %.4ff, %.4ff},\n"
-                 "    {%.4ff, %.4ff, %.4ff},\n"
-                 "},",
-                 logR[0][0], logR[0][1], logR[0][2],
-                 logR[1][0], logR[1][1], logR[1][2],
-                 logR[2][0], logR[2][1], logR[2][2]);
-*/
-
-
-            // Left Scale
-            float lsX = sqrtf(
-                    L->m[0][0] * L->m[0][0] + L->m[0][1] * L->m[0][1] + L->m[0][2] * L->m[0][2]);
-            float lsY = sqrtf(
-                    L->m[1][0] * L->m[1][0] + L->m[1][1] * L->m[1][1] + L->m[1][2] * L->m[1][2]);
-            float lsZ = sqrtf(
-                    L->m[2][0] * L->m[2][0] + L->m[2][1] * L->m[2][1] + L->m[2][2] * L->m[2][2]);
-
-            // Rotation: R_right * R_rel, with left-side scale
-            L->m[0][0] =
-                    (rx0 * sVrSnapRel[0][0] + ry0 * sVrSnapRel[1][0] + rz0 * sVrSnapRel[2][0]) * lsX;
-            L->m[0][1] =
-                    (rx1 * sVrSnapRel[0][0] + ry1 * sVrSnapRel[1][0] + rz1 * sVrSnapRel[2][0]) * lsX;
-            L->m[0][2] =
-                    (rx2 * sVrSnapRel[0][0] + ry2 * sVrSnapRel[1][0] + rz2 * sVrSnapRel[2][0]) * lsX;
-            L->m[1][0] =
-                    (rx0 * sVrSnapRel[0][1] + ry0 * sVrSnapRel[1][1] + rz0 * sVrSnapRel[2][1]) * lsY;
-            L->m[1][1] =
-                    (rx1 * sVrSnapRel[0][1] + ry1 * sVrSnapRel[1][1] + rz1 * sVrSnapRel[2][1]) * lsY;
-            L->m[1][2] =
-                    (rx2 * sVrSnapRel[0][1] + ry2 * sVrSnapRel[1][1] + rz2 * sVrSnapRel[2][1]) * lsY;
-            L->m[2][0] =
-                    (rx0 * sVrSnapRel[0][2] + ry0 * sVrSnapRel[1][2] + rz0 * sVrSnapRel[2][2]) * lsZ;
-            L->m[2][1] =
-                    (rx1 * sVrSnapRel[0][2] + ry1 * sVrSnapRel[1][2] + rz1 * sVrSnapRel[2][2]) * lsZ;
-            L->m[2][2] =
-                    (rx2 * sVrSnapRel[0][2] + ry2 * sVrSnapRel[1][2] + rz2 * sVrSnapRel[2][2]) * lsZ;
-
-            // Position updated during movement
-            sVrSnapOX = RELOAD_SNAP_OX + offsetX;
-            sVrSnapOY = RELOAD_SNAP_OY + offsetY;
-            sVrSnapOZ = RELOAD_SNAP_OZ + offsetZ;
-
-            // Position
-            L->m[3][0] = R->m[3][0] + rx0 * sVrSnapOX + ry0 * sVrSnapOY + rz0 * sVrSnapOZ;
-            L->m[3][1] = R->m[3][1] + rx1 * sVrSnapOX + ry1 * sVrSnapOY + rz1 * sVrSnapOZ;
-            L->m[3][2] = R->m[3][2] + rx2 * sVrSnapOX + ry2 * sVrSnapOY + rz2 * sVrSnapOZ;
-
-        }
-    }
-}
-
-
-
-
-#define VR_BELT_DETECT_OX -9.83f
-#define VR_BELT_DETECT_OY  1.32f
-#define VR_BELT_DETECT_OZ -11.08f
-
-static void vrUpdateBeltMagGrab(void)
-{
-    struct hand *lhand = &g_Vars.currentplayer->hands[HAND_LEFT];
-    float lx = lhand->posrotmtx.m[3][0];
-    float ly = lhand->posrotmtx.m[3][1];
-    float lz = lhand->posrotmtx.m[3][2];
-
-    float bx = gVrBeltPosForDetection.x + VR_BELT_DETECT_OX;
-    float by = gVrBeltPosForDetection.y + VR_BELT_DETECT_OY;
-    float bz = gVrBeltPosForDetection.z + VR_BELT_DETECT_OZ;
-
-    float dx = lx - bx, dy = ly - by, dz = lz - bz;
-    float dist = sqrtf(dx*dx + dy*dy + dz*dz);
-
-    bool inZone = (dist < 10.0f);
-    bool gripL  = get_button_state(0, "grip");
-
-    // Do nothing if we are already in the reload loop (zone 0 grabbed by the hand)
-    if (VrInReloadLoop) {
-        sVrMagPhysicallyInGun = true;
-        VrGrabMagBelt = false;
-        return;
-    }
-
-    if (!VrGrabMagBelt && !sVrMagPhysicallyInGun) {
-        if (inZone && gripL) {
-            VrGrabMagBelt = true;
-            sVrBeltMagOut = true;
-//            LOGI("BeltMag GRAB! dist=%.2f\n", dist);
-        }
-    } else {
-        if (!gripL) {
-            VrGrabMagBelt = false;
-            sVrBeltMagOut = false;
-//            LOGI("BeltMag RELEASE\n");
-        }
-    }
-}
 
 
 // Free the fists instance. Idempotent + NULL-safe, so it doubles as the "reload" step.
@@ -3319,6 +2492,15 @@ void bgun0f098030(struct hand* hand, struct modeldef* modeldef)
     bgunExecuteGunVisCommands(hand, modeldef, weapon->gunviscmds);
     bgunSetPartVisible(MODELPART_0042, false, hand, modeldef);
 
+    // VR: G5 Building's Detonator is the detonator alone at the hand, as a held device: no arms, no
+    // mine (vrG5DetonatorPlace)
+    if (vrHolsterIsG5Detonator(hand->gset.weaponnum)) {
+        bgunSetPartVisible(MODELPART_HAND_LEFT, false, hand, modeldef);
+        bgunSetPartVisible(MODELPART_HAND_RIGHT, false, hand, modeldef);
+        bgunSetPartVisible(MODELPART_REMOTEMINE_MINE, false, hand, modeldef);
+        bgunSetPartVisible(MODELPART_REMOTEMINE_DETONATOR, true, hand, modeldef);
+    }
+
     for (i = 0; i < 2; i++) {
         if (weapon->ammos[i] && (weapon->ammos[i]->flags & AMMOFLAG_QTYAFFECTSPARTVIS)) {
             for (j = 0; j < hand->clipsizes[i]; j++) {
@@ -3397,6 +2579,27 @@ void bgun0f0981e8(struct hand* hand, struct modeldef* modeldef)
                 modelSetAnimation(&hand->gunmodel, hand->animload, false, 0.0f, animspeedmult * animspeed, 0.0f);
             }
 
+
+            // VR knife (Task H3b): a swing's slash starts at the stroke (see VR_KNIFE_STROKE_FRAME)
+            {
+                s32 vrh = hand == &g_Vars.currentplayer->hands[HAND_LEFT] ? HAND_LEFT : HAND_RIGHT;
+
+                if (vr_knife_fromstroke[vrh] && hand->gset.weaponnum == WEAPON_COMBATKNIFE
+                        && hand->gset.weaponfunc == FUNC_PRIMARY && hand->state == HANDSTATE_ATTACK
+                        && animspeed > 0.0f && modelGetNumAnimFrames(&hand->gunmodel) > VR_KNIFE_STROKE_FRAME) {
+                    modelSetAnimFrame(&hand->gunmodel, VR_KNIFE_STROKE_FRAME);
+                }
+
+                vr_knife_fromstroke[vrh] = false;
+            }
+
+            // VR: the DY357s' shot from a cocked hammer (see VR_DY357_COCKED_FRAME)
+            if ((hand->gset.weaponnum == WEAPON_DY357MAGNUM || hand->gset.weaponnum == WEAPON_DY357LX)
+                    && hand->gset.weaponfunc == FUNC_PRIMARY && hand->state == HANDSTATE_ATTACK
+                    && hand->animload == ANIM_GUN_DY357_SHOOT && animspeed > 0.0f
+                    && modelGetNumAnimFrames(&hand->gunmodel) > VR_DY357_COCKED_FRAME) {
+                modelSetAnimFrame(&hand->gunmodel, VR_DY357_COCKED_FRAME);
+            }
 
             hand->animload = -1;
             hand->animmode = HANDANIMMODE_BUSY;
@@ -3623,7 +2826,7 @@ void bgunStartAnimation(struct guncmd* cmd, s32 handnum, struct hand* hand)
         s32 done = false;
         u32 rand = rngRandom() % 100;
 
-        if (VrMotionThrowing && handnum == HAND_RIGHT && hand[HAND_RIGHT].gset.weaponnum == WEAPON_UNARMED) { // VR
+        if (VrMotionThrowing && handnum == HAND_RIGHT && hand->gset.weaponnum == WEAPON_UNARMED) { // VR
             s32 targetAnim = vr_button_R_grip ? 1002 : 1055;
             struct guncmd *found = NULL;
 
@@ -3642,7 +2845,8 @@ void bgunStartAnimation(struct guncmd* cmd, s32 handnum, struct hand* hand)
             if (found != NULL) {
                 bgunStartAnimation(found, handnum, hand);
             }
-        }else if (VrMotionThrowing && handnum == HAND_LEFT && hand[HAND_LEFT].gset.weaponnum == WEAPON_UNARMED) { // VR
+        // VR: hand is this hand (hand[HAND_LEFT] read past the hands array)
+        }else if (VrMotionThrowing && handnum == HAND_LEFT && hand->gset.weaponnum == WEAPON_UNARMED) { // VR
             s32 targetAnim = vr_button_L_grip ? 1002 : 1055;
             struct guncmd *found = NULL;
 
@@ -3798,9 +3002,6 @@ void bgunGetWeaponInfo(struct handweaponinfo* info, s32 handnum)
 
 
 
-// Edge detection for forced manual reload via B button
-static bool sPrevBButtonReload = false;
-
 s32 bgun0f098ca0(s32 funcnum, struct handweaponinfo* info, struct hand* hand)
 {
     s32 result = 3;
@@ -3828,49 +3029,26 @@ s32 bgun0f098ca0(s32 funcnum, struct handweaponinfo* info, struct hand* hand)
             result = 1;
 
 
-            if ((VrManualReloading && info->weaponnum == WEAPON_FALCON2)
-                || (VrManualReloading &&  info->weaponnum == WEAPON_FALCON2_SILENCER)
-                || (VrManualReloading &&  info->weaponnum == WEAPON_FALCON2_SCOPE)) {
+            s32 vrhand = (hand == &g_Vars.currentplayer->hands[HAND_LEFT]) ? HAND_LEFT : HAND_RIGHT;
+
+            // Manual reload owns the ammo slots with a row (vrReloadOwnsAmmo: the SuperDragon's rifle
+            // clip and grenade magazine both, Task F9e): never auto reloaded. A function's ammo with
+            // no row (none today) auto reloads as in the original game, except while the free hand is
+            // busy with the row's clip or rack (vrReloadFreeHandBusy): it waits for it
+            if (vrReloadOwnsAmmo(vrhand, ammoindex)) {
                 if (hand->loadedammo[ammoindex] < minqty) {
-
-                    // VR: check if the weapon has a defined manual reload system
-                    bool hasVrReload = false;
-                    if (weaponnum >= 0 && weaponnum < NUM_WEAPONS) {
-                        for (int z = 0; z < VR_RELOAD_MAX_ZONES; z++) {
-                            if (gVrReloadZones[weaponnum][z].valid) {
-                                hasVrReload = true;
-                                break;
-                            }
-                        }
-                    }
-
-                    // Rising edge detection on the B button (force manual reload)
-                    bool bPressed = get_button_state(1, "b");
-                    bool forceManualReload = bPressed && !sPrevBButtonReload;
-                    sPrevBButtonReload = bPressed;
-
-                    if (hasVrReload && !forceManualReload) {
-                        // Block auto-reload: the player must reload using the VR gesture
-                        result = 2;
-                    } else {
-                        // Reload triggered: either weapon without VR reload (normal N64),
-                        // or manual reload forced via the B button
-                        result = 0;
-                    }
-                } else {
-                    if (g_Vars.currentplayer->ammoheldarr[info->gunctrl->ammotypes[ammoindex]] ==
-                        0) {
-                        result = 2;
-                    }
+                    result = 2; /* manual reload owns this ammo: never auto reload */
+                } else if (g_Vars.currentplayer->ammoheldarr[info->gunctrl->ammotypes[ammoindex]] == 0) {
+                    result = 2;
                 }
             }
-
-
             else if (hand->loadedammo[ammoindex] < minqty) {
                 result = 0;
 
                 if (g_Vars.currentplayer->ammoheldarr[info->gunctrl->ammotypes[ammoindex]] == 0) {
                     result = -1;
+                } else if (vrReloadFreeHandBusy(vrhand)) {
+                    result = 2;
                 }
             }
             else {
@@ -4020,6 +3198,39 @@ bool bgun0f099188(struct hand* hand, s32 gunfunc)
     return bgun0f0990b0(func, weapon);
 }
 
+// VR: PD-VRR "dry:" lines, the empty trigger's path (the user: the Falcon 2 does not click when
+// empty): the pull with what decides it, the engine's empty state, each click and the release
+// VR: a row-dry pull just went to the empty state, which clicks on its first tick (Task H6a)
+static bool VrDryClickOnPull[2] = { false, false };
+
+// VR: the rounds a function needs loaded to fire: the Tranquilizer's Lethal Injection takes its
+// minimum (bgunGetMinClipQty), every other function 1. Manual reload never auto reloads, so
+// bgun0f098ca0 calls a clip under it loaded, and the stab fired with 1 to 3 darts and emptied the
+// clip (Task J8, secondary functions audit); under it the trigger clicks dry as an empty clip does
+static s32 vrDryMinQty(struct hand *hand)
+{
+    if (hand->gset.weaponnum == WEAPON_TRANQUILIZER && hand->gset.weaponfunc == FUNC_SECONDARY) {
+        return bgunGetMinClipQty(WEAPON_TRANQUILIZER, FUNC_SECONDARY);
+    }
+
+    return 1;
+}
+
+static void vrDryLog(s32 handnum, struct hand *hand, const char *what)
+{
+    char buf[256];
+    struct weaponfunc *func = gsetGetWeaponFunction(&hand->gset);
+    s32 ammoindex = func != NULL ? func->ammoindex : -1;
+
+    snprintf(buf, sizeof(buf), "dry: %s hand=%d weapon=%d func=%d ammoindex=%d loaded=%d state=%d"
+            " stateframes=%d stateflags=%x animmode=%d animload=%d animframe=%.1f",
+            what, handnum, hand->gset.weaponnum, hand->gset.weaponfunc, ammoindex,
+            ammoindex >= 0 ? hand->loadedammo[ammoindex] : -1, hand->state, hand->stateframes,
+            hand->stateflags, hand->animmode, hand->animload,
+            hand->animmode == HANDANIMMODE_BUSY ? bgun0f09815c(hand) : -1.0f);
+    vrHolsterDiagLine(buf);
+}
+
 s32 bgunTickIncIdle(struct handweaponinfo* info, s32 handnum, struct hand* hand, s32 lvupdate)
 {
     bool usesec;
@@ -4086,7 +3297,12 @@ s32 bgunTickIncIdle(struct handweaponinfo* info, s32 handnum, struct hand* hand,
             }
         }
 
-        if (sp34 < 0) {
+        if (sp34 < 0 && vrHolsterIsG5Detonator(info->weaponnum)) {
+            // VR: G5 Building's Detonator has no rounds by design, as the original game's left hand
+            // detonator: it stays idle, with no auto switch (which holds the hand lowered, pitched
+            // 50 degrees off the controller) and no function change; its trigger detonates
+            // (vrHolsterDeviceTrigger)
+        } else if (sp34 < 0) {
             // Attempted to shoot with no ammo
 
             // Consider switching to another weapon
@@ -4137,6 +3353,7 @@ s32 bgunTickIncIdle(struct handweaponinfo* info, s32 handnum, struct hand* hand,
                 hand->unk0cc8_01 = false;
 
                 if (bgunSetState(handnum, HANDSTATE_ATTACKEMPTY)) {
+                    vrDryLog(handnum, hand, "empty state (engine clip empty)");
                     return lvupdate;
                 }
             }
@@ -4151,6 +3368,36 @@ s32 bgunTickIncIdle(struct handweaponinfo* info, s32 handnum, struct hand* hand,
             }
         }
         else {
+            // VR: manual reload's ammo is never auto reloaded, so bgun0f098ca0 gives a gun with a row
+            // 2 (as if loaded) when its clip is empty: a trigger the row allows on a gun with nothing
+            // to fire (VRR_READY and dry: the DY357 fired out and shut, a pistol fired dry with its
+            // clip in) went to the attack state, which fires nothing and never clicks (Task H6a). It
+            // goes to the engine's empty state as the original game's empty clip does: a gun with a
+            // finger animation (the DY357s: the hammer) plays it, the others don't; both click every 25
+            // ticks while held. All click on the pull, as a refused pull does (vrDryTriggerTick, Task
+            // F11d): the state's first 25 ticks are skipped, and a finger animation's first click is not
+            // left for its keyframe, which a quick tap releases before (the Falcon 2's). The Reaper
+            // is left out: out of ammo it goes on to its grinder on the pull, as in the original game.
+            // So is the RC-P120's cloak while it is on: its trigger turns it off (Task J8)
+            struct weaponfunc *vrdryfunc = gsetGetWeaponFunction(&hand->gset);
+
+            if (hand->triggeron && info->weaponnum != WEAPON_NONE && info->weaponnum != WEAPON_REAPER
+                    && vrdryfunc != NULL
+                    && vrdryfunc->ammoindex >= 0 && info->gunctrl->ammotypes[vrdryfunc->ammoindex] >= 0
+                    && hand->loadedammo[vrdryfunc->ammoindex] < vrDryMinQty(hand)
+                    && vrReloadOwnsAmmo(handnum, vrdryfunc->ammoindex)
+                    && !(info->weaponnum == WEAPON_RCP120 && hand->gset.weaponfunc == FUNC_SECONDARY
+                        && (g_Vars.currentplayer->devicesactive & DEVICE_CLOAKRCP120))) {
+                hand->unk0cc8_01 = false;
+
+                if (bgunSetState(handnum, HANDSTATE_ATTACKEMPTY)) {
+                    hand->stateframes = TICKS(25) + 1;
+                    VrDryClickOnPull[handnum] = true;
+                    vrDryLog(handnum, hand, "empty state (row dry)");
+                    return lvupdate;
+                }
+            }
+
             // Clip has ammo
             if (hand->triggeron || (hand->activatesecondary && hand->gset.weaponfunc == FUNC_SECONDARY)) {
                 if (info->weaponnum != WEAPON_NONE) {
@@ -4161,6 +3408,8 @@ s32 bgunTickIncIdle(struct handweaponinfo* info, s32 handnum, struct hand* hand,
                     hand->count60 = 0;
                     hand->triggerreleased = false;
                     hand->activatesecondary = false;
+
+                    vrHolsterNoteShot(handnum); // VR: PD-VRR, the first attack after a holster switch
 
                     if (bgunSetState(handnum, HANDSTATE_ATTACK)) {
                         return lvupdate;
@@ -4233,6 +3482,67 @@ void bgunSetArmPitch(struct hand* hand, f32 angle) // VR
 
 
 
+// VR: a holster switch deletes the old third-person weapon (at the lower, or the auto switch's
+// delete) and creates the new one (at the raise) in one tick, but weaponDeleteFromChr only marks the
+// held object: its weapons_held slot is cleared when the next third-person tick frees it
+// (playerTickThirdPerson in multiplayer), and playermgrCreateWeapon skips a filled slot. The raise
+// then leaves the create pending, and bgunTickHand makes it once the slot is free, outside a switch
+// (a switch's own raise creates). A new delete cancels it. Only the VR player (player 0) switches
+// this way.
+static bool g_VrWeaponCreatePending[2];
+
+static void bgunDeleteChrWeapon(s32 handnum)
+{
+    if (vrHolsterFastSwitch()) {
+        g_VrWeaponCreatePending[handnum] = false;
+    }
+
+    playermgrDeleteWeapon(handnum);
+}
+
+static void bgunCreateChrWeapon(s32 handnum)
+{
+    struct prop *held = g_Vars.currentplayer->prop->chr->weapons_held[handnum];
+
+    if (vrHolsterFastSwitch() && held != NULL && (held->obj->hidden & OBJHFLAG_DELETING)) {
+        g_VrWeaponCreatePending[handnum] = true;
+        return;
+    }
+
+    playermgrCreateWeapon(handnum);
+}
+
+static void bgunTickPendingChrWeapon(s32 handnum)
+{
+    struct hand *hand;
+    struct prop *held;
+
+    if (g_Vars.currentplayernum != 0 || !g_VrWeaponCreatePending[handnum]) {
+        return;
+    }
+
+    // A create left pending when a match ended must not reach the next (solo) level
+    if (!(g_Vars.mplayerisrunning && (IS8MB() || PLAYERCOUNT() != 1))) {
+        g_VrWeaponCreatePending[handnum] = false;
+        return;
+    }
+
+    hand = &g_Vars.currentplayer->hands[handnum];
+
+    if (hand->state == HANDSTATE_CHANGEGUN || hand->state == HANDSTATE_AUTOSWITCH) {
+        return;
+    }
+
+    held = g_Vars.currentplayer->prop->chr->weapons_held[handnum];
+
+    if (held == NULL) {
+        g_VrWeaponCreatePending[handnum] = false;
+        playermgrCreateWeapon(handnum);
+    } else if ((held->obj->hidden & OBJHFLAG_DELETING) == 0) {
+        g_VrWeaponCreatePending[handnum] = false;
+    }
+}
+
 s32 bgunTickIncAutoSwitch(struct handweaponinfo* info, s32 handnum, struct hand* hand, s32 lvupdate)
 {
     u32 stack;
@@ -4248,6 +3558,12 @@ s32 bgunTickIncAutoSwitch(struct handweaponinfo* info, s32 handnum, struct hand*
 
         if (g_Vars.normmplayerisrunning) {
             delay = TICKS(12);
+        }
+
+        // VR: with holsters the lower before an auto switch (the last mine thrown) takes no ticks,
+        // as a holster switch's does. The throw has already left the hand (HANDSTATE_ATTACK).
+        if (vrHolsterFastSwitch()) {
+            delay = 0;
         }
 
         if (hand->stateframes >= delay) {
@@ -4268,10 +3584,19 @@ s32 bgunTickIncAutoSwitch(struct handweaponinfo* info, s32 handnum, struct hand*
 
         if (bgunIsReadyToSwitch(handnum) && bgunSetState(handnum, HANDSTATE_CHANGEGUN)) {
             if (g_Vars.mplayerisrunning && (IS8MB() || PLAYERCOUNT() != 1)) {
-                playermgrDeleteWeapon(handnum);
+                bgunDeleteChrWeapon(handnum);
             }
 
             bgunFreeHeldRocket(handnum);
+
+            // VR: this goes straight to the load, past the lower that unloads the weapon copy. The
+            // new gun can load at the same gun-memory address, so the copy's modeldef check at the
+            // raise would keep the old gun's copy (its rwdata and part lists sized for the old
+            // model), drawn from memory the load overwrites meanwhile. Unload it here as the
+            // lower does; the raise loads the new one.
+            if (g_VrCopyWepModeldef != NULL) {
+                vrCopyWepUnload();
+            }
 
             hand->mode = HANDMODE_6;
             hand->stateminor = HANDSTATEMINOR_AUTOSWITCH_2;
@@ -4801,7 +4126,13 @@ void bgun0f09a6f8(struct handweaponinfo* info, s32 handnum, struct hand* hand, s
         hand->stateflags |= HANDSTATEFLAG_00000020;
         hand->stateflags |= HANDSTATEFLAG_00000010;
 
-        bgunRumble(handnum, info->weaponnum);
+        // VR: a shot of a gun with a kick (the Shotgun, the revolvers) is felt as its kick's two buzzes,
+        // which the engine's rumble would stop
+        if (vrGunKickDef(handnum) == NULL) {
+            bgunRumble(handnum, info->weaponnum);
+        }
+
+        vrGunKickStart(handnum, info->weaponnum);
 
         if (usesammo && func->ammoindex >= 0) {
             hand->loadedammo[func->ammoindex] -= hand->shotstotake;
@@ -4982,7 +4313,7 @@ bool bgun0f09aba4(struct hand* hand, struct handweaponinfo* info, s32 handnum, s
         }
 
         int ctrlIndex = (handnum == HAND_RIGHT ? 1 : 0);
-        if (g_Vars.currentplayer->hands[HAND_RIGHT].gset.weaponnum == WEAPON_LASER) {
+        if (vrLaserOnOffHand(g_Vars.currentplayer->hands[HAND_RIGHT].gset.weaponnum)) {
             ctrlIndex = (handnum == HAND_RIGHT ? 0 : 1);
         }
 
@@ -5028,20 +4359,16 @@ bool bgun0f09aba4(struct hand* hand, struct handweaponinfo* info, s32 handnum, s
 
                 vrBuildGunRotation(handnum, hand, qTmp, &hand->posrotmtx);
 
-                // VR Apply per-weapon Z roll correction
-                if (zRollAngle != 0.0f) {
-                    struct coord rot = { 0.0f, 0.0f, zRollAngle };
-                    Mtxf rotZ;
-                    Mtxf tmp;
-                    mtx4LoadIdentity(&rotZ);
-                    mtx4LoadRotation(&rot, &rotZ);
-                    mtx4MultMtx4(&hand->posrotmtx, &rotZ, &tmp);
-                    hand->posrotmtx = tmp;
-                }
+                // VR Apply per-weapon Z roll correction (and the Laser's turn)
+                vrGunTurnApply(&hand->posrotmtx);
 
                 hand->posrotmtx.m[3][0] = hand->posoffset.x;
                 hand->posrotmtx.m[3][1] = hand->posoffset.y;
                 hand->posrotmtx.m[3][2] = hand->posoffset.z;
+
+                // The gun's kick (the Shotgun, the revolvers), after the two-hand aim (vr_gun_pos_rot's is
+                // rebuilt here)
+                vrGunKickApply(handnum, hand);
 
                 hand->useposrot = true;
                 hand->rotxoffset = 0.0f;
@@ -5057,6 +4384,14 @@ bool bgun0f09aba4(struct hand* hand, struct handweaponinfo* info, s32 handnum, s
         if (frames < sum && (hand->stateflags & HANDSTATEFLAG_00000040) == 0) {
             recoildist = func->recoildist;
             recoilangle = func->recoilangle;
+
+            // VR: a gun with a kick (the revolvers, Task H4) takes none of the engine's turn or push, its
+            // drawn pose kicked instead (vrGunKickApply); unk24, unk25 and recoverytime60, the lockout
+            // between shots, are unchanged
+            if (vrGunKickDef(handnum) != NULL) {
+                recoildist = 0.0f;
+                recoilangle = 0.0f;
+            }
 
             if (frames < unk24) {
                 mult2 = sinf(frames * 1.5707963705063f / (f32)unk24);
@@ -5098,20 +4433,16 @@ bool bgun0f09aba4(struct hand* hand, struct handweaponinfo* info, s32 handnum, s
 
             vrBuildGunRotation(handnum, hand, qTmp, &hand->posrotmtx);
 
-            // VR Apply per-weapon Z roll correction
-            if (zRollAngle != 0.0f) {
-                struct coord rot = { 0.0f, 0.0f, zRollAngle };
-                Mtxf rotZ;
-                Mtxf tmp;
-                mtx4LoadIdentity(&rotZ);
-                mtx4LoadRotation(&rot, &rotZ);
-                mtx4MultMtx4(&hand->posrotmtx, &rotZ, &tmp);
-                hand->posrotmtx = tmp;
-            }
+            // VR Apply per-weapon Z roll correction (and the Laser's turn)
+            vrGunTurnApply(&hand->posrotmtx);
 
             hand->posrotmtx.m[3][0] = hand->posoffset.x;
             hand->posrotmtx.m[3][1] = hand->posoffset.y;
             hand->posrotmtx.m[3][2] = hand->posoffset.z;
+
+            // The gun's kick (the Shotgun, the revolvers), after the two-hand aim (vr_gun_pos_rot's is
+            // rebuilt here)
+            vrGunKickApply(handnum, hand);
 
             mtx4Copy(&hand->posrotmtx, &hand->posmtx);
 
@@ -5158,9 +4489,16 @@ bool bgunTickIncAttackingShoot(struct handweaponinfo* info, s32 handnum, struct 
         mainOverrideVariable("gkef", &var80070128);
 
         if (hand->statecycles == 0) {
+            struct vrreloaddef *vrpump = vrReloadOwnedDef(handnum);
+
             hand->gs_float1 = 0;
 
-            if (func->fire_animation) {
+            // VR: a gun the player pumps (manual reload's pumpaction row, the Shotgun: Task G0d) does
+            // not play its fire animation: its kick moved the gun and both hands off the controllers
+            // and its 80 degree flourish pumped the gun itself. The gun stays on the controller and is
+            // kicked in its drawn pose (vrGunKickApply); its pump moves only with the player's hand
+            // (vrReloadMoveRack). With no animation the shot also goes off at once, not at its frame 9
+            if (func->fire_animation && !(vrpump != NULL && vrpump->pumpaction)) {
                 bgunStartAnimation(func->fire_animation, handnum, hand);
                 hand->unk0cc8_01 = true;
             }
@@ -5301,10 +4639,8 @@ bool bgunTickIncAttackingThrow(s32 handnum, struct hand* hand) {
 
 
     if (hand->stateminor == HANDSTATEMINOR_ATTACK_THROW_1) {
-        if ((hand->gset.weaponnum == WEAPON_ECMMINE
-             || (hand->gset.weaponnum == WEAPON_LAPTOPGUN && hand->gset.weaponfunc == FUNC_SECONDARY)
-             || (hand->gset.weaponnum == WEAPON_DRAGON && hand->gset.weaponfunc == FUNC_SECONDARY)
-             || (hand->gset.weaponnum == WEAPON_COMBATKNIFE && hand->gset.weaponfunc == FUNC_SECONDARY))
+        if (vrMotionThrowWeapon(hand->gset.weaponnum, hand->gset.weaponfunc)
+            && !vrThrowWindsUpInAnim(hand->gset.weaponnum)
             && (hand->triggeron)) {
             // Trigger still held down → wait
             return false;
@@ -5317,15 +4653,7 @@ bool bgunTickIncAttackingThrow(s32 handnum, struct hand* hand) {
         }
 
         // VR...
-        if (hand->gset.weaponnum == WEAPON_GRENADE
-            || hand->gset.weaponnum == WEAPON_NBOMB
-            || hand->gset.weaponnum == WEAPON_ECMMINE
-            || hand->gset.weaponnum == WEAPON_PROXIMITYMINE
-            || hand->gset.weaponnum == WEAPON_TIMEDMINE
-            || hand->gset.weaponnum == WEAPON_REMOTEMINE
-            || (hand->gset.weaponnum == WEAPON_LAPTOPGUN && hand->gset.weaponfunc == FUNC_SECONDARY)
-            || (hand->gset.weaponnum == WEAPON_DRAGON && hand->gset.weaponfunc == FUNC_SECONDARY)
-            || (hand->gset.weaponnum == WEAPON_COMBATKNIFE && hand->gset.weaponfunc == FUNC_SECONDARY)){
+        if (vrMotionThrowWeapon(hand->gset.weaponnum, hand->gset.weaponfunc)){
 
 
             if (VrMotionThrowing) {
@@ -5583,12 +4911,104 @@ bool bgunTickIncAttackingSpecial(struct hand* hand)
     return false;
 }
 
+// The engine's dry click for a trigger pulled with nothing to fire (bgunTickIncAttackEmpty). VR:
+// apart so the trigger manual reload refuses (vrDryTriggerTick) clicks as the engine's empty gun does
+static void bgunPlayEmptyClick(s32 weaponnum)
+{
+    switch (weaponnum) {
+        case WEAPON_PHOENIX:
+        case WEAPON_CALLISTO:
+        case WEAPON_FARSIGHT:
+        {
+            // Maian weapons have a wet sounding click effect
+            f32 speed = 2.07f;
+
+#if VERSION >= VERSION_NTSC_1_0
+            OSPri prevpri = osGetThreadPri(0);
+            struct sndstate* handle;
+            osSetThreadPri(0, osGetThreadPri(&g_AudioManager.thread) + 1);
+#else
+            struct sndstate* handle;
+#endif
+
+            handle = sndStart(var80095200, SFX_HIT_WATER, NULL, -1, -1, -1, -1, -1);
+
+            if (handle) {
+                audioPostEvent(handle, AL_SNDP_PITCH_EVT, *(s32*)&speed);
+            }
+
+#if VERSION >= VERSION_NTSC_1_0
+            osSetThreadPri(0, prevpri);
+#endif
+        }
+            // fall-through - unsure if intentional
+        case WEAPON_TRANQUILIZER:
+        case WEAPON_PSYCHOSISGUN:
+        {
+            // The tranquliser and psychosis gun use the standard click
+            // effect but slightly faster.
+            f32 speed = 1.5f;
+
+#if VERSION >= VERSION_NTSC_1_0
+            OSPri prevpri = osGetThreadPri(0);
+            struct sndstate* handle;
+            osSetThreadPri(0, osGetThreadPri(&g_AudioManager.thread) + 1);
+#else
+            struct sndstate* handle;
+#endif
+
+            handle = sndStart(var80095200, SFX_FIREEMPTY, NULL, -1, -1, -1, -1, -1);
+
+            if (handle) {
+                audioPostEvent(handle, AL_SNDP_PITCH_EVT, *(s32*)&speed);
+            }
+
+#if VERSION >= VERSION_NTSC_1_0
+            osSetThreadPri(0, prevpri);
+#endif
+        }
+            break;
+        case WEAPON_UNARMED:
+        case WEAPON_COMBATKNIFE:
+        case WEAPON_GRENADE:
+        case WEAPON_NBOMB:
+        case WEAPON_TIMEDMINE:
+        case WEAPON_PROXIMITYMINE:
+        case WEAPON_REMOTEMINE:
+        case WEAPON_COMBATBOOST:
+            // No sound effect
+            break;
+        default:
+            // Default click sound effect
+            sndStart(var80095200, SFX_FIREEMPTY, NULL, -1, -1, -1, -1, -1);
+            break;
+    }
+}
+
 s32 bgunTickIncAttackEmpty(struct handweaponinfo* info, s32 handnum, struct hand* hand, s32 lvupdate)
 {
     u32 stack;
     bool playsound = false;
+    // VR: a gun with a row loaded while its trigger is held (the Crossbow's bolt, which no step of
+    // the load refuses) has something to fire: it stops clicking and its finger animation is not
+    // restarted, and the hand stays here until the release, so the shot takes a fresh pull (going idle
+    // with the trigger held would fire it as the round goes in) (Task H6a)
+    struct weaponfunc *vrfunc = gsetGetWeaponFunction(&hand->gset);
+    bool vrloaded = vrfunc != NULL && vrfunc->ammoindex >= 0
+        && info->gunctrl->ammotypes[vrfunc->ammoindex] >= 0
+        && hand->loadedammo[vrfunc->ammoindex] >= vrDryMinQty(hand)
+        && vrReloadOwnsAmmo(handnum, vrfunc->ammoindex);
+    bool vrclickonpull = VrDryClickOnPull[handnum];
+    // VR: the Tranquilizer's Lethal Injection short of its darts clicks with no stab (its fire
+    // animation is the injection): the default case's click every 25 ticks (Task J8)
+    s32 vrclickweapon = info->weaponnum == WEAPON_TRANQUILIZER && vrDryMinQty(hand) > 1
+        ? WEAPON_NONE : info->weaponnum;
 
-    switch (info->weaponnum) {
+    VrDryClickOnPull[handnum] = false;
+
+    if (vrloaded) {
+        // Nothing: no click, no animation, no reset of the hand's animation
+    } else switch (vrclickweapon) {
         case WEAPON_FALCON2:
         case WEAPON_FALCON2_SILENCER:
         case WEAPON_FALCON2_SCOPE:
@@ -5637,6 +5057,11 @@ s32 bgunTickIncAttackEmpty(struct handweaponinfo* info, s32 handnum, struct hand
             else if (bgun0f098a44(hand, 5)) {
                 playsound = true;
             }
+
+            // VR: the pull's click is played now, and the flag it sets skips the keyframe's
+            if (vrclickonpull) {
+                playsound = true;
+            }
             break;
         default:
             // Weapons without visible trigger animations must
@@ -5658,78 +5083,13 @@ s32 bgunTickIncAttackEmpty(struct handweaponinfo* info, s32 handnum, struct hand
     if (playsound && (hand->stateflags & HANDSTATEFLAG_00000010) == 0) {
         hand->stateflags |= HANDSTATEFLAG_00000010;
 
-        switch (info->weaponnum) {
-            case WEAPON_PHOENIX:
-            case WEAPON_CALLISTO:
-            case WEAPON_FARSIGHT:
-            {
-                // Maian weapons have a wet sounding click effect
-                f32 speed = 2.07f;
-
-#if VERSION >= VERSION_NTSC_1_0
-                OSPri prevpri = osGetThreadPri(0);
-                struct sndstate* handle;
-                osSetThreadPri(0, osGetThreadPri(&g_AudioManager.thread) + 1);
-#else
-                struct sndstate* handle;
-#endif
-
-                handle = sndStart(var80095200, SFX_HIT_WATER, NULL, -1, -1, -1, -1, -1);
-
-                if (handle) {
-                    audioPostEvent(handle, AL_SNDP_PITCH_EVT, *(s32*)&speed);
-                }
-
-#if VERSION >= VERSION_NTSC_1_0
-                osSetThreadPri(0, prevpri);
-#endif
-            }
-                // fall-through - unsure if intentional
-            case WEAPON_TRANQUILIZER:
-            case WEAPON_PSYCHOSISGUN:
-            {
-                // The tranquliser and psychosis gun use the standard click
-                // effect but slightly faster.
-                f32 speed = 1.5f;
-
-#if VERSION >= VERSION_NTSC_1_0
-                OSPri prevpri = osGetThreadPri(0);
-                struct sndstate* handle;
-                osSetThreadPri(0, osGetThreadPri(&g_AudioManager.thread) + 1);
-#else
-                struct sndstate* handle;
-#endif
-
-                handle = sndStart(var80095200, SFX_FIREEMPTY, NULL, -1, -1, -1, -1, -1);
-
-                if (handle) {
-                    audioPostEvent(handle, AL_SNDP_PITCH_EVT, *(s32*)&speed);
-                }
-
-#if VERSION >= VERSION_NTSC_1_0
-                osSetThreadPri(0, prevpri);
-#endif
-            }
-                break;
-            case WEAPON_UNARMED:
-            case WEAPON_COMBATKNIFE:
-            case WEAPON_GRENADE:
-            case WEAPON_NBOMB:
-            case WEAPON_TIMEDMINE:
-            case WEAPON_PROXIMITYMINE:
-            case WEAPON_REMOTEMINE:
-            case WEAPON_COMBATBOOST:
-                // No sound effect
-                break;
-            default:
-                // Default click sound effect
-                sndStart(var80095200, SFX_FIREEMPTY, NULL, -1, -1, -1, -1, -1);
-                break;
-        }
+        bgunPlayEmptyClick(info->weaponnum);
+        vrDryLog(handnum, hand, "click (empty state)");
     }
 
     // Handle releasing trigger
     if (!hand->triggeron) {
+        vrDryLog(handnum, hand, "release (empty state)");
         hand->mode = HANDMODE_NONE;
         hand->count60 = 0;
         hand->count = 0;
@@ -5843,9 +5203,13 @@ bool bgunCanFreeWeapon(s32 handnum)
 {
     struct player* player = g_Vars.currentplayer;
 
+    // VR: a holster switch frees the old gun in the tick its hands reach the load. The three ticks
+    // kept the old gun's memory for the N64 frames still in flight; the port draws each frame's
+    // display list before the next tick, and the weapon copy is unloaded before the load (at the
+    // lower, or at the auto switch's delete, which skips the lower).
     if (player->hands[handnum].state == HANDSTATE_CHANGEGUN
         && player->hands[handnum].stateminor == HANDSTATEMINOR_CHANGEGUN_LOAD
-        && player->hands[handnum].count >= 3
+        && (player->hands[handnum].count >= 3 || vrHolsterFastSwitch())
         && player->gunctrl.throwing == false) {
         return true;
     }
@@ -5881,6 +5245,48 @@ bool bgun0f09bf44(s32 handnum)
     return result;
 }
 
+// VR: a holster switch skips the equip animation, but the gun file's rest pose (animnum 0) has the
+// hand flat under the gun: the held pose is the frame a normal switch leaves the model on. That is
+// the frame the equip animation ends on, except for WEAPONFLAG_00004000 guns, whose equip animation
+// never plays: unk0cc8_02 zeroes its frame step and the switch goes idle with it set, so they hold
+// the frame it starts on (frame 0, or the last frame for a reversed animation). Put the model
+// straight on that frame without playing it, so none of the animation's sounds or keyframed part
+// commands fire. bgunStartAnimation resolves the command list (includes, random picks, conditions)
+// to its animation and speed; the hand's anim state is then cleared, so nothing ticks the model off
+// that frame. Weapons without an equip animation (fists) start at rest. Either way an animation the old weapon queued while the hand was hidden (the fist
+// clench when a draw flips the gun side, or a punch-speed draw) is dropped, and the idle matrix
+// cache (unk0dd8, otherwise rebuilt only on a gun load or a function change) is rebuilt from the
+// new pose instead of freezing a wrong one.
+static void vrHolsterSetEquipPose(struct guncmd* equip, s32 handnum, struct hand* hand)
+{
+    bgunResetAnim(hand);
+
+    if (equip) {
+        bgunStartAnimation(equip, handnum, hand);
+    }
+
+    if (hand->animload >= 0 && hand->unk0ce8) {
+        f32 speed = hand->unk0ce8->unk04 / 10000.0f;
+        bool held = weaponHasFlag(hand->gset.weaponnum, WEAPONFLAG_00004000);
+        f32 end;
+
+        modelSetAnimation(&hand->gunmodel, hand->animload, false, 0.0f, speed, 0.0f);
+        end = modelGetAnimEndFrame(&hand->gunmodel);
+
+        // A reversed animation starts on its last frame (bgun0f0981e8) and ends on frame 0
+        if (held) {
+            modelSetAnimFrame(&hand->gunmodel, speed < 0.0f ? end : 0.0f);
+        } else {
+            modelSetAnimFrame(&hand->gunmodel, speed < 0.0f ? 0.0f : end);
+        }
+    } else {
+        animInit(&hand->anim);
+    }
+
+    bgunResetAnim(hand);
+    g_Vars.currentplayer->hands[HAND_RIGHT].unk0dd4 = -1;
+}
+
 s32 bgunTickIncChangeGun(struct handweaponinfo* info, s32 handnum, struct hand* hand, s32 lvupdate)
 {
     u32 stack;
@@ -5911,7 +5317,10 @@ s32 bgunTickIncChangeGun(struct handweaponinfo* info, s32 handnum, struct hand* 
         hand->count = 0;
 
         if (!skipanim) {
+            // VR: a holster switch skips the unequip animation and so its sounds (the else branch
+            // still waits out a thrown gun)
             if (weapon->unequip_animation
+                && !vrHolsterFastSwitch()
                 && hand->inuse == true
                 && !(hand->ejectstate != EJECTSTATE_INACTIVE && hand->ejecttype == EJECTTYPE_GUN)) {
                 if (hand->statecycles == 0) {
@@ -5965,9 +5374,21 @@ s32 bgunTickIncChangeGun(struct handweaponinfo* info, s32 handnum, struct hand* 
             delay = 1;
         }
 
+        // VR: a holster switch lowers at once (in the call that reached the lower), so the gun is
+        // never drawn pitched down. The pitch below is then only reached by a throw.
+        if (vrHolsterFastSwitch()) {
+            delay = 0;
+        }
+
 
         // --- VR unload the weapon copy here
-        if (g_VrCopyWepModeldef != NULL) {
+        // Only in a weapon change: the copy points at the gun's modeldef in gun memory, which the
+        // new gun's load overwrites (see the auto switch's unload, bgunTickIncAutoSwitch). The left
+        // hand also lowers alone, with no change pending, when dual wield ends or starts with the
+        // same gun (bgunIsReadyToSwitch): the copy is then still the kept gun's and must stay, as
+        // only a raise in use reloads it. Unloading it there left a pair let go of with no free
+        // hand drawn (the copy and the fists both need it) until another switch.
+        if (g_VrCopyWepModeldef != NULL && g_Vars.currentplayer->gunctrl.switchtoweaponnum >= 0) {
             s32 halfDelay = delay / 2.5;
             if (hand->stateframes >= halfDelay) {
                 vrCopyWepUnload();
@@ -5986,7 +5407,7 @@ s32 bgunTickIncChangeGun(struct handweaponinfo* info, s32 handnum, struct hand* 
         if (hand->stateframes >= delay) {
             if (!throwing) {
                 if (g_Vars.mplayerisrunning && (IS8MB() || PLAYERCOUNT() != 1)) {
-                    playermgrDeleteWeapon(handnum);
+                    bgunDeleteChrWeapon(handnum);
                 }
 
                 bgunFreeHeldRocket(handnum);
@@ -6019,6 +5440,8 @@ s32 bgunTickIncChangeGun(struct handweaponinfo* info, s32 handnum, struct hand* 
     // Wait for the new gun to be loaded, then start its equip animation
     // (if any) and move on to the next state.
     if (hand->stateminor == HANDSTATEMINOR_CHANGEGUN_LOAD) {
+        s32 prevmode = hand->mode;
+
         hand->animmode = HANDANIMMODE_IDLE;
 
         if (hand->pausechange == 0 || hand->pausetime60 <= hand->count60) {
@@ -6032,9 +5455,18 @@ s32 bgunTickIncChangeGun(struct handweaponinfo* info, s32 handnum, struct hand* 
                     }
                 }
             }
-            else {
+
+            // VR: a holster switch goes on to the raise in the call that found the gun ready
+            // (vanilla waits a tick in HANDMODE_7)
+            if (prevmode != HANDMODE_6 || (vrHolsterFastSwitch() && hand->mode == HANDMODE_7)) {
                 if (bgunIsLoaded()) {
-                    if (info->definition->equip_animation) {
+                    // VR: a holster switch puts the gun straight on the pose a normal switch
+                    // leaves it on (vrHolsterSetEquipPose) so it can fire at once. The animation's part
+                    // show/hide commands only apply while it plays (bgun0f0981e8): when idle the
+                    // gunviscmds give the same parts as its end, so nothing is lost but its sounds.
+                    if (vrHolsterFastSwitch()) {
+                        vrHolsterSetEquipPose(info->definition->equip_animation, handnum, hand);
+                    } else if (info->definition->equip_animation) {
                         bgunStartAnimation(info->definition->equip_animation, handnum, hand);
                         hand->unk0cc8_02 = true;
 
@@ -6052,11 +5484,6 @@ s32 bgunTickIncChangeGun(struct handweaponinfo* info, s32 handnum, struct hand* 
                         vrCopyWepLoad(handnum);                         // recopie le modèle courant
                         vrSwitchGun = true;
                         vrResolveReloadAnimIds(g_Vars.currentplayer->gunctrl.weaponnum);
-                        sVrMagPhysicallyInGun = true;
-                        sVrMagInHand          = false;
-                        sSavedMagAmmo         = 0;
-                        sSavedMagWeapon       = WEAPON_NONE;
-                        sVrChamberEmpty       = false;
                     }
 
                 }
@@ -6085,16 +5512,40 @@ s32 bgunTickIncChangeGun(struct handweaponinfo* info, s32 handnum, struct hand* 
             delay = 1;
         }
 
+        // VR: a holster switch raises at once: the gun goes from its load straight to idle, never
+        // drawn pitched down
+        if (vrHolsterFastSwitch()) {
+            delay = 0;
+        }
+
         if (hand->count == 0) {
             if (g_Vars.mplayerisrunning && (IS8MB() || PLAYERCOUNT() != 1)) {
-                playermgrCreateWeapon(handnum);
+                bgunCreateChrWeapon(handnum);
             }
 
 
-            bgun0f098f8c(info, hand);
+            // VR: a manual-reload gun put away by a switch comes back as it was, not refilled: each
+            // magazine with a saved shape (the SuperDragon's rifle clip and grenade magazine each keep
+            // their own, Task F9e). Its other ammo slots (a magazine with no saved shape, or a
+            // function's ammo with no row) fill as the engine fills them
+            s32 vrfilled = vrReloadDrawFill(handnum);
+
+            if (!vrfilled) {
+                bgun0f098f8c(info, hand);
+            } else {
+                for (s32 vrfn = 0; vrfn < 2; vrfn++) {
+                    struct weaponfunc *vrfunc = weaponGetFunction(&hand->gset, vrfn);
+
+                    if (vrfunc && vrfunc->ammoindex >= 0 && vrfunc->ammoindex < 2
+                            && !(vrfilled & (1 << vrfunc->ammoindex))) {
+                        bgun0f098df8(vrfn, info, hand, 0, 1);
+                    }
+                }
+            }
 
             if (weaponHasFlag(info->weaponnum, WEAPONFLAG_THROWABLE)
                 && (info->weaponnum != WEAPON_REMOTEMINE || handnum != HAND_LEFT)
+                && !vrHolsterIsG5Detonator(info->weaponnum) // VR: no rounds by design (bgunTickIncIdle)
                 && bgun0f098ca0(0, info, hand) < 0
                 && bgunSetState(handnum, HANDSTATE_AUTOSWITCH)) {
                 hand->stateminor = HANDSTATEMINOR_AUTOSWITCH_DELETE;
@@ -6127,6 +5578,8 @@ s32 bgunTickIncChangeGun(struct handweaponinfo* info, s32 handnum, struct hand* 
 								f32 speed3;
 #endif
 
+                bool vrdrawsound = true; // VR: PD-VRR, the frame the draw sound starts
+
                 switch (info->weaponnum) {
                     case WEAPON_HORIZONSCANNER:
                         speed1 = 3.5f;
@@ -6154,6 +5607,8 @@ s32 bgunTickIncChangeGun(struct handweaponinfo* info, s32 handnum, struct hand* 
                     case WEAPON_REMOTEMINE:
                         if (handnum == HAND_RIGHT) {
                             sndStart(var80095200, SFX_PICKUP_MINE, 0, -1, -1, -1, -1, -1);
+                        } else {
+                            vrdrawsound = false;
                         }
                         break;
                     case WEAPON_TIMEDMINE:
@@ -6167,6 +5622,10 @@ s32 bgunTickIncChangeGun(struct handweaponinfo* info, s32 handnum, struct hand* 
                     case WEAPON_COMMSRIDER:
                     case WEAPON_TRACERBUG:
                     case WEAPON_TARGETAMPLIFIER:
+                    case WEAPON_NIGHTVISION: // VR: the held devices take the gadget sound, not the gun cock
+                    case WEAPON_XRAYSCANNER:
+                    case WEAPON_IRSCANNER:
+                    case WEAPON_EYESPY:
                         sndStart(var80095200, SFX_PICKUP_MINE, 0, -1, -1, -1, -1, -1);
                         break;
                     case WEAPON_TRANQUILIZER:
@@ -6234,10 +5693,15 @@ s32 bgunTickIncChangeGun(struct handweaponinfo* info, s32 handnum, struct hand* 
                     case WEAPON_NECKLACE:
                     case WEAPON_BRIEFCASE2:
                         // No equip sound
+                        vrdrawsound = false;
                         break;
                     default:
                         sndStart(var80095200, SFX_PICKUP_GUN, 0, -1, -1, -1, -1, -1);
                         break;
+                }
+
+                if (vrdrawsound) {
+                    vrHolsterNoteDrawSound(handnum);
                 }
             }
         }
@@ -6248,6 +5712,7 @@ s32 bgunTickIncChangeGun(struct handweaponinfo* info, s32 handnum, struct hand* 
             || weaponHasFlag(info->weaponnum, WEAPONFLAG_00000080)) {
             hand->mode = HANDMODE_NONE;
             hand->stateminor++; // to HANDSTATEMINOR_CHANGEGUN_EQUIP
+            vrHolsterNoteRaised(handnum); // VR: the swing hold-back restarts at the raise
 
             if (weaponHasFlag(hand->gset.weaponnum, WEAPONFLAG_00004000) == 0) {
                 hand->unk0cc8_02 = false;
@@ -6297,6 +5762,19 @@ s32 bgunTickIncState2(struct handweaponinfo* info, s32 handnum, struct hand* han
 // render time by bgun0f0a5550 to world-lock the gun ORIENTATION via the live camera matrix.
 struct coord gVrGunRight[2] = { {1,0,0}, {1,0,0} };
 struct coord gVrGunUp[2]    = { {0,1,0}, {0,1,0} };
+// The Laser is worn on the off hand, logical controller 0 (the gun hand's trigger and grips trade
+// places with the off hand's, input.c, and its hands file keeps only the left arm, filemodel.c), so
+// it always sat in the hand that did not hold it: with holsters, drawn by the right hand it showed
+// on the left, and by the left on the right. With holsters (Task F11h, the user: "we need to see if
+// we can get lasers and crossbows to swap hands as well") it is in the hand that holds it, the gun
+// side, as any gun: on the gun hand's controller, its left arm mirrored onto the right hand as the
+// other guns are mirrored onto the left (bgun0f0a5550), so it moves with the gun side. Holsters
+// off, it is as before.
+bool vrLaserOnOffHand(s32 weaponnum)
+{
+    return weaponnum == WEAPON_LASER && !vrHolsterActive();
+}
+
 struct coord gVrGunFwd[2]   = { {0,0,1}, {0,0,1} };
 // Per-weapon grip offset, passed from vr_gun_pos_rot (tick) to bgun0f0a5550 (render) so it can be
 // applied in the gun's STABLE world orientation instead of the head-relative view frame.
@@ -6305,7 +5783,7 @@ struct coord gVrGunOff[2]   = { {0,0,0}, {0,0,0} };
 void vr_gun_pos_rot(int handnum, struct hand* hand) {
 
     int ctrlIndex = (handnum == HAND_RIGHT ? 1 : 0);
-    if (g_Vars.currentplayer->hands[HAND_RIGHT].gset.weaponnum == WEAPON_LASER) {
+    if (vrLaserOnOffHand(g_Vars.currentplayer->hands[HAND_RIGHT].gset.weaponnum)) {
         ctrlIndex = (handnum == HAND_RIGHT ? 0 : 1);
     }
 
@@ -6379,15 +5857,62 @@ void vr_gun_pos_rot(int handnum, struct hand* hand) {
             }
             break;
 
+        case WEAPON_LASER:
+            // With holsters, on the gun hand (vrLaserOnOffHand false): the offset that, with the turn
+            // below, puts the Laser's arm (its left arm, mirrored onto the right) where the Falcon's
+            // right arm sits on the controller: the wrist on its wrist and the forearm along its
+            // forearm (Task H3a, the user: "for laser the arm is not close to where the controller
+            // should be"; the equip animations' last frames: tools/vr_measure/laserhand.py); mirrored
+            // in left-handed mode. Task F12c's {13.1, 6.3, -8.0} with a quarter turn put the palm on
+            // the Falcon's palm and left the wrist 5.1 cm off and the forearm 3.7 degrees across; this
+            // leaves the palm 5.6 cm off, the Laser's hand being bent at the wrist unlike the Falcon's.
+            // The fit leaves out the grip trim, which lands in the controller's frame as on the Falcon
+            // (vrGunTrimUnturn below, Task H5b). Holsters off: the default, as before
+            if (!vrLaserOnOffHand(WEAPON_LASER)) {
+                off.x = VrLeftHandedMode ? -13.51f : 13.51f; off.y = -1.52f; off.z = -9.49f;
+            } else {
+                off.x = 0.0f;  off.y = 16.0f; off.z = -4.0f;
+            }
+            break;
+
+        case WEAPON_FALCON2:
+        case WEAPON_FALCON2_SILENCER:
+        case WEAPON_FALCON2_SCOPE:
+            // The Falcon 2's model sits 3.8 cm toward the gun hand's side of the CMP150's on the same
+            // offset (the user: "falcon 2 model and hand appear to be more to the left than the cmp
+            // and other weapons", the off controller hitting the gun hand's when reloading): on their
+            // idle frames (the Falcon's equip end, the CMP150's shoot frame 0) the body's middle is at
+            // model x -1.97 against the CMP150's 1.91 and the palm at -2.82 against 0.88 (the MagSec 4
+            // and DY357 sit near 0, the Mauler with the CMP150). Model +x is the off hand's side; the
+            // left-handed model is mirrored, so the shift is too
+            off.x = VrLeftHandedMode ? -3.8f : 3.8f; off.y = 16.0f; off.z = -4.0f;
+            break;
+
         default:
             off.x = 0.0f;  off.y = 16.0f; off.z = -4.0f;
             break;
     }
 
     // Z rotation correction
+    vrGunTurnX = 0.0f;
+    vrGunTurnY = 0.0f;
+
     switch (g_Vars.currentplayer->gunctrl.weaponnum) {
         case WEAPON_LASER:
-            zRollAngle = ctrlIndex ? 0.0f : -1.1f;
+            // Holsters off (vrLaserOnOffHand): -1.1 on the left controller, as before. With holsters,
+            // on the gun hand: the Laser's hand is flat, palm down, so it turns about 102 degrees about
+            // the barrel (z) and a little about x and y: the turn that lays its forearm along the
+            // Falcon's with the palm facing in as near the Falcon's as the hand's bend allows (29
+            // degrees off; Task H3a, tools/vr_measure/laserhand.py; Task F12c's quarter turn about z
+            // alone left the forearm 3.7 degrees across), on the right hand with the model mirrored
+            // (y and z negated below for the left hand, unmirrored)
+            if (vrLaserOnOffHand(WEAPON_LASER)) {
+                zRollAngle = ctrlIndex ? 0.0f : -1.1f;
+            } else {
+                vrGunTurnX = 0.0640f;
+                vrGunTurnY = -0.0044f;
+                zRollAngle = 1.7755f;
+            }
             break;
         case WEAPON_CROSSBOW:
             zRollAngle = ctrlIndex ? 1.1f : -0.0f;
@@ -6413,6 +5938,7 @@ void vr_gun_pos_rot(int handnum, struct hand* hand) {
 
     if (VrLeftHandedMode) {
         zRollAngle = -zRollAngle;
+        vrGunTurnY = -vrGunTurnY; // the mirror (x negated) keeps a turn about x, negates y and z
     }
 
 
@@ -6420,6 +5946,14 @@ void vr_gun_pos_rot(int handnum, struct hand* hand) {
     off.x += VrGunOffX;
     off.y += VrGunOffY;
     off.z += VrGunOffZ;
+
+    // The Laser's turn would turn the trim with the offset: about 20 cm off, the hand in from the
+    // controller and above it on either hand, where H3a's fit (without the trim) put the wrist on the
+    // Falcon's (Task H5b, the user's marks: "where the controller is and where the hand should be";
+    // tools/vr_measure/laserhand.py)
+    if (g_Vars.currentplayer->gunctrl.weaponnum == WEAPON_LASER && !vrLaserOnOffHand(WEAPON_LASER)) {
+        vrGunTrimUnturn(handnum, &off);
+    }
 
     // Two-handed weapons carry their own per-weapon base offsets above (e.g. AR34/Shotgun/Sniper use
     // (4,16,-8) vs the default (0,16,4)), and BOTH hands read the same one -- which is why they sit
@@ -6434,16 +5968,8 @@ void vr_gun_pos_rot(int handnum, struct hand* hand) {
         vrBuildGunRotation(handnum, hand, qf, &hand->posrotmtx);
     }
 
-    // Apply per-weapon Z roll correction
-    if (zRollAngle != 0.0f) {
-        struct coord rot = { 0.0f, 0.0f, zRollAngle };
-        Mtxf rotZ;
-        Mtxf tmp;
-        mtx4LoadIdentity(&rotZ);
-        mtx4LoadRotation(&rot, &rotZ);
-        mtx4MultMtx4(&hand->posrotmtx, &rotZ, &tmp);
-        hand->posrotmtx = tmp;
-    }
+    // Apply per-weapon Z roll correction (and the Laser's turn)
+    vrGunTurnApply(&hand->posrotmtx);
 
     // The offset is applied properly at RENDER (bgun0f0a5550), which has the gun's world
     // orientation; here we just stash it and keep the plain view-space sum so the other tick-time
@@ -6456,9 +5982,12 @@ void vr_gun_pos_rot(int handnum, struct hand* hand) {
     hand->posrotmtx.m[3][0] = hand->posoffset.x;
     hand->posrotmtx.m[3][1] = hand->posoffset.y;
     hand->posrotmtx.m[3][2] = hand->posoffset.z;
+
+    // The gun's kick (the Shotgun, the revolvers), after the two-hand aim
+    vrGunKickApply(handnum, hand);
+
     hand->useposrot = true;
     mtx4Copy(&hand->posrotmtx, &hand->posmtx);
-    VrDebugAnimFrame();
 
 }
 
@@ -6482,6 +6011,14 @@ s32 bgunTickInc(struct handweaponinfo* info, s32 handnum, s32 lvupdate)
     hand->useposrot = false;
 
     vr_gun_pos_rot(handnum, hand); // VR
+
+    if (handnum == HAND_RIGHT) {
+        // The holsters may change the gun side: before the reload reads the controllers
+        vrHolsterTick();
+    }
+
+    // Manual reload: the right gun is driven, the left gun of a pair (holsters on) only tracked
+    vrReloadTick(handnum);
 
     switch (hand->state) {
         case HANDSTATE_IDLE:
@@ -6559,7 +6096,16 @@ void bgunTickHand(s32 handnum)
     if (handnum);
 #endif
 
+    bgunTickPendingChrWeapon(handnum);
     bgunGetWeaponInfo(&info, handnum);
+
+    // VR: a gun parked in this tick (vrHolsterTick runs in HAND_RIGHT's tick, after
+    // bgunTickGameplay set the triggers) does not fire
+    if (vrHandParked(handnum)) {
+        hand->triggeron = false;
+        hand->triggerreleased = true;
+    }
+
     lvupdate = g_Vars.lvupdate60;
     hand->animframeinc = g_Vars.lvupdate60;
 
@@ -6570,10 +6116,19 @@ void bgunTickHand(s32 handnum)
 #endif
 
     while (i >= 0) {
+        s32 prevstate = hand->state;
+
         lvupdate = bgunTickInc(&info, handnum, lvupdate);
         i--;
 
         if (lvupdate <= 0) {
+            // VR: a holster switch goes on into the change in the tick it starts, also in a tick
+            // with no 60ths to pass on (lvupdate60 is 0 on some frames above 60 Hz)
+            if (vrHolsterFastSwitch() && hand->state == HANDSTATE_CHANGEGUN
+                && prevstate != HANDSTATE_CHANGEGUN) {
+                continue;
+            }
+
             break;
         }
     }
@@ -7099,7 +6654,14 @@ void bgunTickGunLoad(void)
 
         osSyncPrintf("BriGun:  obLoadto at 0x%08x, size %d\n", ptr, loadsize);
 
+        // VR: the preprocess picks the parts to drop by the weapon being loaded. It read the global
+        // weaponnum, which some of the hand code sets in passing (last to the left hand's weapon in
+        // bgunTickGameplay); a holster switch loads in the tick it commits, when that is still the
+        // old weapon, so fists after a gun kept both hands per hand. Set for this load only: other
+        // model loads (the main menu's gun) read the global as before.
+        g_VrGunLoadWeaponnum = vrHolsterFastSwitch() ? player->gunctrl.gunmemnew : -1;
         modeldef = fileLoadToAddr(player->gunctrl.loadfilenum, FILELOADMETHOD_EXTRAMEM, (u8*)ptr, loadsize);
+        g_VrGunLoadWeaponnum = -1;
 
         // Reserve some space for textures
         allocsize = fileGetLoadedSize(player->gunctrl.loadfilenum) + 0xe00;
@@ -7300,6 +6862,13 @@ void bgunTickMasterLoad(void)
             }
 
             filenum = weaponGetFileNum(newweaponnum);
+
+#ifndef PLATFORM_N64
+            // VR: the combat boost is held as the data uplink (invitem_combatboost)
+            if (newweaponnum == WEAPON_COMBATBOOST) {
+                filenum = FILE_GCOMMSUPLINK;
+            }
+#endif
 
             if (player->gunctrl.masterloadstate != MASTERLOADSTATE_LOADED || newweaponnum != player->gunctrl.gunmemtype) {
                 if (filenum) {
@@ -7841,16 +7410,7 @@ void bgunCreateThrownProjectile(s32 handnum, struct gset* gset)
         velocity.z = gundir.z * 1.6666666f;
     }
 
-    else if (VrMotionThrowing &&
-             (gset->weaponnum == WEAPON_GRENADE  ||
-              gset->weaponnum == WEAPON_NBOMB    ||
-              gset->weaponnum == WEAPON_ECMMINE  ||
-              gset->weaponnum == WEAPON_PROXIMITYMINE ||
-              gset->weaponnum == WEAPON_TIMEDMINE     ||
-              gset->weaponnum == WEAPON_REMOTEMINE ||
-              (gset->weaponnum == WEAPON_LAPTOPGUN && gset->weaponfunc == FUNC_SECONDARY)||
-              (gset->weaponnum == WEAPON_DRAGON && gset->weaponfunc == FUNC_SECONDARY)||
-              (gset->weaponnum == WEAPON_COMBATKNIFE && gset->weaponfunc == FUNC_SECONDARY))) {
+    else if (VrMotionThrowing && vrMotionThrowWeapon(gset->weaponnum, gset->weaponfunc)) {
         // VR Motion Throwing is enabled: the velocity has already been calculated by vr_throw()
         // in bgunTickIncAttackingThrow, so `velocity` is left unchanged here.
         // do nothing
@@ -8417,9 +7977,12 @@ void bgunSwivel(f32 screenx, f32 screeny, f32 crossdamp, f32 aimdamp)
         }
     }
 
-    // Compute the raw weapon direction in screen space
+    // Compute the raw weapon direction in screen space. VR: not before the first frame has set the
+    // camera's world-to-screen matrix (it is NULL at level start): with holsters on, the level-start
+    // equip no longer waits 3 ticks to free the old gun, so a hand is in use in the first tick,
+    // before any frame is drawn.
     for (h = 0; h < 2; h++) {
-        if (!ignore[h]) {
+        if (!ignore[h] && camGetWorldToScreenMtxf() != NULL) {
             hand = &player->hands[h];
             Mtxf *matrix = hand->useposrot ? &hand->posrotmtx : &hand->posmtx;
 
@@ -8520,7 +8083,9 @@ void bgunSwivel(f32 screenx, f32 screeny, f32 crossdamp, f32 aimdamp)
 
     if(!vr_invert_hands) {
         // --- Store the left-hand position for the HUD crosshair (sight.c only) ---
-        vr_LeftCrossValid = !ignore[HAND_LEFT] && player->hands[HAND_LEFT].inuse;
+        // A parked gun (hidden while the other gun reloads) has no crosshair
+        vr_LeftCrossValid = !ignore[HAND_LEFT] && player->hands[HAND_LEFT].inuse
+            && !vrHandParked(HAND_LEFT);
         if (vr_LeftCrossValid) {
             f32 lx = x[HAND_LEFT] * screenwidth * 0.5f + screenwidth * 0.5f;
             f32 ly = y[HAND_LEFT] * screenheight * 0.5f + screenheight * 0.5f;
@@ -8654,6 +8219,68 @@ void bgunCalculatePlayerShotSpread(struct coord* gunpos2d, struct coord* gundir2
         vr_dir.y /= norm;
         vr_dir.z /= norm;
     }
+
+    // VR: the CMP150's Follow Lock-on (vrCmpFollowLockOn) and the Farsight's Target Locator aim from
+    // the muzzle at what the original turns the crosshair or the view onto, all in camera space, as VR
+    // shots ignore both. The CMP150: the target its crosshair follows (autoaimTick: the first locked
+    // target inside the middle three quarters of the view, 2/3 up a chr's box), at the depth of the
+    // target's prop. The Farsight, in sight mode (aimed with two hands, Task J8a) with its secondary
+    // selected: the target farsightChooseTarget picks (the enemy nearest the view's line, walls or
+    // not), at its chest, where the original turns the view (Task J8d, the user: "farsights target
+    // locator needs the cmp150 treatment")
+    if (handnum == HAND_RIGHT) {
+        struct coord target;
+        bool vrhastarget = false;
+
+        if (vrCmpFollowLockOn() && player->autoxaimprop != NULL && player->autoxaimprop == player->autoyaimprop) {
+            f32 aimpos[2];
+            struct coord ray;
+
+            target = player->autoxaimprop->pos;
+            aimpos[0] = (player->autoaimx + 1.0f) * camGetScreenWidth() * 0.5f + camGetScreenLeft();
+            aimpos[1] = (player->autoaimy + 1.0f) * camGetScreenHeight() * 0.5f + camGetScreenTop();
+            cam0f0b4c3c(aimpos, &ray, 1.0f);
+            mtx4TransformVecInPlace(camGetWorldToScreenMtxf(), &target);
+
+            if (target.z < 0.0f && ray.z < 0.0f) {
+                f32 depth = target.z / ray.z;
+
+                target.x = ray.x * depth;
+                target.y = ray.y * depth;
+                target.z = ray.z * depth;
+                vrhastarget = true;
+            }
+        } else if (bgunGetWeaponNum(HAND_RIGHT) == WEAPON_FARSIGHT && hand->gset.weaponfunc == FUNC_SECONDARY
+                && player->insightaimmode && player->autoerasertarget != NULL && player->autoeraserdist > 0
+                && player->autoerasertarget->chr != NULL) {
+            struct chrdata *chr = player->autoerasertarget->chr;
+
+            target.x = player->autoerasertarget->pos.x;
+            target.y = chr->ground + chr->height * 0.65f;
+            target.z = player->autoerasertarget->pos.z;
+            mtx4TransformVecInPlace(camGetWorldToScreenMtxf(), &target);
+            vrhastarget = true;
+        }
+
+        if (vrhastarget) {
+            struct coord muzzle = hand->muzzlepos;
+            struct coord d;
+            f32 len;
+
+            mtx4TransformVecInPlace(camGetWorldToScreenMtxf(), &muzzle);
+            d.x = target.x - muzzle.x;
+            d.y = target.y - muzzle.y;
+            d.z = target.z - muzzle.z;
+            len = sqrtf(d.x * d.x + d.y * d.y + d.z * d.z);
+
+            if (len > 0.0001f) {
+                vr_dir.x = d.x / len;
+                vr_dir.y = d.y / len;
+                vr_dir.z = d.z / len;
+            }
+        }
+    }
+
     // --- Apply spread to vr_dir ---
     // Build two axes perpendicular to vr_dir (right and up),
     // then perturb the direction by a random angle within that plane.
@@ -8687,7 +8314,7 @@ void bgunCalculatePlayerShotSpread(struct coord* gunpos2d, struct coord* gundir2
         // Same scale as the original: spread in pixels / screen width → angle
         float spread_angle = scaledspread / camGetScreenWidth() * viGetFovY() * (3.14159265f / 180.0f);
 
-        if(VrWeaponRecoil && VrTwoHandsGun(g_Vars.currentplayer->gunctrl.weaponnum) && get_button_state(0, "grip")) {
+        if(VrWeaponRecoil && VrTwoHandsGun(g_Vars.currentplayer->gunctrl.weaponnum) && vrTwoHandGripHeld()) {
             spread_angle *= 0.5f; // spread -50%
         }
 
@@ -8844,6 +8471,105 @@ void bgunFreeWeapon(s32 handnum)
     bgunFreeHeldRocket(handnum);
 }
 
+// VR: the rest of a holster switch, in the tick that committed it, so the frame drawn after this
+// tick shows the new weapon on the hand: no frame without it, none with the old gun. The model load
+// runs to the end at once (the files are in memory; bgunLoadAll does the same after a pause), then
+// each hand waiting in the load goes on to the raise and to idle, which bgunTickIncChangeGun's
+// holster paths do in one call. The pose is rebuilt first, as bgunTickInc does, for the new
+// weapon's grip offset. A load that cannot run now (the gun memory is not the gun's) is left to
+// the per-frame load and the next ticks, as before.
+static void bgunFinishFastSwitch(void)
+{
+    struct player *player = g_Vars.currentplayer;
+    struct gunctrl *ctrl = &player->gunctrl;
+    s32 waiting = false;
+    s32 h, i;
+
+    // Not committed yet: a hand is still busy (firing, a reload, a throw)
+    if (ctrl->switchtoweaponnum >= 0) {
+        return;
+    }
+
+    for (h = 0; h < 2; h++) {
+        if (player->hands[h].state == HANDSTATE_CHANGEGUN
+            && player->hands[h].stateminor == HANDSTATEMINOR_CHANGEGUN_LOAD) {
+            waiting = true;
+        }
+    }
+
+    if (!waiting) {
+        return;
+    }
+
+    if (ctrl->gunmemnew >= 0 && ctrl->gunmemowner == GUNMEMOWNER_BONDGUN && !ctrl->loadall) {
+        u64 start = sysGetMicroseconds();
+
+        // Bounded: each call is one stage (the lock wait, the hands, the gun, its textures a few
+        // at a time, the cartridge)
+        for (i = 0; i < 256 && !bgunIsLoaded(); i++) {
+            bgunTickMasterLoad();
+        }
+
+        vrHolsterNoteLoad((s32) (sysGetMicroseconds() - start));
+    }
+
+    for (h = 0; h < 2; h++) {
+        struct hand *hand = &player->hands[h];
+        struct handweaponinfo info;
+        s32 prevstate = hand->state;
+        s32 result;
+
+        if (hand->state != HANDSTATE_CHANGEGUN || hand->stateminor != HANDSTATEMINOR_CHANGEGUN_LOAD) {
+            continue;
+        }
+
+        bgunGetWeaponInfo(&info, h);
+        hand->useposrot = false;
+        vr_gun_pos_rot(h, hand);
+        result = bgunTickIncChangeGun(&info, h, hand, 0);
+
+        // bgunTickInc's bookkeeping
+        hand->statelastframe = hand->stateframes;
+
+        if (hand->state != prevstate) {
+            hand->statelastframe = -result;
+        } else {
+            hand->stateframes -= result;
+            hand->statecycles++;
+        }
+    }
+}
+
+
+/**
+ * Put on the disguise: it leaves the inventory and the hand goes back to the
+ * previous weapon. The original does this as the switch to it completes.
+ */
+void bgunWearDisguise(s32 weaponnum)
+{
+    struct player *player = g_Vars.currentplayer;
+    struct chrdata *chr = player->prop->chr;
+
+    sndStart(var80095200, SFX_DISGUISE_ON, 0, -1, -1, -1, -1, -1);
+
+    vrHolsterHudLine("Disguise on", 0, -1);
+
+    player->disguised = true;
+
+    chr->hidden |= CHRHFLAG_DISGUISED;
+
+    if (g_Vars.stagenum == STAGE_RESCUE) {
+        chr->hidden |= CHRHFLAG_UNTARGETABLE;
+    }
+
+    invRemoveItemByNum(weaponnum);
+
+    // VR: with holsters the core's weapon follows the disguise
+    if (!vrHolsterEngineSwitch()) {
+        bgunCycleBack();
+    }
+}
+
 void bgunTickSwitch2(void)
 {
     struct player* player = g_Vars.currentplayer;
@@ -8857,7 +8583,13 @@ void bgunTickSwitch2(void)
             struct hand* lefthand;
             struct hand* righthand;
 
-            if (currentPlayerGetDeviceState(ctrl->switchtoweaponnum) != DEVICESTATE_UNEQUIPPED) {
+            // VR: a device drawn from the chest pouch is held, its trigger the switch
+            // (vrHolsterIsDevice); the original only toggles devices from the inventory
+            if (currentPlayerGetDeviceState(ctrl->switchtoweaponnum) != DEVICESTATE_UNEQUIPPED
+#ifndef PLATFORM_N64
+                && !(vrHolsterActive() && vrHolsterIsDevice(ctrl->switchtoweaponnum))
+#endif
+                ) {
                 ctrl->switchtoweaponnum = WEAPON_UNARMED;
             }
 
@@ -8911,7 +8643,16 @@ void bgunTickSwitch2(void)
                 righthand->inuse = true;
             }
 
-            if (ctrl->weaponnum == WEAPON_REMOTEMINE) {
+            // VR: a holster switch takes the knife away at once, also mid wind-up (it runs in the idle
+            // state): its flags must not throw the next knife drawn
+            if (weaponnum == WEAPON_COMBATKNIFE && ctrl->weaponnum != WEAPON_COMBATKNIFE
+                && vrHolsterActive()) {
+                bgunKnifeReset();
+            }
+
+            // VR holsters: the remote mine is a single, with no detonator in the left hand: the off
+            // hand stays free (the fists draw it) and a B tap detonates (vrHolsterBTapDetonates)
+            if (ctrl->weaponnum == WEAPON_REMOTEMINE && !vrHolsterActive()) {
                 ctrl->dualwielding = true;
             }
 
@@ -8971,21 +8712,11 @@ void bgunTickSwitch2(void)
             ctrl->switchtoweaponnum = -1;
             ctrl->fnfader = 0;
 
-            if (ctrl->weaponnum == WEAPON_DISGUISE40 || ctrl->weaponnum == WEAPON_DISGUISE41) {
-                struct chrdata* chr = player->prop->chr;
-
-                sndStart(var80095200, SFX_DISGUISE_ON, 0, -1, -1, -1, -1, -1);
-
-                g_Vars.currentplayer->disguised = true;
-
-                chr->hidden |= CHRHFLAG_DISGUISED;
-
-                if (g_Vars.stagenum == STAGE_RESCUE) {
-                    chr->hidden |= CHRHFLAG_UNTARGETABLE;
-                }
-
-                invRemoveItemByNum(ctrl->weaponnum);
-                bgunCycleBack();
+            // VR: with holsters the disguise is held (the briefcase in the hand) and
+            // the trigger puts it on (vrHolsterDeviceTrigger), not the draw
+            if ((ctrl->weaponnum == WEAPON_DISGUISE40 || ctrl->weaponnum == WEAPON_DISGUISE41)
+                    && !vrHolsterActive()) {
+                bgunWearDisguise(ctrl->weaponnum);
             }
 
             ctrl->curfnstr = 0;
@@ -9002,6 +8733,9 @@ void bgunTickSwitch2(void)
         }
     }
 
+    if (vrHolsterFastSwitch()) {
+        bgunFinishFastSwitch();
+    }
 }
 
 void bgunEquipWeapon(s32 weaponnum)
@@ -9070,6 +8804,12 @@ void bgunSwitchToPrevious(void)
         struct player* player = g_Vars.currentplayer;
         s32 dualweaponnum;
 
+        // VR: with holsters the return after a throw or a deployed laptop gun is the core's
+        // weapon (fists when the hands are empty)
+        if (vrHolsterEngineSwitch()) {
+            return;
+        }
+
 #if VERSION >= VERSION_NTSC_1_0
         if (invHasSingleWeaponIncAllGuns(player->gunctrl.prevweaponnum)) {
             bgunEquipWeapon2(HAND_RIGHT, player->gunctrl.prevweaponnum);
@@ -9088,6 +8828,82 @@ void bgunSwitchToPrevious(void)
     }
 }
 
+// The weapons a forward cycle moves to (right and left hand). Reads only. start >= 0: cycle from
+// that weapon held single instead of the hands' current or pending weapons.
+static void bgunChooseCycleForward(s32 start, s32 *ptr1, s32 *ptr2)
+{
+    s32 weaponnum1;
+    s32 weaponnum2;
+    struct player* player = g_Vars.currentplayer;
+
+    weaponnum1 = start >= 0 ? start : bgunGetSwitchToWeapon(HAND_RIGHT);
+    weaponnum2 = start >= 0 ? WEAPON_NONE : bgunGetSwitchToWeapon(HAND_LEFT);
+
+    if (weaponnum1 > WEAPON_PSYCHOSISGUN || weaponnum2 > WEAPON_PSYCHOSISGUN) {
+        weaponnum1 = player->gunctrl.prevweaponnum;
+        // VR: the A-tap never selects dual wield (pairs come from
+        // holsters), even when returning to a previous weapon that was
+        // held dual
+        weaponnum2 = WEAPON_NONE;
+    }
+    else {
+        invChooseCycleForwardWeapon(&weaponnum1, &weaponnum2, false);
+    }
+
+    *ptr1 = weaponnum1;
+    *ptr2 = weaponnum2;
+}
+
+// The weapons a back cycle moves to (right and left hand). Reads only. start: as for
+// bgunChooseCycleForward.
+static void bgunChooseCycleBack(s32 start, s32 *ptr1, s32 *ptr2)
+{
+    s32 weaponnum1;
+    s32 weaponnum2;
+    struct player* player = g_Vars.currentplayer;
+
+    weaponnum1 = start >= 0 ? start : bgunGetSwitchToWeapon(HAND_RIGHT);
+    weaponnum2 = start >= 0 ? WEAPON_NONE : bgunGetSwitchToWeapon(HAND_LEFT);
+
+    if (weaponnum2 == WEAPON_REMOTEMINE) {
+        weaponnum2 = WEAPON_NONE;
+    }
+
+    // VR
+    if (weaponnum2 == WEAPON_UNARMED) {
+        weaponnum2 = WEAPON_NONE;
+    }
+
+    if (weaponnum1 > WEAPON_PSYCHOSISGUN || weaponnum2 > WEAPON_PSYCHOSISGUN) {
+        weaponnum1 = player->gunctrl.prevweaponnum;
+        // VR: never select dual wield (pairs come from holsters), even
+        // when returning to a previous weapon that was held dual. This
+        // runs for the A-tap, when a disguise is used up and from
+        // aiChrDropWeapon while holding a gadget
+        weaponnum2 = WEAPON_NONE;
+    }
+    else {
+        invChooseCycleBackWeapon(&weaponnum1, &weaponnum2, false);
+    }
+
+    *ptr1 = weaponnum1;
+    *ptr2 = weaponnum2;
+}
+
+s32 bgunGetCycleWeapon(bool forward, s32 start)
+{
+    s32 weaponnum1;
+    s32 weaponnum2;
+
+    if (forward) {
+        bgunChooseCycleForward(start, &weaponnum1, &weaponnum2);
+    } else {
+        bgunChooseCycleBack(start, &weaponnum1, &weaponnum2);
+    }
+
+    return weaponnum1;
+}
+
 void bgunCycleForward(void)
 {
     s32 weaponnum1;
@@ -9095,19 +8911,7 @@ void bgunCycleForward(void)
     struct player* player = g_Vars.currentplayer;
 
     if (g_Vars.tickmode != TICKMODE_CUTSCENE) {
-        weaponnum1 = bgunGetSwitchToWeapon(HAND_RIGHT);
-        weaponnum2 = bgunGetSwitchToWeapon(HAND_LEFT);
-
-//        vr_log("weaponnum1 %d", weaponnum1);
-//        vr_log("weaponnum2 %d", weaponnum2);
-
-        if (weaponnum1 > WEAPON_PSYCHOSISGUN || weaponnum2 > WEAPON_PSYCHOSISGUN) {
-            weaponnum1 = player->gunctrl.prevweaponnum;
-            weaponnum2 = player->gunctrl.prevweaponnum * player->gunctrl.prevwasdualwielding;
-        }
-        else {
-            invChooseCycleForwardWeapon(&weaponnum1, &weaponnum2, false);
-        }
+        bgunChooseCycleForward(-1, &weaponnum1, &weaponnum2);
 
         if (weaponnum2 != weaponnum1) {
             player->gunctrl.dualwielding = false;
@@ -9128,25 +8932,7 @@ void bgunCycleBack(void)
     struct player* player = g_Vars.currentplayer;
 
     if (g_Vars.tickmode != TICKMODE_CUTSCENE) {
-        weaponnum1 = bgunGetSwitchToWeapon(HAND_RIGHT);
-        weaponnum2 = bgunGetSwitchToWeapon(HAND_LEFT);
-
-        if (weaponnum2 == WEAPON_REMOTEMINE) {
-            weaponnum2 = WEAPON_NONE;
-        }
-
-        // VR
-        if (weaponnum2 == WEAPON_UNARMED) {
-            weaponnum2 = WEAPON_NONE;
-        }
-
-        if (weaponnum1 > WEAPON_PSYCHOSISGUN || weaponnum2 > WEAPON_PSYCHOSISGUN) {
-            weaponnum1 = player->gunctrl.prevweaponnum;
-            weaponnum2 = player->gunctrl.prevweaponnum * player->gunctrl.prevwasdualwielding;
-        }
-        else {
-            invChooseCycleBackWeapon(&weaponnum1, &weaponnum2, false);
-        }
+        bgunChooseCycleBack(-1, &weaponnum1, &weaponnum2);
 
         if (weaponnum2 == WEAPON_NONE) {
             player->gunctrl.dualwielding = false;
@@ -9298,6 +9084,12 @@ void bgunAutoSwitchWeapon(void)
     bool wantammo = false;
 
     if (g_Vars.tickmode == TICKMODE_CUTSCENE) {
+        return;
+    }
+
+    // VR: with holsters the core decides: an empty gun stays in the hand, anything else goes back
+    // to the core's weapon
+    if (vrHolsterEngineSwitch()) {
         return;
     }
 
@@ -9506,6 +9298,11 @@ void bgunUpdateSlide(s32 handnum)
     struct weaponfunc* funcdef = currentPlayerGetWeaponFunction(handnum);
     struct player* player = g_Vars.currentplayer;
 
+    // Manual reload: the off-hand is racking and vrReloadTick moves the slide with it
+    if (vrReloadSlideHeld(handnum)) {
+        return;
+    }
+
     if (funcdef && ((funcdef->type & 0xff) == INVENTORYFUNCTYPE_SHOOT)) {
         struct weaponfunc_shoot* shootfunc = (struct weaponfunc_shoot*)funcdef;
         slidemax = shootfunc->slidemax;
@@ -9522,7 +9319,11 @@ void bgunUpdateSlide(s32 handnum)
             player->hands[handnum].slideinc = false;
         }
     }
-    else if (player->hands[handnum].loadedammo[FUNC_PRIMARY] > 0) {
+    // VR: the slide comes forward with no round loaded too. Locked back on an empty gun (the Falcon
+    // 2s, the MagSec 4, the Phoenix, the Mauler) it looked racked, unlike every other empty gun, which
+    // shows nothing and clicks on the trigger (the user: "falcon when out of ammo should not have its
+    // rack racked like it is when empty, other weapons dont do that")
+    else {
         if (bgun0f098a44(&player->hands[handnum], 3)) {
             // Slide is moving forwards
             if (player->hands[handnum].slidetrans > 0.0f) {
@@ -10026,7 +9827,10 @@ void bgunStartDetonateAnimation(s32 playernum)
     s32 prevplayernum = g_Vars.currentplayernum;
     setCurrentPlayerNum(playernum);
 
-    if (g_Vars.currentplayer->hands[HAND_LEFT].gset.weaponnum == WEAPON_REMOTEMINE) {
+    // VR holsters: the remote mine is a single, but bgunTickSwitch2 names it in both hands' gset:
+    // the unused left hand plays no detonator animation
+    if (g_Vars.currentplayer->hands[HAND_LEFT].gset.weaponnum == WEAPON_REMOTEMINE
+        && (g_Vars.currentplayer->hands[HAND_LEFT].inuse || !vrHolsterActive())) {
         bgunStartAnimation(var80070200, 1, &g_Vars.currentplayer->hands[HAND_LEFT]);
     }
 
@@ -11013,6 +10817,40 @@ static inline f32 bgunGetFovOffsetY(void)
 static Mtxf g_vrScopeGunMtx[2];
 static bool g_vrScopeGunMtxValid[2] = { false, false };
 
+// VR: the animation the idle pose cache (unk0dd8) was built from: the cache outlives it, so after a
+// shot the model holds the fire animation while the hand idles on the equip animation's pose
+static s32 g_VrIdlePoseAnim = -1;
+
+// VR: the Laptop Gun's idle pose is the equip animation's last frame (ANIM_GUN_LAPTOP_EQUIP, the same
+// from frame 40 on), which leaves part 39 (matrix 42, a block skinned into the body's display list,
+// and 43, its bottom plate) 97 units back along the body's z, and 43 a unit along -x: a gap ahead of
+// the stock, around the handle. The fire and reload animations and the rest pose have them in place
+// (tools/vr_measure, Task F8a; the rotations agree). A flaw of the asset the flat camera never shows,
+// so it is not gated on manual reload: while the hand idles on that pose (from the cache, or live with
+// the model on the animation), both are moved by the offset on the drawn body's rows. The drawn
+// matrices are absolute and carry the 0.1 and bg_scale scales and the left-handed mirror (row 0
+// negated), so a body-frame offset in model units goes through the body's rows as it stands.
+// The unequip animation, which has a gap of its own, plays only while switching away: left.
+static void vrLaptopIdlePoseFix(struct hand *hand, s32 weaponnum, bool cached, Mtxf *mtxs)
+{
+    static const f32 offset[2][3] = { { 0.0f, 0.0f, 97.0f }, { 1.0f, 0.0f, 97.0f } };
+    Mtxf *body = &mtxs[33];
+    s32 i, j;
+
+    if (weaponnum != WEAPON_LAPTOPGUN || hand->gunmodel.definition->nummatrices <= 43
+        || hand->animmode != HANDANIMMODE_IDLE
+        || (cached ? g_VrIdlePoseAnim : modelGetAnimNum(&hand->gunmodel)) != ANIM_GUN_LAPTOP_EQUIP) {
+        return;
+    }
+
+    for (i = 0; i < 2; i++) {
+        for (j = 0; j < 3; j++) {
+            mtxs[42 + i].m[3][j] += offset[i][0] * body->m[0][j] + offset[i][1] * body->m[1][j]
+                + offset[i][2] * body->m[2][j];
+        }
+    }
+}
+
 void bgun0f0a5550(s32 handnum) {
     u8 *mtxallocation;
     Mtxf sp2c4;
@@ -11096,6 +10934,18 @@ void bgun0f0a5550(s32 handnum) {
         || hand->inuse == false
         || bgunGetGunMemType() == 0) {
         hand->visible = false;
+    }
+
+    // VR: the CamSpy's drone is in the hand only until it is launched
+    if (weaponnum == WEAPON_EYESPY && player->eyespy && !player->eyespy->held) {
+        hand->visible = false;
+    }
+
+    // VR: a parked gun (hidden while the other gun reloads) is not drawn. bgunUpdateLasersight is
+    // then not called for it, so its last laser beam and dot are freed here.
+    if (vrHandParked(handnum)) {
+        hand->visible = false;
+        lasersightFree(handnum);
     }
 
     if (hand->visible) {
@@ -11251,7 +11101,6 @@ void bgun0f0a5550(s32 handnum) {
 
         // VR - adjust weapon size according to the level's vr_world_scale
         float bg_scale = bgGetScaleBg2Gfx();
-        VrCopyScale = bgGetScaleBg2Gfx();
         if (bg_scale != 1.0f && bg_scale != 0.0f) {
             mtx00015f04(1.0f * bg_scale, &sp2c4);
 
@@ -11271,6 +11120,13 @@ void bgun0f0a5550(s32 handnum) {
 
 
         int handToMirror = VrLeftHandedMode ? HAND_RIGHT : HAND_LEFT;
+
+        // The Laser's model is a left arm: with holsters it is on the gun hand (vrLaserOnOffHand),
+        // so it is mirrored when that is the right hand, not the left
+        if (weaponnum == WEAPON_LASER && !vrLaserOnOffHand(weaponnum)) {
+            handToMirror = VrLeftHandedMode ? HAND_LEFT : HAND_RIGHT;
+        }
+
         if ((weaponHasFlag(weaponnum, WEAPONFLAG_DUALFLIP) || weaponnum == WEAPON_UNARMED) &&
             handnum == handToMirror) {
             mtx00015e24(-1, &sp2c4);
@@ -11302,6 +11158,14 @@ void bgun0f0a5550(s32 handnum) {
         }
 
         mtx00015f04(0.10000001f, &sp2c4);
+
+        // VR: a held object's model (a device, a disguise, the door decoder) centred on the grip,
+        // ahead of it, and sized (g_VrHeldFits; nothing for any other weapon). The remote mine's row
+        // is G5 Building's Detonator's only.
+        if (weaponnum != WEAPON_REMOTEMINE || vrHolsterIsG5Detonator(weaponnum)) {
+            vrHeldFitApply(weaponnum, &sp2c4);
+        }
+
         mtx4Copy(&sp2c4, (Mtxf *) mtxallocation);
 
         if (hand->unk0cc8_04 > 0) {
@@ -11421,7 +11285,14 @@ void bgun0f0a5550(s32 handnum) {
 #endif
 
 
-            if (a0) {
+            // VR: a model with a chr's root (the CamSpy's drone, CeyespyZ: one matrix) has no gun
+            // animation to pose it, and modelUpdateChrNodeMtx would read the hand's anim (none,
+            // anim 0: a human's) against the drone's skeleton. Its matrix is the hand's.
+            if ((hand->gunmodel.definition->rootnode->type & 0xff) == MODELNODETYPE_CHRINFO) {
+                for (spcc = 0; spcc < hand->gunmodel.definition->nummatrices; spcc++) {
+                    mtx4Copy(&sp2c4, &hand->gunmodel.matrices[spcc]);
+                }
+            } else if (a0) {
                 if (player->hands[HAND_RIGHT].unk0dd4 == -1) {
                     mtx4LoadIdentity(&sp84);
 
@@ -11450,6 +11321,7 @@ void bgun0f0a5550(s32 handnum) {
 #endif
 
                     player->hands[HAND_RIGHT].unk0dd4 = 1;
+                    g_VrIdlePoseAnim = modelGetAnimNum(&hand->gunmodel);
 
                     hand->gunmodel.matrices = spc4;
 
@@ -11493,6 +11365,11 @@ void bgun0f0a5550(s32 handnum) {
 
             g_ModelJointPositionedFunc = 0;
 
+            // VR: G5 Building's Detonator alone on the grip (vrG5DetonatorPlace)
+            if (vrHolsterIsG5Detonator(weaponnum)) {
+                vrG5DetonatorPlace((Mtxf *) mtxallocation, hand->gunmodel.definition->nummatrices, &sp2c4);
+            }
+
             node = modelGetPart(modeldef, MODELPART_GUN_SLIDE);
 
             if (node) {
@@ -11515,6 +11392,44 @@ void bgun0f0a5550(s32 handnum) {
                 mtx->m[3][2] += sp74.f[2];
             }
 
+            // VR: the Laptop Gun's idle pose with its block and bottom plate put back in place, first
+            // of the VR moves, so the reload's capture and playbacks see the gun as drawn
+            vrLaptopIdlePoseFix(hand, weaponnum, a0, (Mtxf *) mtxallocation);
+
+            // Manual reload: a clip drawn at its row's seat on the body (the Laptop Gun's, under the
+            // front half, where its own matrix sits in the grip outside the reload), first, so every
+            // read and move of the clip below starts there.
+            vrReloadSeatClip(handnum, modeldef, (Mtxf *) mtxallocation);
+            // Manual reload: a holder the clip sits in (the Tranquilizer's vial) drawn open while the
+            // clip is out, before the capture, so the well is taken from the open holder.
+            vrReloadPoseHolder(handnum, modeldef, (Mtxf *) mtxallocation);
+            // Manual reload: after an insert the gun plays the rest of its reload animation on its own
+            // parts (the Phoenix's orb pressed in and its side plates), and after B a row's eject
+            // range (the Laptop Gun's pump), posed relative to the gun body, so the body and the hands
+            // stay on the controller. Before the capture, as the holder.
+            // The driven magazine's reload animation (the selected function's row: Task F9e)
+            struct vrreloaddef *vrPlayDef = vrReloadOwnedDef(handnum);
+            bool vrPlayHeldShown = vrReloadPosePlay(handnum, &hand->gunmodel,
+                    vrPlayDef != NULL && hand->gset.weaponnum >= 0 && hand->gset.weaponnum < NUM_WEAPONS
+                    ? VR_ANIM_ID(hand->gset.weaponnum, vrPlayDef->ammoindex) : -1);
+            // Manual reload: a rack on a part with no slide of its own (the RC-P120's knob) drawn
+            // pulled back with the hand, as the slide offset above moves a slide. Before the capture.
+            vrReloadMoveRack(handnum, modeldef, (Mtxf *) mtxallocation);
+            // Manual reload grab areas: record the clip and slide parts as drawn (slide offset
+            // included, before anything below hides or moves parts) for the next gameplay ticks.
+            vrReloadCaptureParts(handnum, modeldef, (Mtxf *) mtxallocation, bg_scale);
+            // A clip sliding into the well: moved after the capture, so the well stays put.
+            vrReloadPlaceClip(handnum, modeldef, (Mtxf *) mtxallocation);
+            // An ejected clip falling out of the gun: replaces the clip matrix, so it comes after the slide in.
+            vrReloadDropClip(handnum, modeldef, (Mtxf *) mtxallocation, bg_scale);
+            // A clip in the gun drawn narrower than modelled where the grip is thinner: after the
+            // eject record above, so a dropped clip falls at full width.
+            vrReloadNarrowClip(handnum, modeldef, (Mtxf *) mtxallocation);
+            // No clip drawn in the gun: its matrix collapsed, so a face of the clip on another drawn
+            // part would go with it (harmless for part 0x42, the CMP150's clip base, which
+            // bgun0f098030 hides on every frame). Last of the clip's moves.
+            vrReloadCollapseClip(handnum, modeldef, (Mtxf *) mtxallocation);
+
 
             if (sp1e4[0] != NULL) {
                 *sp1e4[0] = false;
@@ -11536,8 +11451,8 @@ void bgun0f0a5550(s32 handnum) {
                     currentWeapon == WEAPON_CROSSBOW || currentWeapon == WEAPON_LASER || (!VrMotionThrowing && currentWeapon == WEAPON_UNARMED);
             if (!CrossbowLaserUnarmed) {
                 // bgun0f0a5550 runs once per hand, so the primary arm side follows handnum:
-                // RIGHT hand's gun -> +1 (elbow tucks outward-right), LEFT hand's gun -> -1 (outward-left).
-                vr_wrist_rot(hand, modeldef, hand->gunmodel.matrices, bg_scale, (handnum == HAND_RIGHT) ? 1.0f : -1.0f);
+                // RIGHT hand's gun -> +1 (its arm on the gun-hand side), LEFT hand's gun -> -1 (the other side).
+                vr_wrist_rot(modeldef, hand->gunmodel.matrices, (handnum == HAND_RIGHT) ? 1.0f : -1.0f);
             }
 
             if (vrSwitchGun == true && modeldef != NULL) {
@@ -11547,7 +11462,33 @@ void bgun0f0a5550(s32 handnum) {
             }
 
             if (VrTwoHandsGun(g_Vars.currentplayer->gunctrl.weaponnum)) {
-                VrTwoHandGrip = get_button_state(0, "grip");
+                bool vrFreeGrip = get_button_state(0, "grip");
+
+                // Manual reload: the free hand's grip also takes and holds a clip (the AR34 and the K7
+                // Avenger are two-handed guns with reload rows). A hand holding one is not the support
+                // hand: with the grip counted, the gun would draw its own left hand on the forend
+                // beside the copy model's hand with the clip, and aim along the line to the clip hand.
+                // The grip stays off the gun until it is let go, as a clip pushed in to seated inserts
+                // with the grip still held and the hand at the clip, behind the pistol grip. A hand
+                // racking (the RC-P120's knob, gripped and pulled) is not the support hand either: the
+                // core ends the rack as the pull completes, and the latch keeps that grip off the gun
+                // until it is let go. Nor is a grip while the gun waits for that rack, from its press
+                // (Task F7b: the two-hand aim turned the gun, and the knob with it, before the core
+                // took the grab, so the rack never started), nor while it waits for its slap (Task F8d:
+                // the Laptop Gun was aimed with both hands with the slap still due), nor anywhere in a
+                // reload (Task F9a: after B the Laptop Gun could still be aimed with both hands):
+                // vrReloadMidReload covers them all, from B to ready; a gun fired dry with its clip in
+                // and a ready gun keep the grip as support. The Shotgun's pump is the exception
+                // (vrReloadPumpHand, Task G0c): the support hand pumps the forend it holds, which slides
+                // along the barrel, so the grip stays the support and the two-hand aim stays on.
+                if ((vrReloadFreeHandBusy(HAND_RIGHT) && !vrReloadPumpHand(HAND_RIGHT))
+                        || (vrFreeGrip && vrReloadMidReload(HAND_RIGHT))) {
+                    VrTwoHandReloadGrip = true;
+                } else if (!vrFreeGrip) {
+                    VrTwoHandReloadGrip = false;
+                }
+
+                VrTwoHandGrip = vrFreeGrip && !VrTwoHandReloadGrip;
             }
 
             if (weaponnum == WEAPON_REMOTEMINE || weaponnum == WEAPON_LASER) {
@@ -11566,18 +11507,10 @@ void bgun0f0a5550(s32 handnum) {
                 vrBuildMtxPartsList(hand, player->gunctrl.gunmodeldef, false);
             }
 
-            if(!VRDebugMtxPos) {
-                if (VrInReloadLoop && !VrReloadDisable && VrReloadGrip && MtxReplacePart) {
-                    const VrReloadZoneConfig *cfg = &gVrReloadZones[g_Vars.currentplayer->gunctrl.weaponnum][ReloadZone];
-                    if (cfg->valid) {
-                        vrHideOnly(cfg->partsToShowId);
-                        vrHideGunParts(hand->gunmodel.matrices, handnum);
-                    }
-                }
-            }
-
-
-            if(VrHideArms) {
+            // Only for a gun model with hands (vrModelHasHands, as vr_wrist_rot): the handless classic
+            // guns have no arms, and their matrix 1 is another part (the muzzle position). The fists
+            // have arms though they load as the gun model with no hands model (unarmed)
+            if(VrHideArms && vrModelHasHands(player->gunctrl.gunmodeldef)) {
                 vrHideOnly(ArmsMtx);
                 vrHideGunParts(hand->handmodel.matrices, handnum);
             }
@@ -11587,7 +11520,52 @@ void bgun0f0a5550(s32 handnum) {
                             || g_Vars.currentplayer->gunctrl.weaponnum == WEAPON_FALCON2_SILENCER
                             || g_Vars.currentplayer->gunctrl.weaponnum == WEAPON_FALCON2_SCOPE;
 
-            if(FALCON2S && sVrMagPhysicallyInGun && !VrInReloadLoop){
+            // The gunviscmds (bgun0f098030, earlier this frame) hide the clip part of the Falcon 2
+            // and the MagSec 4 (the Mauler's, the Tranquilizer's and the CMP150's show by default),
+            // so an owned gun's clip is shown or hidden here from the manual reload state, or the
+            // gun draws with no clip. A gun it does not own keeps the engine's visibility (the
+            // Falcon 2 and MagSec 4: no clip at idle, the reload script's clip during a reload).
+            // The Falcon 2 alone is the exception: its clip always shows (the VR port's look before
+            // manual reload).
+            struct vrreloaddef *def = vrReloadOwnedDef(handnum); /* NULL unless this hand's gun is owned */
+            if (def) {
+                // A row with no clip part (the Phoenix) has nothing to draw in the gun
+                if (def->clippart >= 0) {
+                    bgunSetPartVisible(def->clippart,
+                            vrReloadClipShownInGun(handnum) || vrReloadClipFalling(handnum), hand, modeldef);
+                }
+                // The off-hand's clip in this model hangs off its left wrist, which the idle pose
+                // puts far from the gun (the Tranquilizer's vial, about 60 cm below it): the
+                // gunviscmds hide the other rows' but not the Tranquilizer's, which only the
+                // engine's reload hides, so it is hidden here. The copy-weapon model, with its own
+                // part states, draws the clip in the off-hand. The exceptions are the playback of
+                // an insert (the Phoenix's orb pressed in), which posed it on the gun above, and, for
+                // a row with no clip part, its fall after the playback (the Cyclone's bar). Every part
+                // of a held part made of several (the DY357's six rounds) goes together.
+                for (s32 vrhp = def->heldpart; vrhp <= vrReloadHeldPartLast(def); vrhp++) {
+                    bgunSetPartVisible(vrhp,
+                            vrPlayHeldShown || (def->clippart < 0 && vrReloadClipFalling(handnum)), hand, modeldef);
+                }
+
+                // The gun's other magazine, the one the selected function does not use (Task F9e: the
+                // SuperDragon's grenade magazine with the rifle selected, or the rifle clip with the
+                // grenade launcher), is drawn in or out as it was left; its hand part stays hidden
+                bool vrParkedIn = true;
+                struct vrreloaddef *vrParked = vrReloadParkedDef(handnum, &vrParkedIn);
+
+                if (vrParked) {
+                    if (vrParked->clippart >= 0) {
+                        bgunSetPartVisible(vrParked->clippart, vrParkedIn, hand, modeldef);
+                    }
+
+                    for (s32 vrhp = vrParked->heldpart; vrhp <= vrReloadHeldPartLast(vrParked); vrhp++) {
+                        bgunSetPartVisible(vrhp, false, hand, modeldef);
+                    }
+                }
+            } else if (FALCON2S) {
+                // Not driven by manual reload (manual reload off, cheat): always show
+                // the clip, as the old block did whenever its own reload was idle. Falcon only:
+                // the other rows' guns look as in the original game with manual reload off.
                 bgunSetPartVisible(MODELPART_FALCON2_MAGAZINE1, true, hand, modeldef);
             }
 
@@ -11680,6 +11658,16 @@ void bgun0f0a5550(s32 handnum) {
     }
 
 
+    // VR manual reload: the spent rounds' casings fall from the swung-out chambers at the end of B's
+    // swing (a row with ejectcasings: the DY357s), through the engine's own path for the reload
+    // script's popoutsackofpills, which it counts in unk0cc8_04 for this draw. Taken once, and the
+    // count cleared after, so they fall once (a hand not drawn has no model: none fall)
+    s32 vrCasings = vrReloadTakeCasings(handnum);
+
+    if (vrCasings > 0) {
+        hand->unk0cc8_04 = vrCasings;
+    }
+
     switch (weaponnum) {
         case WEAPON_ROCKETLAUNCHER:
             bgunUpdateRocketLauncher(hand, handnum, (struct weaponfunc_shootprojectile *) funcdef);
@@ -11690,6 +11678,10 @@ void bgun0f0a5550(s32 handnum) {
                 bgunUpdateMagnum(hand, handnum, modeldef, (Mtxf *) mtxallocation);
             }
             break;
+    }
+
+    if (vrCasings > 0) {
+        hand->unk0cc8_04 = 0;
     }
 
     if (hand->firing && g_Vars.lvupdate240 != 0) {
@@ -11915,11 +11907,14 @@ void bgunTickGameplay2(void)
                     hand->matmot1 -= usedqty;
                     hand->loadedammo[0] -= usedqty;
 
-                    // If out of ammo, turn off cloak
+                    // If out of ammo, turn off cloak. VR: manual reload never refills the clip by
+                    // itself, so the empty clip ends it whatever the reserve (it stayed on for free,
+                    // and the trigger, a dry click now, could not turn it off: Task J8)
                     if (hand->loadedammo[0] == 0 && hand->state != HANDSTATE_RELOAD) {
                         s32 stilltogo = hand->matmot1;
 
-                        if (stilltogo > player->ammoheldarr[player->gunctrl.ammotypes[0]]) {
+                        if (stilltogo > player->ammoheldarr[player->gunctrl.ammotypes[0]]
+                                || vrReloadOwnsAmmo(HAND_RIGHT, 0)) {
                             g_Vars.currentplayer->devicesactive &= ~DEVICE_CLOAKRCP120;
                         }
                     }
@@ -11970,6 +11965,12 @@ void bgunTickGameplay2(void)
     else {
         player->hands[HAND_LEFT].ejectstate = EJECTSTATE_INACTIVE;
 
+        // VR: a hand out of use is not drawn. A holster switch can take the left hand out of use
+        // in the tick it starts, with no frame computed in the load, so its visibility from its
+        // last frame in use (fists) would stand while its model is the new gun's.
+        if (vrHolsterFastSwitch()) {
+            player->hands[HAND_LEFT].visible = false;
+        }
     }
 
     bgunIsUsingSecondaryFunction();
@@ -14565,40 +14566,566 @@ GLOBAL_ASM(
 );
 #endif
 #else
+// VR: true when the off-hand draws no gun of its own: not dual wielding, or the left gun of the
+// pair is parked (hidden while the right gun reloads, holster core rule 9). The off-hand copy of
+// the gun (the held clip) and the fists then draw for it as for a single gun.
+static bool vrOffHandHasNoGun(void)
+{
+    return !g_Vars.currentplayer->gunctrl.dualwielding || vrHandParked(HAND_LEFT);
+}
+
+// VR holsters: a throwable holds one per clip, so the right hand's reload after a throw only
+// equips the next one: the off hand stays free (the fists draw it, in their idle pose)
+static bool vrThrowableReequip(struct player *player)
+{
+    return vrHolsterActive() && player->hands[HAND_RIGHT].state == HANDSTATE_RELOAD
+        && weaponHasFlag(player->gunctrl.weaponnum, WEAPONFLAG_THROWABLE);
+}
+
+// VR: whether the off-hand copy is drawn in bgunRender, and the models line's copy field. This tests
+// the loaded copy model (g_VrCopyWepModeldef), not the weapon: the copy must have hands. The copy
+// draw keeps the left hand's matrices 17 to 32 (LeftHandMtx, vrLeftHandAndMagMtx), turns 17 and 18
+// (vr_wrist_rot) and draws the hands model with the copy's matrix array, so a copy without them has
+// no left hand to draw. weaponnum only keeps out the ECM mine and, with holsters off, the weapons
+// past the PD run (see below). This replaces a test of weaponnum < 36 (WEAPON_PP9I: unarmed to the
+// combat boost, the run of PD weapons at the start of g_Weapons): every copy below 36 has hands (33
+// to 50 matrices, ntsc-final ROM), and above it the KL01313, KF7 Special, ZZT, DMC, AR53 and RC-P45
+// (3 to 5 matrices) have none and stay out. Of those with the bones above 36:
+// - the Psychosis Gun (39: the Tranquilizer's model) has a reload row, so it always comes in: its
+//   free hand and held vial are drawn and the guide measures from the vial, as the Tranquilizer's;
+// - the PP9i and CC13 (38), the second rocket launcher (38) and the data uplink (35), which have
+//   hands, and the test gun (50), which has the bones but no hands model (no WEAPONFLAG_HASHANDS),
+//   come in only with holsters on, where the fists draw their free off hand (as C6c gave the ECM
+//   mine); with holsters off they play as before: the uplink's and the second rocket launcher's
+//   own left hand stays drawn, so the copy's would make two, and the PP9i, CC13 (their left hand
+//   hidden by gunviscmds_classicpistol) and the test gun drew no off hand.
+// The gadgets and items drawn as props (1 matrix, no parts) and the IR scanner (3, no parts) get no
+// copy (vrCopyWepLoad). The ECM mine (35) stays out as before: the holsters give it the fists only
+// (vrOffHandFistsOnly). G5 Building's Detonator (the remote mine, 37) stays out: it is drawn alone,
+// as the held devices, with nothing in the free hand.
+static bool vrOffHandCopyDrawn(s32 weaponnum)
+{
+    return vrModelHasHands(g_VrCopyWepModeldef) && weaponnum != WEAPON_ECMMINE
+        && !vrHolsterIsG5Detonator(weaponnum)
+        && (weaponnum < WEAPON_PP9I || vrReloadGetDef(weaponnum, -1) != NULL || vrHolsterActive());
+}
+
+// VR holsters: the ECM mine has no copy draw (vrOffHandCopyDrawn), but its free off hand gets the
+// fists as the other throwables'
+static bool vrOffHandFistsOnly(s32 weaponnum)
+{
+    return vrHolsterActive() && weaponnum == WEAPON_ECMMINE;
+}
+
+// VR: the weapons whose free off hand gets the off-hand pose and the fists in bgunRender (the
+// copy draw itself is vrOffHandCopyDrawn only), and the models line's fists field
+static bool vrOffHandPoseWeapon(s32 weaponnum)
+{
+    return vrOffHandCopyDrawn(weaponnum) || vrOffHandFistsOnly(weaponnum);
+}
+
 // Is the off-hand genuinely FREE, i.e. safe to replace with the fists model? Returns false whenever
-// the legacy copy hand is doing real work -- physically on the gun (reload / mag grab / two-hand grip /
-// reload-zone hold snap), mid weapon-switch, or on weapons whose left hand has a real role. Note it
-// deliberately does NOT test bare VrReloadGrip: that is just "left grip held", and gating on it would
-// pop the fists out every time the player squeezed the grip.
+// the legacy copy hand is doing real work -- physically on the gun (reload / two-hand grip),
+// mid weapon-switch, or on weapons whose left hand has a real role. Note it deliberately does NOT
+// test the bare left grip: gating on it would pop the fists out every time the player squeezed it.
 static bool vrOffHandIsFree(struct player *player)
 {
     struct hand *rhand = &player->hands[HAND_RIGHT];
     struct hand *lhand = &player->hands[HAND_LEFT];
     s32 wep = player->gunctrl.weaponnum;
 
+    // the left gun of a pair, unless parked
+    if (!vrOffHandHasNoGun()) return false;
 
-    // off-hand is on the gun
-    if (rhand->state == HANDSTATE_RELOAD) return false;
-    if (lhand->state == HANDSTATE_RELOAD) return false;
-    if (VrInReloadLoop) return false;
-    if (VrGrabMagBelt) return false;
+    if (vrReloadOwnsGun(HAND_RIGHT)) {
+        // Manual reload drives the gun, so the old reload conditions do not apply: the off-hand
+        // is busy only while it holds a clip. The gates below still apply.
+        if (vrReloadHandHoldsClip(HAND_RIGHT)) return false;
+        // ... or slaps the clip (a row with rackslap): the copy model draws it
+        if (vrReloadSlapDrawn(HAND_RIGHT, NULL)) return false;
+        // ... or the engine reloads a function whose ammo has no row (none today; manual reload
+        // never reloads its own ammo so), whose left hand the gun model draws
+        if (rhand->state == HANDSTATE_RELOAD) return false;
+    } else {
+        // off-hand is on the gun
+        if (rhand->state == HANDSTATE_RELOAD && !vrThrowableReequip(player)) return false;
+        if (lhand->state == HANDSTATE_RELOAD) return false;
+    }
     if (VrTwoHandGrip && VrTwoHandsGun(wep)) return false;
 
     // mid weapon switch: the legacy path runs the lower/raise pitch dip
     if (rhand->state == HANDSTATE_CHANGEGUN || rhand->state == HANDSTATE_AUTOSWITCH) return false;
+    // (this also covers the left hand's lower: its minor means LOWER only in the CHANGEGUN state,
+    // and a parked gun's attack uses the same minor number)
     if (lhand->state == HANDSTATE_CHANGEGUN || lhand->state == HANDSTATE_AUTOSWITCH) return false;
-    if (lhand->stateminor == HANDSTATEMINOR_CHANGEGUN_LOWER) return false;
 
     // weapons whose off-hand legitimately isn't free
     if (wep == WEAPON_UNARMED || wep == WEAPON_NONE) return false;  // already real fists on both hands
-    if (wep == WEAPON_REMOTEMINE) return false;                     // left hand holds the detonator
-    if (wep == WEAPON_LASER) return false;
+    if (wep == WEAPON_REMOTEMINE && !vrHolsterActive()) return false; // left hand holds the detonator
+    if (vrLaserOnOffHand(wep)) return false; // worn on the off hand (holsters off)
 
     // asset / load-state safety
     if (player->gunctrl.handmodeldef == NULL) return false;
     if (!bgunIsLoaded()) return false;
 
     return true;
+}
+
+// VR: the render-time half of the holster models line: vrHolsterNoteFrame asks for it on the frame it
+// logs that line, and bgunRender logs each hand just before its gun model is drawn (or that it is
+// not drawn): the root's translation and handedness (mirrored when the determinant is negative),
+// every matrix's distance from the root, the matrices carrying the hide signal (m[0][3] > 1.5) and
+// the collapsed ones (scale under 0.001), then each toggle (T) and distance (D) node's rwdata index
+// and visible state, in tree order
+static bool g_VrHandRenderDump = false;
+
+void bgunRequestHandRenderDump(void)
+{
+    g_VrHandRenderDump = true;
+}
+
+static void bgunDumpHandRender(s32 h, struct hand *hand)
+{
+    char buf[1400];
+    s32 n, i, len = sizeof(buf);
+    struct modeldef *def = hand->gunmodel.definition;
+    Mtxf *m = hand->gunmodel.matrices;
+    struct modelnode *node;
+
+    if (!hand->visible || def == NULL || m == NULL) {
+        snprintf(buf, len, "%c not drawn: use%d vis%d", h == HAND_RIGHT ? 'R' : 'L', hand->inuse, hand->visible);
+        vrHolsterDiagText(buf);
+        return;
+    }
+
+    n = snprintf(buf, len, "%c n%d root(%.1f %.1f %.1f) det%.4f dist[", h == HAND_RIGHT ? 'R' : 'L',
+            def->nummatrices, m[0].m[3][0], m[0].m[3][1], m[0].m[3][2],
+            m[0].m[0][0] * (m[0].m[1][1] * m[0].m[2][2] - m[0].m[1][2] * m[0].m[2][1])
+            - m[0].m[0][1] * (m[0].m[1][0] * m[0].m[2][2] - m[0].m[1][2] * m[0].m[2][0])
+            + m[0].m[0][2] * (m[0].m[1][0] * m[0].m[2][1] - m[0].m[1][1] * m[0].m[2][0]));
+
+    for (i = 0; i < def->nummatrices && n > 0 && n < len; i++) {
+        f32 dx = m[i].m[3][0] - m[0].m[3][0], dy = m[i].m[3][1] - m[0].m[3][1], dz = m[i].m[3][2] - m[0].m[3][2];
+
+        n += snprintf(buf + n, len - n, i ? " %.0f" : "%.0f", sqrtf(dx * dx + dy * dy + dz * dz));
+    }
+
+    if (n > 0 && n < len) {
+        n += snprintf(buf + n, len - n, "] hid[");
+    }
+
+    for (i = 0; i < def->nummatrices && n > 0 && n < len; i++) {
+        if (m[i].m[0][3] > 1.5f) {
+            n += snprintf(buf + n, len - n, " %d", i);
+        }
+    }
+
+    if (n > 0 && n < len) {
+        n += snprintf(buf + n, len - n, " ] col[");
+    }
+
+    for (i = 0; i < def->nummatrices && n > 0 && n < len; i++) {
+        f32 sc = sqrtf(m[i].m[0][0] * m[i].m[0][0] + m[i].m[0][1] * m[i].m[0][1] + m[i].m[0][2] * m[i].m[0][2]);
+
+        if (sc < 0.001f) {
+            n += snprintf(buf + n, len - n, " %d", i);
+        }
+    }
+
+    if (n > 0 && n < len) {
+        n += snprintf(buf + n, len - n, " ] nodes");
+    }
+
+    node = def->rootnode;
+
+    while (node && n > 0 && n < len) {
+        u32 type = node->type & 0xff;
+
+        if (type == MODELNODETYPE_TOGGLE || type == MODELNODETYPE_DISTANCE) {
+            union modelrwdata *rw = modelGetNodeRwData(&hand->gunmodel, node);
+
+            n += snprintf(buf + n, len - n, " %c%d:%d", type == MODELNODETYPE_TOGGLE ? 'T' : 'D',
+                    type == MODELNODETYPE_TOGGLE ? node->rodata->toggle.rwdataindex : node->rodata->distance.rwdataindex,
+                    rw == NULL ? -1 : type == MODELNODETYPE_TOGGLE ? rw->toggle.visible : rw->distance.visible);
+        }
+
+        if (node->child) {
+            node = node->child;
+        } else {
+            while (node) {
+                if (node->next) {
+                    node = node->next;
+                    break;
+                }
+
+                node = node->parent;
+            }
+        }
+    }
+
+    vrHolsterDiagText(buf);
+}
+
+// VR: what bgunRender draws per hand, for the PD-VRR line a few frames after a holster switch or a
+// park (vrHolsterNoteFrame): the weapon, dual wield, the hands model (handfilenum) and per hand its
+// use, visibility (set by bgun0f0a5550 this frame), whether its gun is parked, state/stateminor,
+// mode, anim mode and number, and whether its model is the loaded gun's; then whether the off-hand
+// weapon copy and the VR fists draw, and the idle pose cache state (unk0dd4)
+void bgunDescribeHandModels(char *buf, s32 len)
+{
+    struct player *player = g_Vars.currentplayer;
+    struct gunctrl *ctrl = &player->gunctrl;
+    s32 copy = vrOffHandHasNoGun() && vrOffHandCopyDrawn(ctrl->weaponnum)
+        && ctrl->weaponnum != WEAPON_LASER;
+    // The fists as bgunRender decides them: the Laser's off hand is free with holsters (Task F11h),
+    // which vrOffHandIsFree reads below
+    s32 fistpose = g_VrCopyWepModeldef != NULL && vrOffHandHasNoGun() && vrOffHandPoseWeapon(ctrl->weaponnum);
+    s32 n, h;
+
+    n = snprintf(buf, len, "w%d dual%d hands%d(%d) side%d", ctrl->weaponnum, ctrl->dualwielding,
+            ctrl->handmodeldef != NULL, ctrl->handfilenum, VrLeftHandedMode);
+
+    for (h = 0; h < 2 && n > 0 && n < len; h++) {
+        struct hand *hand = &player->hands[h];
+
+        n += snprintf(buf + n, len - n,
+                " | %c use%d vis%d park%d st%d/%d mode%d am%d anim%d%s gun%d%s%s",
+                h == HAND_RIGHT ? 'R' : 'L', hand->inuse, hand->visible, vrHandParked(h),
+                hand->state, hand->stateminor, hand->mode, hand->animmode, hand->anim.animnum,
+                hand->gunmodel.anim == &hand->anim ? "" : "(not hand's)", hand->gset.weaponnum,
+                hand->gunmodel.definition == ctrl->gunmodeldef ? "" : " model-stale",
+                ctrl->handmodeldef != NULL && hand->handmodel.definition != ctrl->handmodeldef ? " hands-stale" : "");
+
+        // The two hand bones as drawn this frame (bone 2 the right hand, 18 the left; the length of
+        // row 0 is the scale, 0 when collapsed; the root distance in model units) and the gun
+        // model's hand part toggles (1 shown, 0 hidden, - none)
+        if (hand->visible && hand->gunmodel.matrices != NULL && hand->gunmodel.definition != NULL
+            && hand->gunmodel.definition->nummatrices > 18 && n > 0 && n < len) {
+            Mtxf *m = hand->gunmodel.matrices;
+            struct modelnode *pl = modelGetPart(hand->gunmodel.definition, MODELPART_HAND_LEFT);
+            struct modelnode *pr = modelGetPart(hand->gunmodel.definition, MODELPART_HAND_RIGHT);
+            f32 s2 = sqrtf(m[2].m[0][0] * m[2].m[0][0] + m[2].m[0][1] * m[2].m[0][1] + m[2].m[0][2] * m[2].m[0][2]);
+            f32 s18 = sqrtf(m[18].m[0][0] * m[18].m[0][0] + m[18].m[0][1] * m[18].m[0][1] + m[18].m[0][2] * m[18].m[0][2]);
+            f32 dx = m[18].m[3][0] - m[2].m[3][0], dy = m[18].m[3][1] - m[2].m[3][1], dz = m[18].m[3][2] - m[2].m[3][2];
+
+            n += snprintf(buf + n, len - n, " b2 s%.3f h%.0f b18 s%.3f h%.0f d%.1f tL%c tR%c",
+                    s2, m[2].m[0][3], s18, m[18].m[0][3], sqrtf(dx * dx + dy * dy + dz * dz),
+                    pl ? '0' + (char) hand->unk0a6c[pl->rodata->toggle.rwdataindex] : '-',
+                    pr ? '0' + (char) hand->unk0a6c[pr->rodata->toggle.rwdataindex] : '-');
+        }
+    }
+
+    // The idle pose cache's hand bones (relative to the model root)
+    if (player->hands[HAND_RIGHT].unk0dd8 != NULL && player->hands[HAND_RIGHT].unk0dd4 != -1 && n > 0 && n < len) {
+        Mtxf *c = player->hands[HAND_RIGHT].unk0dd8;
+
+        n += snprintf(buf + n, len - n, " | cache b2 s%.3f b18 s%.3f (%.0f %.0f %.0f)",
+                sqrtf(c[2].m[0][0] * c[2].m[0][0] + c[2].m[0][1] * c[2].m[0][1] + c[2].m[0][2] * c[2].m[0][2]),
+                sqrtf(c[18].m[0][0] * c[18].m[0][0] + c[18].m[0][1] * c[18].m[0][1] + c[18].m[0][2] * c[18].m[0][2]),
+                c[18].m[3][0], c[18].m[3][1], c[18].m[3][2]);
+    }
+
+    if (n > 0 && n < len) {
+        snprintf(buf + n, len - n, " | copy%d%s fists%d cache%d", copy,
+                g_VrCopyWepModeldef != NULL && g_VrCopyWepModeldef != ctrl->gunmodeldef ? "-stale" : "",
+                fistpose && vrOffHandIsFree(player), player->hands[HAND_RIGHT].unk0dd4);
+    }
+}
+
+// VR holsters: with the off hand free (vrOffHandIsFree: the fists draw it), only the fists draw the
+// left hand. The right hand's model (its gun and hands models) and the off-hand copy of the weapon
+// then hide every left-hand part before they are drawn: the hands model's left-hand matrices (the
+// hide signal, as vrHideGunParts sends it) and the MODELPART_HAND_LEFT toggles of the model and of
+// its hands model, restored after the draw. The part-visibility lists hide only the hands model's
+// left hand, and only for some weapons; the grenade's and N-bomb's gun models carry both hands in
+// their own geometry, on the same bones and with no toggle (checkpoint C run 1: 324 triangles in
+// their gun model, against 70 for the timed mine), so their left arm followed the gun hand.
+//
+// The left-hand matrices come from the hands model's structure (gunctrl.handmodeldef, drawn with
+// the gun model's matrices): those of the position nodes under its MODELPART_HAND_LEFT toggle, less
+// any the MODELPART_HAND_RIGHT toggle also uses. Without such nodes the matrices its display lists
+// hang from are listed for the log only: a display list's bone can carry other geometry, so they
+// are not hidden (the toggles still are). Cached per hands model, as the fists are.
+#define VR_LEFT_HAND_MAX_MTX 48
+static s32 sVrLeftMtx[VR_LEFT_HAND_MAX_MTX];
+static s32 sVrLeftMtxCount;
+static struct modeldef *sVrLeftMtxDef;
+static s32 sVrLeftMtxFile = -1;
+static const char *sVrLeftMtxFrom = "none";
+static bool sVrLeftMtxHide;     // the list is the position nodes' (hidden), not the display lists'
+
+// The PD-VRR line of the dump frame (bgunRequestHandRenderDump): what each model would draw of the
+// left hand before the hide
+static char sVrLeftDiag[900];
+static s32 sVrLeftDiagLen;
+
+// Old toggle states of a model and its hands model while the hide is on (vrFreeLeftHandRestore)
+struct vrlefthide {
+    bool *rw[2];
+    bool old[2];
+};
+
+// Adds to list the matrix of each node of type a or b in the subtree of sub. A toggle's or distance
+// node's children are walked whatever its state (node->child is set at each draw).
+static void vrLeftHandWalk(struct modelnode *sub, u32 a, u32 b, s32 *list, s32 *count)
+{
+    struct modelnode *node = sub;
+
+    while (node) {
+        u32 type = node->type & 0xff;
+        struct modelnode *child = node->child;
+
+        if (type == a || type == b) {
+            s32 idx = modelFindNodeMtxIndex(node, 0);
+            s32 k;
+
+            for (k = 0; k < *count && list[k] != idx; k++) {
+            }
+
+            // Never the root (0)
+            if (idx > 0 && k == *count && *count < VR_LEFT_HAND_MAX_MTX) {
+                list[(*count)++] = idx;
+            }
+        }
+
+        if (type == MODELNODETYPE_TOGGLE) {
+            child = node->rodata->toggle.target;
+        } else if (type == MODELNODETYPE_DISTANCE) {
+            child = node->rodata->distance.target;
+        }
+
+        if (child) {
+            node = child;
+        } else {
+            while (node != NULL && node != sub && node->next == NULL) {
+                node = node->parent;
+            }
+
+            node = node == NULL || node == sub ? NULL : node->next;
+        }
+    }
+}
+
+// The same for the children of the hands model's toggle part
+static void vrLeftHandWalkPart(struct modeldef *md, s32 part, u32 a, u32 b, s32 *list, s32 *count)
+{
+    struct modelnode *toggle = modelGetPart(md, part);
+    struct modelnode *sub;
+
+    if (toggle == NULL || (toggle->type & 0xff) != MODELNODETYPE_TOGGLE) {
+        return;
+    }
+
+    for (sub = toggle->rodata->toggle.target; sub != NULL; sub = sub->parent == toggle ? sub->next : NULL) {
+        vrLeftHandWalk(sub, a, b, list, count);
+    }
+}
+
+static void vrLeftHandEnsureBuilt(void)
+{
+    struct gunctrl *ctrl = &g_Vars.currentplayer->gunctrl;
+    struct modeldef *md = ctrl->handmodeldef;
+    s32 right[VR_LEFT_HAND_MAX_MTX];
+    s32 nright = 0;
+    s32 i, k, n;
+
+    if (md == sVrLeftMtxDef && (s32) ctrl->handfilenum == sVrLeftMtxFile) {
+        return;
+    }
+
+    sVrLeftMtxDef = md;
+    sVrLeftMtxFile = (s32) ctrl->handfilenum;
+    sVrLeftMtxCount = 0;
+    sVrLeftMtxFrom = "none";
+    sVrLeftMtxHide = false;
+
+    if (md == NULL || md->rootnode == NULL) {
+        return;
+    }
+
+    vrLeftHandWalkPart(md, MODELPART_HAND_LEFT, MODELNODETYPE_POSITION, MODELNODETYPE_POSITIONHELD,
+            sVrLeftMtx, &sVrLeftMtxCount);
+    sVrLeftMtxFrom = "position nodes";
+    sVrLeftMtxHide = true;
+
+    if (sVrLeftMtxCount == 0) {
+        vrLeftHandWalkPart(md, MODELPART_HAND_LEFT, MODELNODETYPE_GUNDL, MODELNODETYPE_DL, sVrLeftMtx,
+                &sVrLeftMtxCount);
+        sVrLeftMtxFrom = "display lists (not hidden)";
+        sVrLeftMtxHide = false;
+    }
+
+    vrLeftHandWalkPart(md, MODELPART_HAND_RIGHT, MODELNODETYPE_POSITION, MODELNODETYPE_POSITIONHELD, right, &nright);
+    vrLeftHandWalkPart(md, MODELPART_HAND_RIGHT, MODELNODETYPE_GUNDL, MODELNODETYPE_DL, right, &nright);
+
+    for (i = 0, n = 0; i < sVrLeftMtxCount; i++) {
+        for (k = 0; k < nright && right[k] != sVrLeftMtx[i]; k++) {
+        }
+
+        if (k == nright) {
+            sVrLeftMtx[n++] = sVrLeftMtx[i];
+        }
+    }
+
+    sVrLeftMtxCount = n;
+
+    if (n == 0) {
+        sVrLeftMtxFrom = "none";
+    }
+}
+
+// The visible flag of a model's MODELPART_HAND_LEFT toggle, NULL when it has none
+static bool *vrLeftToggleRw(struct model *model)
+{
+    struct modelnode *node;
+    union modelrwdata *rw;
+
+    if (model == NULL || model->definition == NULL || model->rwdatas == NULL) {
+        return NULL;
+    }
+
+    node = modelGetPart(model->definition, MODELPART_HAND_LEFT);
+
+    if (node == NULL || (node->type & 0xff) != MODELNODETYPE_TOGGLE) {
+        return NULL;
+    }
+
+    rw = modelGetNodeRwData(model, node);
+
+    return rw ? &rw->toggle.visible : NULL;
+}
+
+static void vrLeftDiagCat(const char *text)
+{
+    s32 len = sizeof(sVrLeftDiag);
+
+    if (sVrLeftDiagLen >= 0 && sVrLeftDiagLen < len) {
+        s32 w = snprintf(sVrLeftDiag + sVrLeftDiagLen, len - sVrLeftDiagLen, "%s", text);
+
+        sVrLeftDiagLen = w < 0 ? len : sVrLeftDiagLen + w;
+    }
+}
+
+// Adds a model to the dump line: its left toggle and its hands model's (1 shown, 0 hidden, - none)
+// and the matrices of list (count of them) it would draw (no hide signal, not collapsed), before
+// the hide
+static void vrFreeLeftHandNote(const char *label, struct model *gun, struct model *hands, Mtxf *m, s32 n,
+        bool hide, const s32 *list, s32 count)
+{
+    char num[48];
+    bool *gl = vrLeftToggleRw(gun);
+    bool *hl = vrLeftToggleRw(hands);
+    s32 k;
+
+    if (sVrLeftDiagLen == 0) {
+        snprintf(num, sizeof(num), "left hand: w%d hands %d left mtx[", g_Vars.currentplayer->gunctrl.weaponnum,
+                (s32) g_Vars.currentplayer->gunctrl.handfilenum);
+        vrLeftDiagCat(num);
+
+        for (k = 0; k < sVrLeftMtxCount; k++) {
+            snprintf(num, sizeof(num), k ? " %d" : "%d", sVrLeftMtx[k]);
+            vrLeftDiagCat(num);
+        }
+
+        vrLeftDiagCat("] from ");
+        vrLeftDiagCat(sVrLeftMtxFrom);
+    }
+
+    snprintf(num, sizeof(num), " | %s n%d gun tL%c hands tL%c drew[", label, n,
+            gl ? (*gl ? '1' : '0') : '-', hl ? (*hl ? '1' : '0') : '-');
+    vrLeftDiagCat(num);
+
+    for (k = 0; k < count; k++) {
+        s32 idx = list[k];
+
+        if (idx < n && m[idx].m[0][3] <= 1.5f
+                && m[idx].m[0][0] * m[idx].m[0][0] + m[idx].m[0][1] * m[idx].m[0][1]
+                + m[idx].m[0][2] * m[idx].m[0][2] >= 0.001f * 0.001f) {
+            snprintf(num, sizeof(num), " %d", idx);
+            vrLeftDiagCat(num);
+        }
+    }
+
+    vrLeftDiagCat(hide ? " ] -> hidden" : " ] kept");
+}
+
+// The hide for one model before its draw (gun with matrices m, the model of weapon weaponnum, hands
+// its hands model or NULL)
+static void vrFreeLeftHandHide(const char *label, bool note, struct model *gun, struct model *hands, Mtxf *m,
+        s32 weaponnum, struct vrlefthide *saved)
+{
+    struct model *models[2] = { gun, hands };
+    s32 n = gun != NULL && gun->definition != NULL ? gun->definition->nummatrices : 0;
+    // The Laser's arm is the model's left arm (its hands file keeps only that one): with holsters it
+    // is the gun hand's arm, mirrored onto the right hand (Task F11h), so it stays (Task F12c, the
+    // user: "the hand and arm that were under it are gone")
+    bool hide = vrHolsterActive() && vrOffHandIsFree(g_Vars.currentplayer) && weaponnum != WEAPON_LASER;
+    s32 j, k;
+
+    saved->rw[0] = saved->rw[1] = NULL;
+
+    if (m == NULL || n <= 0) {
+        return;
+    }
+
+    vrLeftHandEnsureBuilt();
+
+    if (g_VrHandRenderDump && note && vrHolsterActive()) {
+        vrFreeLeftHandNote(label, gun, hands, m, n, hide, sVrLeftMtx, sVrLeftMtxCount);
+    }
+
+    if (!hide) {
+        return;
+    }
+
+    for (k = 0; k < sVrLeftMtxCount && sVrLeftMtxHide; k++) {
+        if (sVrLeftMtx[k] < n) {
+            m[sVrLeftMtx[k]].m[0][3] = 2.0f;
+        }
+    }
+
+    for (j = 0; j < 2; j++) {
+        bool *rw = vrLeftToggleRw(models[j]);
+
+        if (rw != NULL) {
+            saved->rw[j] = rw;
+            saved->old[j] = *rw;
+            *rw = false;
+        }
+    }
+}
+
+static void vrFreeLeftHandRestore(struct vrlefthide *saved)
+{
+    s32 j;
+
+    for (j = 0; j < 2; j++) {
+        if (saved->rw[j] != NULL) {
+            *saved->rw[j] = saved->old[j];
+        }
+    }
+}
+
+// VR: the copy-weapon model posed at a frame of the gun's reload animation (animid, VR_ANIM_ID; -1:
+// none, the model as it is) with renderdata's root: the clip-hold pose and the slap's frames. The
+// anim is dropped once the pose is built, so the branches that pose the model otherwise never reuse
+// it.
+static void vrCopyWepPoseAt(struct modelrenderdata *renderdata, int animid, f32 frame)
+{
+    if (animid >= 0) {
+        if (!g_VrClipHoldAnimReady) {
+            animInit(&g_VrClipHoldAnim);
+            g_VrClipHoldAnimReady = true;
+        }
+        g_VrCopyWepModel.anim = &g_VrClipHoldAnim;
+        modelSetAnimation(&g_VrCopyWepModel, animid, false, frame, 0, 0.0f);
+    } else {
+        g_VrCopyWepModel.anim = NULL;
+    }
+
+    modelUpdateRelations(&g_VrCopyWepModel);
+    modelSetMatricesWithAnim(renderdata, &g_VrCopyWepModel);
+    g_VrCopyWepModel.anim = NULL;
 }
 
 // Mismatch: Goal uses different codegen for accessing vertices
@@ -14622,6 +15149,9 @@ void bgunRender(Gfx * *gdlptr)
         }
         return;
     }
+
+    // VR: the PD-VRR line of a holster switch ends on the first frame drawing the new weapon
+    vrHolsterNoteFrame();
 
 #ifdef PLATFORM_N64 // TODO
     gdl = zbufSaveArtifactDepths(gdl);
@@ -14666,6 +15196,10 @@ void bgunRender(Gfx * *gdlptr)
         hand = player->hands + i;
 
         weaponnum = bgunGetWeaponNum2(i);
+
+        if (g_VrHandRenderDump && !hand->visible) {
+            bgunDumpHandRender(i, hand);
+        }
 
         if (hand->visible) {
             gdl = beamRender(gdl, &hand->beam, 0, 0);
@@ -14823,8 +15357,26 @@ void bgunRender(Gfx * *gdlptr)
 
 
 
+            // VR holsters: with the off hand free, the right hand's model draws no left hand
+            struct vrlefthide vrleftsaved = { { NULL, NULL } };
+
+            if (i == HAND_RIGHT) {
+                vrFreeLeftHandHide("R", true, &hand->gunmodel,
+                        player->gunctrl.handmodeldef != NULL ? &hand->handmodel : NULL, hand->gunmodel.matrices,
+                        hand->gset.weaponnum, &vrleftsaved);
+            }
+
             // Render the gun
+            if (g_VrHandRenderDump) {
+                bgunDumpHandRender(i, hand);
+                gDPNoOpTag(renderdata.gdl++, VR_HANDTRIS_BEGIN + i);
+            }
+
             modelRender(&renderdata, &hand->gunmodel);
+
+            if (g_VrHandRenderDump) {
+                gDPNoOpTag(renderdata.gdl++, VR_HANDTRIS_END);
+            }
 
             // Render the hand
             if (player->gunctrl.handmodeldef && renderhand) {
@@ -14840,6 +15392,8 @@ void bgunRender(Gfx * *gdlptr)
 
                 renderdata.envcolour = prevcolour;
             }
+
+            vrFreeLeftHandRestore(&vrleftsaved);
 
 
             // Clean up
@@ -14865,10 +15419,14 @@ void bgunRender(Gfx * *gdlptr)
         struct hand *rhand = &player->hands[HAND_RIGHT];
         struct hand *lhand = &player->hands[HAND_LEFT];
 
-        bool OnlyWeapons = g_Vars.currentplayer->gunctrl.weaponnum < 36;
+        bool OnlyWeapons = vrOffHandCopyDrawn(g_Vars.currentplayer->gunctrl.weaponnum);
+        // The off-hand pose and the fists, without the copy for the ECM mine (vrOffHandFistsOnly).
+        // The ECM mine still needs g_VrCopyWepModeldef though its copy is never drawn: this block
+        // and the fists below hang on it, so the off hand is not drawn if the copy failed to load.
+        bool OffHandPose = vrOffHandPoseWeapon(g_Vars.currentplayer->gunctrl.weaponnum);
 
-        if (OnlyWeapons && g_VrCopyWepModeldef != NULL
-            && g_Vars.currentplayer->gunctrl.dualwielding == false) {
+        if (OffHandPose && g_VrCopyWepModeldef != NULL
+            && vrOffHandHasNoGun()) {
 
             lhand->useposrot = false;
             vr_gun_pos_rot(HAND_LEFT, lhand); // TEST
@@ -14877,17 +15435,23 @@ void bgunRender(Gfx * *gdlptr)
             f32 pitchAngle = 0.0f;
             s32 delayLower = g_Vars.normmplayerisrunning ? TICKS(12) : TICKS(16);
             s32 delayRaise = g_Vars.normmplayerisrunning ? TICKS(12) : TICKS(23);
+            // Holster switch: bgunTickIncChangeGun lowers and raises at once (a throw can hold the
+            // lower), and so does the auto switch's lower (bgunTickIncAutoSwitch), so both branches
+            // use these (the CHANGEGUN branch's AUTOSWITCH_UNEQUIP clause also matches
+            // CHANGEGUN_UNEQUIP: both are 0).
+            s32 delayChangeLower = vrHolsterFastSwitch() ? 1 : delayLower;
+            s32 delayChangeRaise = vrHolsterFastSwitch() ? 1 : delayRaise;
 
             if (rhand->state == HANDSTATE_CHANGEGUN) {
                 if (rhand->stateminor == HANDSTATEMINOR_CHANGEGUN_LOWER || rhand->stateminor == HANDSTATEMINOR_AUTOSWITCH_UNEQUIP) {
-                    pitchAngle = (f32)rhand->stateframes * MAX_PITCH / (f32)delayLower;
+                    pitchAngle = (f32)rhand->stateframes * MAX_PITCH / (f32)delayChangeLower;
 
                 } else if (rhand->stateminor == HANDSTATEMINOR_CHANGEGUN_RAISE || rhand->stateminor == HANDSTATEMINOR_CHANGEGUN_EQUIP) {
-                    pitchAngle = (f32)(delayRaise - rhand->count60) * MAX_PITCH / (f32)delayRaise;
+                    pitchAngle = (f32)(delayChangeRaise - rhand->count60) * MAX_PITCH / (f32)delayChangeRaise;
                 }
             } else if (rhand->state == HANDSTATE_AUTOSWITCH) {
                 if (rhand->stateminor == HANDSTATEMINOR_AUTOSWITCH_UNEQUIP) {
-                    pitchAngle = (f32)rhand->stateframes * MAX_PITCH / (f32)delayLower;
+                    pitchAngle = (f32)rhand->stateframes * MAX_PITCH / (f32)delayChangeLower;
                 }
             }
             // Apply pitch, move the copy hand up/down
@@ -14902,7 +15466,7 @@ void bgunRender(Gfx * *gdlptr)
 
             // Off-hand is "free" (not reloading) -> replicate the good/unarmed pose (bgun0f0a5550):
             // add the damplook step and freeze the auto-aim. During reload keep the copy-hand behavior.
-            bool offHandIdle = (rhand->state != HANDSTATE_RELOAD) && !VrInReloadLoop && !VrGrabMagBelt;
+            bool offHandIdle = (rhand->state != HANDSTATE_RELOAD) || vrThrowableReequip(player);
 
             mtx4LoadIdentity(&vr_sp234);
 
@@ -14965,22 +15529,55 @@ void bgunRender(Gfx * *gdlptr)
             // bgun0f0a5550's, so it needs its own copy of the same grip-offset placement -- omitting
             // it here is what left the off-hand misaligned while unarmed (which uses the main path)
             // looked correct. See the matching block in bgun0f0a5550 for the derivation.
+            //
+            // The free hand sits at the default grip offset (vr_gun_pos_rot's default base plus the
+            // per-player trim) whatever the gun (Task F7a): the gun's own base (the rifles', the
+            // Callisto's, the Dragons') put the fists, their wrist capture (vrReloadNoteFistWrist) and
+            // every ammo hand aligned to it 8 to 13 cm off the controller, a different place per gun,
+            // and the slap and rack tests' fixed grab point (VRR_HAND_GRAB_X, measured on the Falcon,
+            // which has the default) missed by as much. The copy model's legacy left hand (drawn on
+            // the free controller while the fists are not: a switch's dip, holsters off with the
+            // remote mine) keeps the gun's own base, which its per-weapon shove below was tuned on:
+            // vrCopyOff is what it adds back after the fists' snapshot.
+            f32 vrCopyOff[3];
+
             {
-                struct coord o = gVrGunOff[HAND_LEFT];
+                struct coord added = gVrGunOff[HAND_LEFT]; // what vr_sp274 has in it (lhand->posrotmtx.m[3])
+                struct coord o = { VrGunOffX, 16.0f + VrGunOffY, -4.0f + VrGunOffZ };
+                struct coord gun = { added.x - o.x, added.y - o.y, added.z - o.z }; // the gun's base over it
+
+                // The per-weapon base X is already mirrored with VrLeftHandedMode (vr_gun_pos_rot),
+                // the per-player X trim is not: in left-handed mode the free hand is the physical
+                // right one, so the trim is mirrored here, or that hand sits two trim widths (4.7 cm
+                // at 2.35) nearer the body's midline than a mirror of the left one. Measured from the
+                // open hand's bone (PD-VRR fistwrist): both hands read x +2.3 in the off-controller
+                // frame before, where a mirror reads -2.3. Only the turned offset is mirrored: the
+                // plain one taken back out is the one vr_sp274 got, or the difference (4.7 cm along
+                // the view's X, not turned with the hand) stays in (headset, checkpoint E run 2: the
+                // right hand read x -6.9, and y and z moved with the hand's turn).
+                if (VrLeftHandedMode) {
+                    o.x -= 2.0f * VrGunOffX;
+                }
+
                 Mtxf *pr = &lhand->posrotmtx;
                 float orx = -(o.x*pr->m[0][0] + o.y*pr->m[1][0] + o.z*pr->m[2][0]);
                 float ory =   o.x*pr->m[0][1] + o.y*pr->m[1][1] + o.z*pr->m[2][1];
                 float orz = -(o.x*pr->m[0][2] + o.y*pr->m[1][2] + o.z*pr->m[2][2]);
-                vr_sp2c4.m[3][0] += -o.x + orx;
-                vr_sp2c4.m[3][1] += -o.y + ory + bgunGetFovOffsetY();
-                vr_sp2c4.m[3][2] += -o.z + orz - bgunGetFovOffsetZ();
+                vr_sp2c4.m[3][0] += -added.x + orx;
+                vr_sp2c4.m[3][1] += -added.y + ory + bgunGetFovOffsetY();
+                vr_sp2c4.m[3][2] += -added.z + orz - bgunGetFovOffsetZ();
+
+                // The trim cancels out of the difference, its left-handed mirror too
+                vrCopyOff[0] = -(gun.x*pr->m[0][0] + gun.y*pr->m[1][0] + gun.z*pr->m[2][0]);
+                vrCopyOff[1] =   gun.x*pr->m[0][1] + gun.y*pr->m[1][1] + gun.z*pr->m[2][1];
+                vrCopyOff[2] = -(gun.x*pr->m[0][2] + gun.y*pr->m[1][2] + gun.z*pr->m[2][2]);
             }
 
 
 
             // FISTS POSE: snapshot vr_sp2c4 HERE -- at this point it is the fully world-locked free
             // left-hand frame and nothing below has run yet. Everything that follows (the per-weapon
-            // foregrip shove, vrApplyTwoHandGrip) exists purely to drag the GUN so its left-hand BONE
+            // foregrip shove) exists purely to drag the GUN so its left-hand BONE
             // lands on the controller, which is meaningless for a first-class hand model -- so the
             // fists must not inherit any of it. Then apply the same tail transforms bgun0f0a5550
             // gives the unarmed left hand.
@@ -14999,40 +15596,18 @@ void bgunRender(Gfx * *gdlptr)
                     VrFistClenchAmt += (want - VrFistClenchAmt) * 0.35f;
                 }
 
-                // Grip roll about the hand's own forward axis, to line the thumb up with the
-                // controller. Safe at the root here (unlike the legacy hand, whose origin sat at the
-                // elbow so a root roll swung the wrist): this is a first-class hand model and
-                // vr_wrist_rot re-aims the forearm afterwards, so the arm stays connected.
-                {
-                    float a = (VR_FIST_ROLL + VrFistClenchAmt * VR_FIST_ROLL_CLENCH)
-                              * (float) (M_PI / 180.0);
-
-                    if (VrLeftHandedMode) {
-                        a = -a;
-                    }
-
-                    float ca = cosf(a), sa = sinf(a);
-                    s32 c;
-                    for (c = 0;
-                         c < 3; c++) {          // rotate rows 0/1 about row 2 (local forward)
-                        float va = fist.m[0][c];
-                        float vb = fist.m[1][c];
-                        fist.m[0][c] = va * ca - vb * sa;
-                        fist.m[1][c] = va * sa + vb * ca;
-                    }
-                }
-
-                // Render bones 1-16 (the RIGHT hand) mirrored, exactly how the unarmed left hand is
-                // built (mtx00015e24 negates row 0).
-                if (!VrLeftHandedMode) {
-                    mtx00015e24(-1, &fist);
-                }
-
-
-                mtx00015f04(0.10000001f, &fist);
-                g_VrFistSp2c4 = fist;
+                // The drawn root, and the open hand's root: the manual reload pins the clip hand to
+                // where the open fists' hand bone sits, whatever the clench drawn now
+                vrFistRoot(&fist, VrFistClenchAmt, &g_VrFistSp2c4);
+                vrFistRoot(&fist, 0.0f, &g_VrFistOpenSp2c4);
                 g_VrFistReady = true;
             }
+
+            // The copy model at the gun's own base (see vrCopyOff). The held and slapping hands drawn
+            // from it are placed by the wrist capture and the gun, so only its turn reaches them
+            vr_sp2c4.m[3][0] += vrCopyOff[0];
+            vr_sp2c4.m[3][1] += vrCopyOff[1];
+            vr_sp2c4.m[3][2] += vrCopyOff[2];
 
             if(VrLeftHandedMode){
                 mtx00015e24(-1, &vr_sp2c4);
@@ -15068,24 +15643,6 @@ void bgunRender(Gfx * *gdlptr)
 
 
 
-            if(hand->animmode == HANDANIMMODE_IDLE && rhand->state == HANDSTATE_IDLE) {
-                VrReloadGrip = get_button_state(0, "grip");
-            }
-
-            if((VrInReloadLoop || VrGrabMagBelt) && get_button_state(1, "trigger")) {
-                VrReloadGrip = false;
-            }
-            if(g_Vars.currentplayer->pausemode == PAUSEMODE_PAUSED){
-                VrReloadGrip = false;
-            }
-
-            if(VrManualReloading) {
-
-                if(!sVrMagPhysicallyInGun) {
-                    vrUpdateBeltMagGrab();
-                }
-                vrReloadZone();
-            }
 
 
             mtx00015f04(0.10000001f, &vr_sp2c4);
@@ -15095,24 +15652,15 @@ void bgunRender(Gfx * *gdlptr)
         }
 
 
-        // Save the free position of the left hand before the snap
+        // Save the free position of the left hand: the clip-in-hand pose is drawn there
         g_VrLeftHandFreeSp2c4 = g_VrCopyWepSp2c4;
 
 
 
-        if (!VrTwoHandsGun(g_Vars.currentplayer->gunctrl.weaponnum)) {
-            vrApplyTwoHandGrip(
-                    rhand,
-                    lhand,
-                    &g_VrCopyWepSp2c4
-            );
-        }
-
-
         if (g_VrCopyWepModeldef != NULL
             && g_VrCopyWepReadyToRender
-            && g_Vars.currentplayer->gunctrl.dualwielding == false
-            && OnlyWeapons
+            && vrOffHandHasNoGun()
+            && OffHandPose
             && g_Vars.currentplayer->gunctrl.weaponnum != WEAPON_LASER) {
 
             g_VrCopyWepReadyToRender = false;
@@ -15126,7 +15674,7 @@ void bgunRender(Gfx * *gdlptr)
                                    | player->gunshadecol[3];
             renderdata.cullmode = G_CULL_BOTH;
 
-            if (g_VrCopyWepModeldef != NULL && g_VrCopyWepModel.matrices != NULL) {
+            if (OnlyWeapons && g_VrCopyWepModeldef != NULL && g_VrCopyWepModel.matrices != NULL) {
 
                 s32 gnm = g_VrCopyWepModeldef->nummatrices;
                 Mtxf *vr_mtxalloc = (Mtxf *) gfxAllocate(gnm * sizeof(Mtxf));
@@ -15143,71 +15691,65 @@ void bgunRender(Gfx * *gdlptr)
                     renderdata.unk00 = &g_VrCopyWepSp2c4;
                     renderdata.unk10 = g_VrCopyWepModel.matrices;
 
-                    // For now - beta: reloading only supported for Falcon
-                    bool FALCON2S = g_Vars.currentplayer->gunctrl.weaponnum == WEAPON_FALCON2
-                                    || g_Vars.currentplayer->gunctrl.weaponnum ==
-                                       WEAPON_FALCON2_SILENCER
-                                    ||
-                                    g_Vars.currentplayer->gunctrl.weaponnum == WEAPON_FALCON2_SCOPE;
+                    struct vrreloaddef *holddef = vrReloadHandHoldsClip(HAND_RIGHT)
+                                                  ? vrReloadOwnedDef(HAND_RIGHT) : NULL;
+                    f32 slapframe = 0.0f;
+                    bool drawnarm = false;   // the hand holding a clip or slapping: its arm is the fists' (Task F9c)
 
-                    if (sVrReloadTransActive) {
-                        sVrReloadTransT += sVrReloadTransSpd;
-                        if (sVrReloadTransT >= 1.0f) {
-                            sVrReloadTransT = 1.0f;
-                            sVrReloadTransActive = false;
+                    if (vrReloadSlapDrawn(HAND_RIGHT, &slapframe)) {
+                        // Manual reload, a row with rackslap: the free hand slaps the clip in from
+                        // below. The left hand of the reload animation's slap frames, placed on the
+                        // gun's drawn clip (vrReloadPlaceSlapHand), not on the controller, so the palm
+                        // meets the clip; then it goes back to the controller.
+                        s32 _wep = g_Vars.currentplayer->gunctrl.weaponnum;
+                        struct vrreloaddef *_slapdef = vrReloadOwnedDef(HAND_RIGHT);
+                        int _id = _slapdef != NULL ? VR_ANIM_ID(_wep, _slapdef->ammoindex) : -1;
+                        bool placed = false;
+                        f32 contactframe = 0.0f;
+
+                        mtx4Copy(&g_VrLeftHandFreeSp2c4, vr_mtxalloc);
+                        renderdata.unk00 = &g_VrLeftHandFreeSp2c4;
+
+                        // A row with a clip seat (the Laptop Gun) places the hand by its clip as the
+                        // animation has it at the contact: read once per gun, from a pose at that frame
+                        if (_id >= 0 && vrReloadSlapNeedsContact(HAND_RIGHT, &contactframe)) {
+                            vrCopyWepPoseAt(&renderdata, _id, contactframe);
+                            vrReloadNoteSlapClip(HAND_RIGHT, g_VrCopyWepModeldef, g_VrCopyWepModel.matrices);
                         }
 
-                        for (int i = 0; i < sVrReloadSnapCount; i++) {
-                            mtxfLerp(&sVrReloadMtxSnapA[i],
-                                     &sVrReloadMtxSnapB[i],
-                                     sVrReloadTransT,
-                                     &g_VrCopyWepModel.matrices[i]);
-                        }
-                        if (FALCON2S) vrHideAllExcept(LeftHandAndRightMagMtx);
-                        else vrHideAllExcept(LeftHandMtx);
-
+                        vrCopyWepPoseAt(&renderdata, _id, slapframe);
+                        placed = _id >= 0 && vrReloadPlaceSlapHand(HAND_RIGHT, g_VrCopyWepModeldef,
+                                                                     g_VrCopyWepModel.matrices, 18);
+                        vrHideAllExcept(placed ? LeftHandMtx : HideAll);
                         vrHideGunParts(g_VrCopyWepModel.matrices, handnum);
-                        MtxReplacePart = false;
+                        drawnarm = placed;
 
-                    } else if (FALCON2S && VrInReloadLoop && !VrReloadDisable && VrReloadGrip) {
-                        modelUpdateRelations(&g_VrCopyWepModel);
-                        modelSetMatricesWithAnim(&renderdata, &g_VrCopyWepModel);
+                    } else if (holddef) {
+                        // Manual reload: the off-hand holds a clip. Draw the left hand and the clip
+                        // at the free left-hand pose, following the controller (no snap to the gun).
+                        // The driven magazine's reload animation (the SuperDragon's grenades: 0x3fc).
+                        s32 _wep = g_Vars.currentplayer->gunctrl.weaponnum;
+                        int _id = VR_ANIM_ID(_wep, holddef->ammoindex);
 
-                        const VrReloadZoneConfig *cfg = &gVrReloadZones[g_Vars.currentplayer->gunctrl.weaponnum][ReloadZone];
-                        if (cfg->valid) {
-                            vrHideAllExcept(cfg->partsToShowId);
-                            vrHideGunParts(g_VrCopyWepModel.matrices, handnum);
-                            MtxReplacePart = true;
-                        }
-                    } else if (FALCON2S && VrGrabMagBelt && VrReloadGrip) {
-                        modelUpdateRelations(&g_VrCopyWepModel);
-                        modelSetMatricesWithAnim(&renderdata, &g_VrCopyWepModel);
+                        mtx4Copy(&g_VrLeftHandFreeSp2c4, vr_mtxalloc);
+                        renderdata.unk00 = &g_VrLeftHandFreeSp2c4;
 
-
-                        // Use the same config as Zone 0
-                        const VrReloadZoneConfig *zone0 = NULL;
-                        s32 weaponnum = g_Vars.currentplayer->gunctrl.weaponnum;
-
-                        if (weaponnum >= 0 && weaponnum < NUM_WEAPONS) {
-                            const VrReloadZoneConfig *cfg = &gVrReloadZones[weaponnum][0];
-                            if (cfg->valid) {
-                                zone0 = cfg;
-                            }
-                        }
-
-                        if (zone0) {
-                            s32 _wep = g_Vars.currentplayer->gunctrl.weaponnum;
-                            int _id = VR_ANIM_ID(_wep, 0); // zone 0
-                            struct hand tempHand = *rhand;
-                            tempHand.animload = -1;
-                            modelSetAnimation(&tempHand.gunmodel, _id, false, zone0->animFrameStart,
-                                              0, 0.0f);
-                            g_VrCopyWepModel.anim = tempHand.gunmodel.anim;
-                            vrHideAllExcept(zone0->partsToShowId);
-                        }
-
+                        vrCopyWepPoseAt(&renderdata, _id, holddef->holdframe);
+                        // Keep the hand where the free hand sits on the controller, turned as the
+                        // Falcon's hand (matrix 18 is the left hand bone, as matrix 2 is the fists'
+                        // hand bone; 1 and 17 are the elbows). The capture reads the held clip from
+                        // the matrices as aligned, so it runs after.
+                        vrReloadAlignHeldHand(HAND_RIGHT, g_VrCopyWepModeldef, g_VrCopyWepModel.matrices,
+                                              &g_VrLeftHandFreeSp2c4, 18);
+                        vrReloadCaptureHeldClip(HAND_RIGHT, g_VrCopyWepModeldef, g_VrCopyWepModel.matrices);
+                        // A row's draw-only look of the held clip (the Laptop Gun's): after the
+                        // capture, so the guide and the insert spot are as without it.
+                        vrReloadPoseHeldLook(HAND_RIGHT, g_VrCopyWepModeldef, g_VrCopyWepModel.matrices, 18);
+                        // A clip guided into the well is drawn in the gun: the hand stays in its
+                        // holding pose, empty, so it does not jump away from the clip.
+                        vrHideAllExcept(vrReloadHeldClipDrawn(HAND_RIGHT) ? vrLeftHandAndMagMtx(holddef) : LeftHandMtx);
                         vrHideGunParts(g_VrCopyWepModel.matrices, handnum);
-
+                        drawnarm = true;
 
                     } else if ((rhand->state == HANDSTATE_RELOAD)
                                || (VrTwoHandGrip &&
@@ -15222,14 +15764,8 @@ void bgunRender(Gfx * *gdlptr)
                         modelSetMatricesWithAnim(&renderdata, &g_VrCopyWepModel);
 
                         if (vrOffHandIsFree(player)) {
-                            // The fists model draws the off-hand now, so drop the legacy left hand --
-                            // but KEEP matrix 38: the spare mag parked on the belt by
-                            // vrPlaceRightMagOnBelt() belongs to THIS model, not to the hand.
-                            // (vrHideAllExcept drops 38 itself when !VrManualReloading.)
-                            if (FALCON2S) vrHideAllExcept(RightMagMtx);
-                            else vrHideAllExcept(HideAll);
-                        } else if (FALCON2S) {
-                            vrHideAllExcept(LeftHandAndRightMagMtx);
+                            // The fists model draws the off-hand now, so drop the legacy left hand.
+                            vrHideAllExcept(HideAll);
                         } else {
                             vrHideAllExcept(LeftHandMtx);
                         }
@@ -15239,8 +15775,9 @@ void bgunRender(Gfx * *gdlptr)
                     }
                     //-------------------
 
-                    if (player->hands[HAND_LEFT].state == HANDSTATE_CHANGEGUN
-                        || lhand->stateminor == HANDSTATEMINOR_CHANGEGUN_LOWER) {
+                    // The left hand's lower is part of its CHANGEGUN state (its minor alone also
+                    // matches a parked gun's attack)
+                    if (lhand->state == HANDSTATE_CHANGEGUN) {
                         vrHideAllExcept(HideAll);
                         vrHideGunParts(g_VrCopyWepModel.matrices, handnum);
                     }
@@ -15251,11 +15788,18 @@ void bgunRender(Gfx * *gdlptr)
                             currentWeapon == WEAPON_CROSSBOW || currentWeapon == WEAPON_LASER || (!VrMotionThrowing && currentWeapon == WEAPON_UNARMED);
                     if (!CrossbowLaserUnarmed) {
                         // TODO VR fixe left wrist rot on vr_world_scale = 42.5f levels
-                        vr_wrist_rot(lhand, g_VrCopyWepModeldef, g_VrCopyWepModel.matrices, VrCopyScale, -1.0f);
+                        vr_wrist_rot(g_VrCopyWepModeldef, g_VrCopyWepModel.matrices, -1.0f);
                     }
 
-                    if (VrManualReloading && FALCON2S) {
-                        vrPlaceRightMagOnBelt();
+                    // Manual reload (Task F9c): the arm of the hand holding a clip or slapping is the
+                    // free fists' arm, from the controller as they draw it, hung from the drawn wrist
+                    // and tucked as theirs, so taking a clip, putting it in or slapping changes only
+                    // the hand and the clip. The hand and clip turns, the align and the slap's
+                    // placing moved the reload animation's elbow (17) rigidly with the hand, and
+                    // vr_wrist_rot tucks it inboard, so it came out of the torso.
+                    if (drawnarm && vrModelHasHands(g_VrCopyWepModeldef)
+                            && vrReloadPlaceHeldArm(HAND_RIGHT, g_VrCopyWepModeldef, g_VrCopyWepModel.matrices, 17, 18)) {
+                        vr_tuck_held_arm(g_VrCopyWepModel.matrices, 17, 18);
                     }
 
                     if (hand->state == HANDSTATE_RELOAD) {
@@ -15268,6 +15812,14 @@ void bgunRender(Gfx * *gdlptr)
                         vrHideGunParts(g_VrCopyWepModel.matrices, handnum);
                     }
 
+                    // VR holsters: with the off hand free, the copy draws no left hand either
+                    // (it draws twice, once per loop pass: the line notes the first)
+                    struct vrlefthide vrcopysaved;
+
+                    vrFreeLeftHandHide("copy", i == HAND_RIGHT, &g_VrCopyWepModel,
+                            g_VrCopyHandModeldef != NULL ? &g_VrCopyHandModel : NULL, g_VrCopyWepModel.matrices,
+                            player->gunctrl.weaponnum, &vrcopysaved);
+
                     modelRender(&renderdata, &g_VrCopyWepModel);
                     mtxF2LBulk(g_VrCopyWepModel.matrices, gnm);
 
@@ -15277,6 +15829,8 @@ void bgunRender(Gfx * *gdlptr)
                         modelUpdateRelations(&g_VrCopyHandModel);
                         modelRender(&renderdata, &g_VrCopyHandModel);
                     }
+
+                    vrFreeLeftHandRestore(&vrcopysaved);
 
                 }
             }
@@ -15291,6 +15845,49 @@ void bgunRender(Gfx * *gdlptr)
                 Mtxf *fm = (Mtxf *)gfxAllocate(fnm * sizeof(Mtxf));
 
                 if (fm) {
+                    // Manual reload: the OPEN hand's hand bone for vrReloadNoteFistWrist, from a pass
+                    // of its own with the rest pose and the open roll, so the clench drawn now never
+                    // moves the capture (a pair's free hand shows the fists still clenched from
+                    // gripping its parked gun). Only the root and the pose place the hand bone:
+                    // vr_wrist_rot moves the forearm alone, so this pass needs nothing else.
+                    if (VrManualReloading && fnm <= VR_FIST_OPEN_MAX_MTX) {
+                        Mtxf *om = g_VrFistOpenMtx;
+
+                        {
+                            struct anim drawnanim = g_VrFistAnim;
+
+                            g_VrFistAnim.animnum = 0;   // inert -> rest pose, as the open branch below
+                            g_VrFistAnim.animnum2 = 0;
+                            g_VrFistAnim.fracmerge = 0.0f;
+                            mtx4Copy(&g_VrFistOpenSp2c4, om);
+                            renderdata.unk00 = &g_VrFistOpenSp2c4;
+                            renderdata.unk10 = om;
+                            g_VrFistModel.matrices = om;
+                            modelUpdateRelations(&g_VrFistModel);
+                            modelSetMatricesWithAnim(&renderdata, &g_VrFistModel);
+                            // ... and the open palm, the middle of the hand bone and its four
+                            // knuckles (a hands model has them: 33 matrices), for the slap's test
+                            // (Task F7d)
+                            f32 palm[3];
+                            bool haspalm = fnm > 14;
+                            s32 c;
+
+                            for (c = 0; c < 3 && haspalm; c++) {
+                                palm[c] = (om[2].m[3][c] + (om[5].m[3][c] + om[8].m[3][c]
+                                        + om[11].m[3][c] + om[14].m[3][c]) * 0.25f) * 0.5f;
+                            }
+
+                            vrReloadNoteFistWrist(&om[2], haspalm ? palm : NULL, VrFistClenchAmt);
+                            // ... and the open arm, from the same pass, for the hand holding a clip
+                            // or slapping (Task F9c: the copy model draws this arm, tucked as the
+                            // fists' is). This pass runs no vr_wrist_rot: it equals the drawn fists'
+                            // arm before the elbow solve while the hand is open (the clench pose and
+                            // roll turn it too)
+                            vrReloadNoteFistArm(&om[1], &om[2]);
+                            g_VrFistAnim = drawnanim;
+                        }
+                    }
+
                     mtx4Copy(&g_VrFistSp2c4, fm);   // seed matrices[0] with the root, as the gun path does
 
                     // NOTE: modelSetMatrices ADVANCES renderdata.unk10, so it must be re-pointed here
@@ -15318,11 +15915,11 @@ void bgunRender(Gfx * *gdlptr)
                     modelSetMatricesWithAnim(&renderdata, &g_VrFistModel);
 
                     // ARM IK -- without this the forearm renders as a rigid rest pose. Same call the
-                    // unarmed hand gets in bgun0f0a5550 and the legacy copy hand gets: bends the arm so
-                    // the wrist reaches the controller, and applies our tuck_elbow. Driven by the LEFT
-                    // hand's posrotmtx (the off-hand tracks the left controller). Must run after
-                    // modelSetMatricesWithAnim and before the bones are collapsed, as the gun path does.
-                    vr_wrist_rot(lhand, g_VrFistModeldef, fm, bgGetScaleBg2Gfx(), VR_FIST_SIDE);
+                    // unarmed hand gets in bgun0f0a5550 and the legacy copy hand gets: turns the
+                    // forearm about the wrist onto the elbow solved from the off-hand's shoulder
+                    // (vr_arm_solve). Must run after modelSetMatricesWithAnim and before the bones
+                    // are collapsed, as the gun path does.
+                    vr_wrist_rot(g_VrFistModeldef, fm, VR_FIST_SIDE);
 
                     // We render the model's RIGHT hand mirrored (as the unarmed left hand is built),
                     // so collapse the native left-hand bones.
@@ -15340,6 +15937,17 @@ void bgunRender(Gfx * *gdlptr)
                         vrHideGunParts(g_VrFistModel.matrices, handnum);
                     }
 
+                    // PD-VRR: the fists' own left-hand bones (vrFistHideRange's 17-32) left after
+                    // their hide (none expected)
+                    if (g_VrHandRenderDump && vrHolsterActive()) {
+                        static const s32 fistleft[16] = {
+                            17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32,
+                        };
+
+                        vrLeftHandEnsureBuilt();
+                        vrFreeLeftHandNote("fists 17-32", &g_VrFistModel, NULL, fm, fnm, false, fistleft, 16);
+                    }
+
                     modelRender(&renderdata, &g_VrFistModel);
                     mtxF2LBulk(fm, fnm);
 
@@ -15353,6 +15961,13 @@ void bgunRender(Gfx * *gdlptr)
             gdl = renderdata.gdl;
         }
     }
+
+    if (g_VrHandRenderDump && sVrLeftDiagLen > 0) {
+        vrHolsterDiagText(sVrLeftDiag);
+    }
+
+    sVrLeftDiagLen = 0;
+    g_VrHandRenderDump = false;
 
     casingsRender(&gdl);
     zbufSwap();
@@ -16127,6 +16742,301 @@ static void worldToLocal(const float q[4], const float v[3], float out[3]) // VR
  *
  * This function is not called during cutscenes.
  */
+// VR fist swings. A swing starts when its thrust (toward the knuckles, controller -Y) passes half
+// the punch threshold (1.5 m/s) or its slash (across them) half of 2.5 m/s, and ends when both fall
+// back under; the punch trigger re-arms only then, so one swing gives at most one punch even when it
+// hovers around a threshold. A swing that punched or was held back is a stroke: its end time and its
+// direction at peak speed (play space) are kept for the return-stroke test.
+//
+// The PD-VRR punch log: a line at each punch start, hold-back or rejection, with the hand, the
+// signed thrust and the slash at that moment, the controller-frame velocity, the direction against
+// the head's forward and the vertical (cosines), the grip and the outcome (attacked, restarted,
+// no attack when the idle tick did something else, held back after a holster switch, return stroke,
+// open hand); the start lines are written after the hands tick, with the real outcome. A swing with
+// none of these logs one line when it ends, with its peaks: under the thresholds, or hand busy (it
+// waited for the last punch's hit and the hand never became free).
+#define VR_FIST_THRUST 1.5f        // m/s toward the knuckles: a punch
+#define VR_FIST_SLASH 2.5f         // m/s across the knuckles: a slap or hook
+#define VR_FIST_HALF_THRUST 0.75f  // a swing is under way above half of either
+#define VR_FIST_HALF_SLASH 1.25f
+#define VR_FIST_RETURN60 24   // a stroke crossing the threshold this soon after the end of the last
+                              // one, opposite to it, is its return
+#define VR_FIST_RETURN_DOT -0.5f
+#define VR_FIST_BACKSLASH 0.2f // a slash-only swing with thrust under -this x slash moves back
+
+// VR combat knife (Task H2): the same swing tracking at lower speeds, a thrust or a slash in any
+// direction across the blade. One slash per swing: it is due from the swing's threshold crossing
+// until the swing ends (under half of both), so a hand still busy with the last slash (before its
+// hit) or with the draw slashes as soon as it is free. No return-stroke test: a slash back is a
+// swipe too. The "knife:" log lines follow the "punch:" ones.
+#define VR_KNIFE_THRUST 1.0f       // m/s toward the blade's point: a stab
+#define VR_KNIFE_SLASH 1.2f        // m/s across the blade: a slash
+#define VR_KNIFE_HALF_THRUST 0.5f
+#define VR_KNIFE_HALF_SLASH 0.6f
+#define VR_KNIFE_LOGMISS 0.8f      // a missed knife swing is logged only above this x either threshold
+
+// Per motion-loop hand: the fist was in an attack last tick, so it holds the clench once the attack
+// ends (bgunFistGripTick)
+static bool vr_fist_wasattacking[2];
+
+static struct {
+    bool active;     // a swing is under way (over half the thresholds)
+    bool logged;     // this swing logged a start, hold-back or rejection
+    bool waited;     // this swing waited for the last punch's hit
+    bool stroke;     // this swing punched or was held back
+    bool due;        // the knife: this swing crossed its threshold and has not slashed yet
+    f32 peakspeed, peakthrust, peakback, peakslash; // thrust's forward and backward peaks
+    f32 dir[3];      // play-space direction at peak speed
+    f32 local[3];
+    s32 grip;
+    bool havelast;   // the last stroke, for the return-stroke test
+    s32 lastend60;
+    f32 lastdir[3];
+    bool pending;    // a start to log after the hands tick
+    bool pendingrestart;
+    s32 pendingframe; // lvframenum of the start
+    char pendingtext[160];
+} g_VrFist[2];
+
+static void bgunFistDirCosines(const f32 *dir, f32 *fwd, f32 *up)
+{
+    // The head's forward (-Z) in play space
+    f32 qw = gRawHeadQ.w, qx = gRawHeadQ.x, qy = gRawHeadQ.y, qz = gRawHeadQ.z;
+    f32 fx = -2.0f * (qx * qz + qw * qy);
+    f32 fy = -2.0f * (qy * qz - qw * qx);
+    f32 fz = -(1.0f - 2.0f * (qx * qx + qy * qy));
+
+    *fwd = dir[0] * fx + dir[1] * fy + dir[2] * fz;
+    *up = dir[1];
+}
+
+// The values at this moment, for a log line
+static void bgunFistDescribe(char *buf, s32 len, s32 handnum, f32 thrust, f32 slash, const f32 *relvel,
+        const f32 *localvel, s32 grip, bool knife)
+{
+    f32 speed = sqrtf(relvel[0] * relvel[0] + relvel[1] * relvel[1] + relvel[2] * relvel[2]);
+    f32 dir[3] = { 0.0f, 0.0f, 0.0f };
+    f32 fwd, up;
+
+    if (speed > 0.0f) {
+        dir[0] = relvel[0] / speed;
+        dir[1] = relvel[1] / speed;
+        dir[2] = relvel[2] / speed;
+    }
+
+    bgunFistDirCosines(dir, &fwd, &up);
+    snprintf(buf, len, "%s: hand %c %.2f m/s, thrust %.2f of %.2f, slash %.2f of %.2f, local(%.2f %.2f %.2f),"
+            " fwd %.2f up %.2f, grip %d", knife ? "knife" : "punch", handnum == HAND_RIGHT ? 'R' : 'L', speed,
+            thrust, knife ? VR_KNIFE_THRUST : VR_FIST_THRUST, slash, knife ? VR_KNIFE_SLASH : VR_FIST_SLASH,
+            localvel[0], localvel[1], localvel[2], fwd, up, grip);
+}
+
+static void bgunFistLog(s32 i, s32 handnum, f32 thrust, f32 slash, const f32 *relvel, const f32 *localvel,
+        s32 grip, bool knife, const char *outcome)
+{
+    char buf[256];
+    s32 n;
+
+    bgunFistDescribe(buf, sizeof(buf), handnum, thrust, slash, relvel, localvel, grip, knife);
+    n = strlen(buf);
+    snprintf(buf + n, sizeof(buf) - n, ": %s", outcome);
+    vrHolsterDiagLine(buf);
+    g_VrFist[i].logged = true;
+}
+
+// Each tick, before the punch (or knife slash) decisions: the swing's start, peaks and end
+static void bgunFistTrack(s32 i, s32 handnum, f32 thrust, f32 slash, const f32 *relvel, const f32 *localvel,
+        s32 grip, bool knife)
+{
+    bool half = knife ? thrust > VR_KNIFE_HALF_THRUST || slash > VR_KNIFE_HALF_SLASH
+        : thrust > VR_FIST_HALF_THRUST || slash > VR_FIST_HALF_SLASH;
+    f32 speed = sqrtf(relvel[0] * relvel[0] + relvel[1] * relvel[1] + relvel[2] * relvel[2]);
+
+    if (half) {
+        if (!g_VrFist[i].active) {
+            g_VrFist[i].active = true;
+            g_VrFist[i].logged = false;
+            g_VrFist[i].waited = false;
+            g_VrFist[i].stroke = false;
+            g_VrFist[i].due = false;
+            g_VrFist[i].peakspeed = 0.0f;
+            g_VrFist[i].peakthrust = 0.0f;
+            g_VrFist[i].peakback = 0.0f;
+            g_VrFist[i].peakslash = 0.0f;
+        }
+
+        if (thrust > g_VrFist[i].peakthrust) {
+            g_VrFist[i].peakthrust = thrust;
+        }
+
+        if (thrust < g_VrFist[i].peakback) {
+            g_VrFist[i].peakback = thrust;
+        }
+
+        if (slash > g_VrFist[i].peakslash) {
+            g_VrFist[i].peakslash = slash;
+        }
+
+        if (speed > g_VrFist[i].peakspeed && speed > 0.0f) {
+            g_VrFist[i].peakspeed = speed;
+            g_VrFist[i].dir[0] = relvel[0] / speed;
+            g_VrFist[i].dir[1] = relvel[1] / speed;
+            g_VrFist[i].dir[2] = relvel[2] / speed;
+            g_VrFist[i].local[0] = localvel[0];
+            g_VrFist[i].local[1] = localvel[1];
+            g_VrFist[i].local[2] = localvel[2];
+            g_VrFist[i].grip = grip;
+        }
+    } else if (g_VrFist[i].active) {
+        g_VrFist[i].active = false;
+        g_VrFist[i].due = false;
+
+        if (g_VrFist[i].stroke) {
+            g_VrFist[i].havelast = true;
+            g_VrFist[i].lastend60 = g_Vars.lvframe60;
+            g_VrFist[i].lastdir[0] = g_VrFist[i].dir[0];
+            g_VrFist[i].lastdir[1] = g_VrFist[i].dir[1];
+            g_VrFist[i].lastdir[2] = g_VrFist[i].dir[2];
+        }
+
+        // A knife swing well under its thresholds is ordinary hand movement: not logged
+        if (!g_VrFist[i].logged && (!knife || g_VrFist[i].waited
+                || g_VrFist[i].peakthrust > VR_KNIFE_LOGMISS * VR_KNIFE_THRUST
+                || g_VrFist[i].peakslash > VR_KNIFE_LOGMISS * VR_KNIFE_SLASH)) {
+            f32 fwd, up;
+            char buf[256];
+
+            bgunFistDirCosines(g_VrFist[i].dir, &fwd, &up);
+            snprintf(buf, sizeof(buf), "%s: hand %c swing peak %.2f m/s, thrust forward %.2f back %.2f of %.2f,"
+                    " slash %.2f of %.2f, local(%.2f %.2f %.2f), fwd %.2f up %.2f, grip %d: %s",
+                    knife ? "knife" : "punch", handnum == HAND_RIGHT ? 'R' : 'L', g_VrFist[i].peakspeed,
+                    g_VrFist[i].peakthrust, g_VrFist[i].peakback, knife ? VR_KNIFE_THRUST : VR_FIST_THRUST,
+                    g_VrFist[i].peakslash, knife ? VR_KNIFE_SLASH : VR_FIST_SLASH,
+                    g_VrFist[i].local[0], g_VrFist[i].local[1], g_VrFist[i].local[2],
+                    fwd, up, g_VrFist[i].grip, g_VrFist[i].waited ? "hand busy" : "under the thresholds");
+            vrHolsterDiagLine(buf);
+        }
+    }
+}
+
+// A swing past the thresholds that is the hand coming back, not a punch: the pull-back after a
+// punch reaches the slash threshold as the controller tilts (run 10's punch log). It is a return
+// stroke when it crosses the threshold within VR_FIST_RETURN60 of the end of the hand's last stroke
+// and points against it, or when only its slash passed and its thrust points back toward the
+// wrist.
+static const char *bgunFistReturnStroke(s32 i, f32 thrust, f32 slash, const f32 *relvel)
+{
+    f32 speed = sqrtf(relvel[0] * relvel[0] + relvel[1] * relvel[1] + relvel[2] * relvel[2]);
+
+    s32 since = g_Vars.lvframe60 - g_VrFist[i].lastend60;
+
+    if (g_VrFist[i].havelast && speed > 0.0f && since >= 0 && since < VR_FIST_RETURN60
+            && (relvel[0] * g_VrFist[i].lastdir[0] + relvel[1] * g_VrFist[i].lastdir[1]
+                + relvel[2] * g_VrFist[i].lastdir[2]) / speed < VR_FIST_RETURN_DOT) {
+        return "return stroke (against the last stroke)";
+    }
+
+    if (thrust <= VR_FIST_THRUST && thrust < -VR_FIST_BACKSLASH * slash) {
+        return "return stroke (slash moving back)";
+    }
+
+    return NULL;
+}
+
+// A new level or life (lvframe60 starts again from 0) and a gun side change (the hands' controllers
+// swap): no swing, stroke or pending log carries over
+void bgunFistReset(void)
+{
+    memset(g_VrFist, 0, sizeof(g_VrFist));
+    vr_fist_wasattacking[0] = vr_fist_wasattacking[1] = false;
+}
+
+// After the hands tick: each punch start this tick, with what the idle tick made of it
+static void bgunFistFlushLog(void)
+{
+    s32 i;
+
+    for (i = 0; i < 2; i++) {
+        if (g_VrFist[i].pending) {
+            struct hand *hand = &g_Vars.currentplayer->hands[i == 0 ? HAND_RIGHT : HAND_LEFT];
+            char buf[256];
+
+            char later[32] = "";
+
+            // A start in a tick with no 60ths: the hands tick (and so the outcome) came later
+            if (g_Vars.lvframenum != g_VrFist[i].pendingframe) {
+                snprintf(later, sizeof(later), " (seen %d frames later)", g_Vars.lvframenum - g_VrFist[i].pendingframe);
+            }
+
+            if (hand->state == HANDSTATE_ATTACK) {
+                snprintf(buf, sizeof(buf), "%s: %s%s", g_VrFist[i].pendingtext,
+                        g_VrFist[i].pendingrestart ? "restarted" : "attacked", later);
+            } else {
+                snprintf(buf, sizeof(buf), "%s: no attack (state %d/%d)%s", g_VrFist[i].pendingtext,
+                        hand->state, hand->stateminor, later);
+            }
+
+            vrHolsterDiagLine(buf);
+            g_VrFist[i].pending = false;
+        }
+    }
+}
+
+// VR fists: put the hand straight on the clench's end pose (RIGHTPUNCH's last frame, mirrored on the
+// left) without playing it. The hand stays in its busy animation mode with no command list, so
+// bgun0f09815c reads frame 0 and the draw (bgun0f0981e8) never takes it to idle, whose cached pose
+// (shared by both hands) is the open hand. With VrMotionThrowing animLoadFrame always loads frame 29
+// of anim 1002, so this is also the pose the clench and the motion punches draw on every frame.
+static void bgunFistHoldClench(struct hand *hand)
+{
+    struct player *player = g_Vars.currentplayer;
+
+    // The model must be the loaded fists: modelSetAnimation reads its definition
+    if (!bgunIsLoaded() || hand->gunmodel.definition == NULL
+            || hand->gunmodel.definition != player->gunctrl.gunmodeldef) {
+        return;
+    }
+
+    bgunResetAnim(hand);
+    modelSetAnimation(&hand->gunmodel, ANIM_GUN_UNARMED_RIGHTPUNCH, false, 0.0f,
+            vr_hand_grip_anim[0].unk04 / 10000.0f, 0.0f);
+    modelSetAnimFrame(&hand->gunmodel, modelGetAnimEndFrame(&hand->gunmodel));
+    hand->animmode = HANDANIMMODE_BUSY;
+}
+
+// VR fists, each tick of a fist with its grip held (motion-loop hand i). A grip press plays the
+// clench. Otherwise the hand holds the clench end pose (bgunFistHoldClench) wherever it would show
+// the open idle pose:
+// - a punch on its last frame: its attack ends here (bgunSetState idle, as its own end would in the
+//   tick after), before the draw that would take the hand to idle;
+// - an attack that ended another way (the 60-tick limit) with its punch still playing;
+// - an idle hand with no animation: fists that arrive with the grip already held (a holster switch,
+//   the pause menu), or a punch that went idle anyway.
+// restart: this tick ended the last punch for a new one, which bgunTickHand starts next.
+static void bgunFistGripTick(s32 i, s32 handnum, struct hand *hand, bool pressed, bool restart)
+{
+    if (hand->state == HANDSTATE_ATTACK) {
+        if (hand->stateminor == HANDSTATEMINOR_ATTACK_MELEE_2
+                && hand->animmode == HANDANIMMODE_BUSY
+                && hand->animload < 0
+                && hand->unk0ce8 != NULL
+                && bgun0f09815c(hand) >= modelGetNumAnimFrames(&hand->gunmodel) - 1) {
+            bgunSetState(handnum, HANDSTATE_IDLE);
+            bgunFistHoldClench(hand);
+        }
+    } else if (pressed) {
+        bgunStartAnimation(vr_hand_grip_anim, handnum, hand);
+    } else if (hand->state == HANDSTATE_IDLE && !restart
+            && (vr_fist_wasattacking[i] || (!bgunIsAnimBusy(hand) && hand->animload < 0))) {
+        bgunFistHoldClench(hand);
+    }
+
+    // The clench stops on its last frame: with no command list the draw never takes it to idle
+    if (hand->unk0ce8 == vr_hand_grip_anim && bgun0f09815c(hand) >= 28.00f) {
+        hand->unk0ce8 = NULL;
+    }
+}
+
 /**
  * VR motion attacks (pistol whip, knife slash) must never be started while the
  * hand is in the middle of a weapon change, a reload or a function change.
@@ -16171,6 +17081,50 @@ static bool vrHandCanStartMotionAttack(s32 handnum, struct hand *hand)
         default:
             // RELOAD, CHANGEFUNC, CHANGEGUN, AUTOSWITCH, ...
             return false;
+    }
+}
+
+// VR: manual reload refuses a shot (vrReloadAllowFire: the clip out, a rack, slap or pump due, the
+// gun dry) by keeping the trigger off, so the engine never reaches its empty state
+// (bgunTickIncAttackEmpty) and its dry click, for every gun with a row. The click is played here
+// instead: on the pull and every 25 ticks while it is held, as the empty state repeats it (Task F11d:
+// the Shotgun needing its pump or out of shells). A hand the engine has just clicked (its own empty
+// state, a gun run dry with the trigger held) waits the 25 ticks first. -1: no refused pull held
+static s32 VrDryClickTimer60[2] = { -1, -1 };
+
+static void vrDryTriggerTick(s32 handnum, bool refused)
+{
+    struct hand *hand = &g_Vars.currentplayer->hands[handnum];
+
+    if (!refused || g_Vars.tickmode != TICKMODE_NORMAL || g_Vars.lvupdate240 <= 0) {
+        if (!refused) {
+            VrDryClickTimer60[handnum] = -1;
+        }
+
+        return;
+    }
+
+    if (hand->state == HANDSTATE_ATTACKEMPTY) {
+        VrDryClickTimer60[handnum] = 0;
+        return;
+    }
+
+    if (hand->state != HANDSTATE_IDLE) {
+        return;
+    }
+
+    if (VrDryClickTimer60[handnum] < 0) {
+        VrDryClickTimer60[handnum] = 0;
+        bgunPlayEmptyClick(hand->gset.weaponnum);
+        vrDryLog(handnum, hand, "click (refused pull)");
+        return;
+    }
+
+    VrDryClickTimer60[handnum] += g_Vars.lvupdate60;
+
+    if (VrDryClickTimer60[handnum] > TICKS(25)) {
+        VrDryClickTimer60[handnum] -= TICKS(25);
+        bgunPlayEmptyClick(hand->gset.weaponnum);
     }
 }
 
@@ -16234,7 +17188,11 @@ void bgunTickGameplay(bool triggeron) {
                     if (weaponnum == equippedweaponnum &&
                         !invHasSingleWeaponIncAllGuns(weaponnum)) {
                         invCalculateCurrentIndex();
-                        bgunEquipWeapon(invGetWeaponNumByIndex(g_Vars.currentplayer->equipcuritem));
+
+                        // VR: with holsters a used-up throwable returns to the core's weapon
+                        if (!vrHolsterEngineSwitch()) {
+                            bgunEquipWeapon(invGetWeaponNumByIndex(g_Vars.currentplayer->equipcuritem));
+                        }
                     }
                 }
         }
@@ -16273,8 +17231,16 @@ void bgunTickGameplay(bool triggeron) {
         handnum = handnums[i];
         hand = &player->hands[handnum];
         weaponnum = player->hands[handnum].gset.weaponnum;
+
+        // VR: only a grip press seen while a fist plays the clench: fists that arrive with the grip
+        // already held hold the clench at once (bgunFistGripTick)
+        if (weaponnum != WEAPON_UNARMED) {
+            *(handnum == HAND_RIGHT ? &vr_is_R_fist : &vr_is_L_fist) = false;
+            vr_fist_wasattacking[i] = false;
+        }
+
         ctrlIndex = (handnum == HAND_RIGHT ? 1 : 0);
-        if (g_Vars.currentplayer->hands[HAND_RIGHT].gset.weaponnum == WEAPON_LASER) {
+        if (vrLaserOnOffHand(g_Vars.currentplayer->hands[HAND_RIGHT].gset.weaponnum)) {
             ctrlIndex = (handnum == HAND_RIGHT ? 0 : 1);
         }
 
@@ -16301,12 +17267,9 @@ void bgunTickGameplay(bool triggeron) {
 
         if(VrMotionThrowing) {
             // --- Record the peak velocity for grenades, mines... ---
-            if ((weaponnum == WEAPON_GRENADE ||
-                 weaponnum == WEAPON_NBOMB ||
-                 weaponnum == WEAPON_ECMMINE ||
-                 weaponnum == WEAPON_PROXIMITYMINE ||
-                 weaponnum == WEAPON_TIMEDMINE ||
-                 weaponnum == WEAPON_REMOTEMINE) && triggeron) {
+            // FUNC_PRIMARY: the laptop gun, the Dragon and the knife record no samples here (the
+            // knife records its own at the release, below)
+            if (vrMotionThrowWeapon(weaponnum, FUNC_PRIMARY) && triggeron) {
 
                 vr_record_throw_sample(
                         ctrlIndex,
@@ -16324,9 +17287,11 @@ void bgunTickGameplay(bool triggeron) {
                 bgunStartAnimation(vr_knife_sec_anim, HAND_RIGHT, hand);
                 vr_R_knife_sec_anim_run = true;
                 vr_R_func_secondary_knife = true;
+                g_VrFist[i].due = false; // the trigger's wind-up and throw: no slash carries over
             } else if (weaponnum == WEAPON_COMBATKNIFE && handnum == HAND_RIGHT && vr_R_trigger &&
                        vr_R_knife_sec_anim_run) {
                 vr_R_func_secondary_knife = true;
+                g_VrFist[i].due = false;
                 f32 current_frame = bgun0f09815c(hand);
                 if (hand->unk0ce8 == vr_knife_sec_anim && current_frame >= 46.00f) {
                     hand->unk0ce8 = NULL;
@@ -16344,27 +17309,36 @@ void bgunTickGameplay(bool triggeron) {
                 );
                 vr_R_knife_sec_anim_run = false;
                 vr_R_func_secondary_knife = false;
+                g_VrFist[i].due = false;
                 hand->gset.weaponfunc = FUNC_SECONDARY;
                 bgunSetState(HAND_RIGHT, HANDSTATE_ATTACK);
                 continue;
             }
 
 
-            if (weaponnum == WEAPON_COMBATKNIFE && handnum == HAND_LEFT && vr_L_trigger &&
+            // VR: with holsters an item is never dual, so HAND_LEFT has the knife only as the copy
+            // of the gun side's weapon number (bgunTickSwitch2 sets both hands'), not in use: the
+            // free hand's trigger must not wind up and throw a knife from it
+            bool leftknife = weaponnum == WEAPON_COMBATKNIFE && handnum == HAND_LEFT
+                    && (!vrHolsterActive() || hand->inuse);
+
+            if (leftknife && vr_L_trigger &&
                 !vr_L_knife_sec_anim_run) {
                 bgunSetState(HAND_LEFT, HANDSTATE_IDLE);
                 bgunStartAnimation(vr_knife_sec_anim, HAND_LEFT, hand);
                 vr_L_knife_sec_anim_run = true;
                 vr_L_func_secondary_knife = true;
-            } else if (weaponnum == WEAPON_COMBATKNIFE && handnum == HAND_LEFT && vr_L_trigger &&
+                g_VrFist[i].due = false;
+            } else if (leftknife && vr_L_trigger &&
                        vr_L_knife_sec_anim_run) {
                 vr_L_func_secondary_knife = true;
+                g_VrFist[i].due = false;
                 f32 current_frame = bgun0f09815c(hand);
                 if (hand->unk0ce8 == vr_knife_sec_anim && current_frame >= 46.00f) {
                     hand->unk0ce8 = NULL;
                 }
                 continue;
-            } else if (weaponnum == WEAPON_COMBATKNIFE && handnum == HAND_LEFT && !vr_L_trigger &&
+            } else if (leftknife && !vr_L_trigger &&
                        vr_L_func_secondary_knife) {
                 vr_throw_cancelled = true;
                 vr_record_throw_sample(
@@ -16375,33 +17349,60 @@ void bgunTickGameplay(bool triggeron) {
                 );
                 vr_L_knife_sec_anim_run = false;
                 vr_L_func_secondary_knife = false;
+                g_VrFist[i].due = false;
                 hand->gset.weaponfunc = FUNC_SECONDARY;
                 bgunSetState(HAND_LEFT, HANDSTATE_ATTACK);
                 continue;
             }
 
 
-            // In controller-local space +Y runs along the barrel and out over
-            // the knuckles: it is the axis that the 90deg X offset applied in
-            // vr_input.cpp maps onto the gun model's forward. So a thrust is +Y
-            // and a slash is whatever is left in the perpendicular XZ plane.
-            // Testing the plane by magnitude keeps the knife's "any of four
-            // directions" behaviour without depending on which way is "up".
-            f32 thrust = localVel[1];
+            // In the OpenXR grip pose the wrist-to-knuckles direction (along the
+            // barrel) is -Y for both hands; left-handed mode only swaps which
+            // controller feeds which hand. So a thrust is -Y, and a slash is
+            // whatever is left in the perpendicular XZ plane. (VR: this was +Y,
+            // so a punch fired on the pull-back, run 9's punch log.) Testing the
+            // plane by magnitude keeps the knife's "any of four directions"
+            // behaviour without depending on which way is "up".
+            f32 thrust = -localVel[1];
             f32 slash  = sqrtf(localVel[0] * localVel[0] + localVel[2] * localVel[2]);
+            bool vrknife = weaponnum == WEAPON_COMBATKNIFE && hand->gset.weaponfunc == FUNC_PRIMARY;
+            s32 vrgrip = (handnum == HAND_RIGHT ? vr_button_R_grip : vr_button_L_grip) ? 1 : 0;
 
-            if (weaponnum == WEAPON_COMBATKNIFE && hand->gset.weaponfunc == FUNC_PRIMARY) {
-                vr_set_motion_triggered = (thrust > 1.0f) || (slash > 1.0f);
+            if (vrknife) {
+                // VR knife (Task H2): a stab or a slash in any direction across the blade, one per
+                // swing, due until the swing ends (see VR_KNIFE_THRUST). Before this a slash was any tick
+                // over 1 m/s on either, re-armed as soon as the speed dipped under it, and every one
+                // restarted the attack from its first frame: a swing (and its return) restarted the
+                // slash before its hit frame, so it rarely landed. A hand not in use (with holsters,
+                // HAND_LEFT's copy of the gun side's knife) never slashes.
+                if (!hand->inuse) {
+                    vr_hand_triggered[i] = false;
+                    continue;
+                }
 
+                bgunFistTrack(i, handnum, thrust, slash, relVel, localVel, vrgrip, true);
+
+                if (!vr_hand_triggered[i] && (thrust > VR_KNIFE_THRUST || slash > VR_KNIFE_SLASH)) {
+                    g_VrFist[i].due = true;
+                }
+
+                vr_set_motion_triggered = g_VrFist[i].due;
             } else if (weaponnum == WEAPON_UNARMED) {
                 // Straight punch, or a hook thrown across the body.
-                vr_set_motion_triggered = (thrust > 1.5f) || (slash > 2.5f);
+                vr_set_motion_triggered = (thrust > VR_FIST_THRUST) || (slash > VR_FIST_SLASH);
 
             } else if (weaponnum == WEAPON_FALCON2 ||
                        weaponnum == WEAPON_FALCON2_SCOPE ||
                        weaponnum == WEAPON_FALCON2_SILENCER ||
                        weaponnum == WEAPON_DY357MAGNUM ||
                        weaponnum == WEAPON_DY357LX) {
+                // VR: with holsters a gun never whips (a draw is a fast swing, and the melee is the
+                // fists': let go and punch)
+                if (vrHolsterFastSwitch()) {
+                    vr_hand_triggered[i] = false;
+                    continue;
+                }
+
                 // A pistol whip is a swing, not a thrust: the grip travels in an
                 // arc about the wrist, so most of the speed lands perpendicular
                 // to the barrel. Testing thrust alone missed nearly all of them.
@@ -16414,21 +17415,112 @@ void bgunTickGameplay(bool triggeron) {
             // Ignore swings while the hand is switching weapon / reloading, otherwise
             // bgunSetState(ATTACK) below overwrites HANDSTATE_CHANGEGUN and the new
             // weapon is never equipped (no weapon + switching locked).
+            // The knife's slash stays due (g_VrFist due) and starts once the hand is free.
             if (vr_set_motion_triggered
                 && weaponnum != WEAPON_UNARMED
                 && !vrHandCanStartMotionAttack(handnum, hand)) {
                 vr_set_motion_triggered = false;
+
+                if (vrknife) {
+                    g_VrFist[i].waited = true;
+                }
             }
 
 
-            if (vr_set_motion_triggered && !vr_hand_triggered[i]) {
+            // VR fists: the swing tracking (bgunFistTrack), then the punch decisions in order
+            bool vrfist = weaponnum == WEAPON_UNARMED;
+            bool vrbelowhalf = thrust < VR_FIST_HALF_THRUST && slash < VR_FIST_HALF_SLASH;
+            bool vrpunchrestart = false;
+            bool vrpunchwait = false;
 
-                if (weaponnum == WEAPON_COMBATKNIFE && hand->gset.weaponfunc == FUNC_PRIMARY) {
+            if (vrfist) {
+                bgunFistTrack(i, handnum, thrust, slash, relVel, localVel, vrgrip, false);
+            }
+
+            if (vr_set_motion_triggered && !vr_hand_triggered[i] && vrfist) {
+                const char *vrreturn;
+
+                if (!vrgrip) {
+                    // Only a closed fist attacks: an open hand (grip released) never punches or slaps
+                    vr_hand_triggered[i] = true;
+                    bgunFistLog(i, handnum, thrust, slash, relVel, localVel, vrgrip, false, "open hand");
+                } else if (vrHolsterSwingSettling()) {
+                    // Letting go of a holster gun gives fists at once, often while the hand is still
+                    // moving into the holster, fast enough to punch. For half a second after a holster
+                    // switch no fist punch starts: any swing then counts as already started, so one
+                    // still fast at the end punches only after the hand slows and swings again.
+                    vrHolsterNoteSwing(handnum, false);
+                    vr_hand_triggered[i] = true;
+                    g_VrFist[i].stroke = true;
+                    bgunFistLog(i, handnum, thrust, slash, relVel, localVel, vrgrip, false,
+                            "held back after a holster switch");
+                } else if ((vrreturn = bgunFistReturnStroke(i, thrust, slash, relVel)) != NULL) {
+                    vr_hand_triggered[i] = true;
+                    bgunFistLog(i, handnum, thrust, slash, relVel, localVel, vrgrip, false, vrreturn);
+                } else if (hand->state != HANDSTATE_IDLE) {
+                    // A fist swing lands a new punch even while the last one plays. Once the last
+                    // punch's hit is applied (melee stateminor 2, or 3 between a double punch's hits)
+                    // its attack ends here as its own end would (bgunSetState idle), so this tick's
+                    // trigger starts the new punch from its first frame. Before that hit, or in any
+                    // other busy state, the swing's rising edge waits for the next tick while it stays
+                    // over the thresholds: one swing still gives one punch.
+                    if (hand->state == HANDSTATE_ATTACK
+                        && (hand->stateminor == HANDSTATEMINOR_ATTACK_MELEE_2
+                            || hand->stateminor == HANDSTATEMINOR_ATTACK_MELEE_3)) {
+                        bgunResetAnim(hand);
+                        bgunSetState(handnum, HANDSTATE_IDLE);
+                        vrpunchrestart = true;
+                    } else {
+                        vrpunchwait = true;
+                        g_VrFist[i].waited = true;
+                    }
+                }
+            }
+
+            if (vr_set_motion_triggered && !vr_hand_triggered[i] && vrknife) {
+                if (vrHolsterSwingSettling()) {
+                    // As the fists: a draw from the right hip is a fast swing. For half a second after
+                    // a holster switch the swing counts as already started, so it gives no slash.
+                    vrHolsterNoteSwing(handnum, false);
+                    vr_hand_triggered[i] = true;
+                    g_VrFist[i].due = false;
+                    bgunFistLog(i, handnum, thrust, slash, relVel, localVel, vrgrip, true,
+                            "held back after a holster switch");
+                } else if (hand->state == HANDSTATE_ATTACK) {
+                    // As the fists: once the last slash's hit is applied (melee stateminor 2, or 3
+                    // before a second hit) the new slash starts from its first frame; before that hit
+                    // the slash stays due and starts once it is applied, while the swing lasts.
+                    if (hand->stateminor == HANDSTATEMINOR_ATTACK_MELEE_2
+                            || hand->stateminor == HANDSTATEMINOR_ATTACK_MELEE_3) {
+                        vrpunchrestart = true;
+                    } else {
+                        vrpunchwait = true;
+                        g_VrFist[i].waited = true;
+                    }
+                }
+            }
+
+            if (vr_set_motion_triggered && !vr_hand_triggered[i] && !vrpunchwait) {
+                vrHolsterNoteSwing(handnum, true);
+
+                if (vrfist || vrknife) {
+                    g_VrFist[i].stroke = true;
+                    g_VrFist[i].pending = true;
+                    g_VrFist[i].pendingrestart = vrpunchrestart;
+                    g_VrFist[i].pendingframe = g_Vars.lvframenum;
+                    g_VrFist[i].logged = true;
+                    bgunFistDescribe(g_VrFist[i].pendingtext, sizeof(g_VrFist[i].pendingtext), handnum,
+                            thrust, slash, relVel, localVel, vrgrip, vrknife);
+                }
+
+                if (vrknife) {
+                    g_VrFist[i].due = false;
                     vr_in_motion_triggered = true;
                     // Cancel any ongoing animation and put the hand back to idle
                     bgunResetAnim(hand);
                     hand->animmode = HANDANIMMODE_IDLE;
-                    // Trigger the attack directly
+                    // Trigger the attack directly, its animation from the stroke (Task H3b)
+                    vr_knife_fromstroke[handnum] = true;
                     bgunSetState(handnum, HANDSTATE_ATTACK);
 
                 }
@@ -16457,39 +17549,29 @@ void bgunTickGameplay(bool triggeron) {
                 vr_hand_triggered[i] = true;
             }
 
+            if (vrfist) {
+                // VR: a held grip shows a closed fist: the clench plays once when the grip closes,
+                // and the hand holds its end pose between punches (bgunFistGripTick). Restarting
+                // the clench every tick of a swing replaced the punch script (the hit waited for the
+                // swing's end). A released grip opens the hand (the idle pose).
+                bool *vrwasopen = handnum == HAND_RIGHT ? &vr_is_R_fist : &vr_is_L_fist;
 
-            if (handnum == HAND_RIGHT && weaponnum == WEAPON_UNARMED && vr_button_R_grip) {
-                if (vr_is_R_fist || vr_set_motion_triggered || vr_hand_triggered[i]) {
-                    bgunStartAnimation(vr_hand_grip_anim, handnum, hand);
+                if (vrgrip) {
+                    bgunFistGripTick(i, handnum, hand, *vrwasopen, vrpunchrestart);
+                    *vrwasopen = false;
+                } else if (!*vrwasopen) {
+                    hand->animmode = HANDANIMMODE_IDLE;
+                    *vrwasopen = true;
                 }
-                f32 current_frame = bgun0f09815c(hand);
-                if (hand->unk0ce8 == vr_hand_grip_anim && current_frame >= 28.00f) {
-                    hand->unk0ce8 = NULL;
-                }
-                vr_is_R_fist = false;
-            } else if (!vr_is_R_fist && handnum == HAND_RIGHT && weaponnum == WEAPON_UNARMED &&
-                       !vr_button_R_grip) {
-                hand->animmode = HANDANIMMODE_IDLE;
-                vr_is_R_fist = true;
-            }
-
-            if (handnum == HAND_LEFT && weaponnum == WEAPON_UNARMED && vr_button_L_grip) {
-                if (vr_is_L_fist || vr_set_motion_triggered || vr_hand_triggered[i]) {
-                    bgunStartAnimation(vr_hand_grip_anim, handnum, hand);
-                }
-                f32 current_frame = bgun0f09815c(hand);
-                if (hand->unk0ce8 == vr_hand_grip_anim && current_frame >= 28.00f) {
-                    hand->unk0ce8 = NULL;
-                }
-                vr_is_L_fist = false;
-            } else if (!vr_is_L_fist && handnum == HAND_LEFT && weaponnum == WEAPON_UNARMED &&
-                       !vr_button_L_grip) {
-                hand->animmode = HANDANIMMODE_IDLE;
-                vr_is_L_fist = true;
             }
 
 
-            if (!vr_set_motion_triggered) {
+            vr_fist_wasattacking[i] = vrfist && hand->state == HANDSTATE_ATTACK;
+
+            // VR: a fist or the knife re-arms only once the swing has ended (both under half the
+            // thresholds), so jitter around a threshold does not punch or slash twice
+            if (!vr_set_motion_triggered
+                    && (vrknife ? !g_VrFist[i].active : (!vrfist || vrbelowhalf))) {
                 vr_hand_triggered[i] = false;
             }
 
@@ -16499,7 +17581,9 @@ void bgunTickGameplay(bool triggeron) {
 
 
     // --- Read left controller get_button_state(0, "trigger") button state to fire --- VR
-    if (player->hands[HAND_LEFT].inuse) {
+    // A parked gun (hidden while the other gun reloads) is not in the hand: its grip does not set
+    // vr_button_L_grip (port/src/input.c), the left gun's grip for the crosshair
+    if (player->hands[HAND_LEFT].inuse && !vrHandParked(HAND_LEFT)) {
         vr_leftHasWeapon = true;
     } else {
         vr_leftHasWeapon = false;
@@ -16549,7 +17633,9 @@ void bgunTickGameplay(bool triggeron) {
 
     // VR Remote mine: use the left trigger for the detonator
     // (activate the secondary function without going through B + right trigger)
-    if (hand->gset.weaponnum == WEAPON_REMOTEMINE && leftTrigPressed) {
+    // With holsters the free hand's trigger does nothing while the gun side holds an item (its gun
+    // is parked): a B tap detonates instead (vrHolsterBTapDetonates, bmoveProcessInput)
+    if (hand->gset.weaponnum == WEAPON_REMOTEMINE && leftTrigPressed && !vrHolsterActive()) {
         g_Vars.currentplayer->gunctrl.invertgunfunc = true;
         g_Vars.currentplayer->hands[HAND_RIGHT].activatesecondary = true;
     }else if (hand->gset.weaponnum == WEAPON_REMOTEMINE && triggeron){
@@ -16558,9 +17644,33 @@ void bgunTickGameplay(bool triggeron) {
     }
 
 
-    bgunSetTriggerOn(HAND_RIGHT, gunsfiring[HAND_RIGHT]);
+    // A parked gun (hidden while the other gun reloads) does not fire. A park in this tick happens
+    // after this (vrHolsterTick, in HAND_RIGHT's tick): bgunTickHand drops that gun's trigger.
+    for (i = 0; i < 2; i++) {
+        static bool vrdrypulled[2];
+
+        if (gunsfiring[i] && !vrdrypulled[i]) {
+            struct hand *h = &player->hands[i];
+            struct weaponfunc *f = gsetGetWeaponFunction(&h->gset);
+
+            if (f != NULL && f->ammoindex >= 0 && h->loadedammo[f->ammoindex] == 0) {
+                vrDryLog(i, h, vrReloadAllowFire(i) ? (vrHandParked(i) ? "pull parked" : "pull allowed")
+                        : "pull refused");
+            }
+        }
+
+        vrdrypulled[i] = gunsfiring[i];
+    }
+
+    bgunSetTriggerOn(HAND_RIGHT, gunsfiring[HAND_RIGHT] && vrReloadAllowFire(HAND_RIGHT)
+            && !vrHandParked(HAND_RIGHT));
+    vrDryTriggerTick(HAND_RIGHT, gunsfiring[HAND_RIGHT] && !vrReloadAllowFire(HAND_RIGHT)
+            && !vrHandParked(HAND_RIGHT));
     if (player->hands[HAND_LEFT].gset.weaponnum != WEAPON_REMOTEMINE) {
-        bgunSetTriggerOn(HAND_LEFT, gunsfiring[HAND_LEFT]);
+        bgunSetTriggerOn(HAND_LEFT, gunsfiring[HAND_LEFT] && vrReloadAllowFire(HAND_LEFT)
+                && !vrHandParked(HAND_LEFT));
+        vrDryTriggerTick(HAND_LEFT, gunsfiring[HAND_LEFT] && !vrReloadAllowFire(HAND_LEFT)
+                && !vrHandParked(HAND_LEFT));
     }
 
 
@@ -16568,6 +17678,7 @@ void bgunTickGameplay(bool triggeron) {
         bgunTickHand(HAND_RIGHT);
         bgunTickHand(HAND_LEFT);
         bgunTickSwitch();
+        bgunFistFlushLog(); // VR: PD-VRR, the punch starts of this tick with their outcome
 
 
         if (cheatIsActive(CHEAT_UNLIMITEDAMMONORELOADS)) {
@@ -16758,6 +17869,13 @@ void bgunSetAmmoQuantity(s32 ammotype, s32 quantity)
     if (bgunGetAmmoTypeForWeapon(weaponnum, FUNC_SECONDARY) == ammotype) {
         funcnum = FUNC_SECONDARY;
     }
+
+#ifndef PLATFORM_N64
+    // VR: the cloak held from the chest pouch has no clip (bgun0f0abd30): its charge is the reserve
+    if (weaponnum == WEAPON_CLOAKINGDEVICE && vrHolsterActive()) {
+        funcnum = -1;
+    }
+#endif
 
     if (funcnum != -1 && weaponHasAmmoFlag(weaponnum, funcnum, AMMOFLAG_NORESERVE)) {
         // For cloak and combat boost, ammo cannot be held outside of the weapon.
@@ -17716,10 +18834,13 @@ Gfx *bgunDrawHud(Gfx *gdl)
         if (hand->clipsizes[ammoindex] > 0
             && weapon->ammos[ammoindex] != NULL
             && (weapon->ammos[ammoindex]->flags & AMMOFLAG_EQUIPPEDISRESERVE) == 0) {
+            // VR: a pump gun's tube counts while it waits for the pump (vrReloadHudLoaded)
+            s32 vrhudloaded = vrReloadHudLoaded(HAND_RIGHT, ammoindex, hand->loadedammo[ammoindex]);
+
             gdl = bgunDrawHudGauge(gdl, xpos, bottom - reserveheight - clipheight - 3, xpos + barwidth,
-                                   bottom - reserveheight - 3, &hand->abmag, hand->loadedammo[ammoindex], hand->clipsizes[ammoindex],
+                                   bottom - reserveheight - 3, &hand->abmag, vrhudloaded, hand->clipsizes[ammoindex],
                                    0x00300080, 0x00ff0040, false);
-            gdl = bgunDrawHudInteger(gdl, hand->loadedammo[ammoindex], xpos - 2, false,
+            gdl = bgunDrawHudInteger(gdl, vrhudloaded, xpos - 2, false,
                                      bottom - reserveheight - 8, 0, 0x00ff00a0);
         }
 
@@ -17884,6 +19005,17 @@ void bgun0f0abd30(s32 handnum)
         if (handnum == HAND_RIGHT) {
             gunctrl->ammotypes[i] = -1;
         }
+
+#ifndef PLATFORM_N64
+        // VR: the cloak held from the chest pouch has no clip: its charge (ticks, up to 18000) stays
+        // in the reserve chr.c drains. As a clip of 10 the equip would load 10 and zero the rest
+        // (AMMOFLAG_NORESERVE), and the empty clip would ask for reloads.
+        if (hand->gset.weaponnum == WEAPON_CLOAKINGDEVICE && vrHolsterActive()) {
+            hand->clipsizes[i] = 0;
+            hand->loadedammo[i] = 0;
+            continue;
+        }
+#endif
 
         if (weapon && weapon->ammos[i]) {
             if (handnum == HAND_RIGHT) {
@@ -18094,6 +19226,24 @@ bool vrScopeForWeapon(s32 weaponnum)
     return vrFindScope(weaponnum) != NULL;
 }
 
+/* The hand's selected function aims through the lens: the lens is the sight of the gun's own fire,
+ * so not a function that launches something else (the SuperDragon's grenade launcher, a projectile;
+ * the Dragon's self-destruct and the Laptop Gun's sentry, thrown) or strikes with it (the Falcon 2
+ * Scope's pistol whip). The Sniper Rifle's crouch, a stance with no fire of its own, keeps it (Task
+ * F11c, the user: "scope for grenade launcher on superdragon should not appear") */
+static bool vrScopeFuncZooms(struct hand *hand)
+{
+    struct weaponfunc *func = gsetGetWeaponFunction(&hand->gset);
+
+    if (func == NULL) {
+        return true;
+    }
+
+    return func->type != INVENTORYFUNCTYPE_SHOOT_PROJECTILE
+        && (func->type & 0xff) != INVENTORYFUNCTYPE_THROW
+        && (func->type & 0xff) != INVENTORYFUNCTYPE_MELEE;
+}
+
 void vrScopeBegin(void)
 {
     s32 h;
@@ -18125,14 +19275,19 @@ void vrScopeBegin(void)
         st->gunValid = 0;
 
         {
-            bool alwaysOn = (weaponnum == WEAPON_FALCON2_SCOPE || weaponnum == WEAPON_SNIPERRIFLE);
-            bool gripHeld = (h == HAND_RIGHT) ? (vr_button_R_grip != 0) : (vr_button_L_grip != 0);
+            /* Only while the gun is aimed with both hands (vrTwoHandAiming), the Sniper Rifle too (shown
+             * always before), never from a grip alone or a pair's left gun. The Falcon 2 Scope's lens
+             * shows one-handed, on either gun of a pair, as before S1 (user, Stage F run 1: "since that
+             * is its purpose"; Task F7f): a pistol is never aimed with both hands, and its aim smoothing
+             * stays the two-handed aim's (vr_input.cpp). Never for a selected function that does not
+             * aim through it (vrScopeFuncZooms: the SuperDragon's grenade launcher, Task F11c) */
+            bool showLens = ((h == HAND_RIGHT && vrTwoHandAiming()) || weaponnum == WEAPON_FALCON2_SCOPE)
+                && vrScopeFuncZooms(hand);
 
             /* Do not display scope while weapon is being switched, unequipped, raised, deployed, or reloaded */
             if (hand->state == HANDSTATE_CHANGEGUN
                 || hand->state == HANDSTATE_AUTOSWITCH
                 || hand->state == HANDSTATE_RELOAD
-                || VrInReloadLoop
                 || hand->mode == HANDMODE_EQUIP
                 || g_Vars.currentplayer->gunctrl.switchtoweaponnum != -1
                 || g_Vars.currentplayer->gunctrl.gunmemnew >= 0
@@ -18141,7 +19296,7 @@ void vrScopeBegin(void)
                 continue;
             }
 
-            if (!sc || !hand->inuse || !hand->visible || (!alwaysOn && !gripHeld)) {
+            if (!sc || !hand->inuse || !hand->visible || !showLens) {
                 continue;
             }
         }

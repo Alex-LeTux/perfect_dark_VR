@@ -5028,7 +5028,12 @@ struct weapon invitem_commsrider = {
 	L_GUN_222, // name
 	L_GUN_000, // manufacturer
 	L_GUN_204, // description
-	WEAPONFLAG_ONEHANDED | WEAPONFLAG_AICANUSE | WEAPONFLAG_UNDROPPABLE,
+	WEAPONFLAG_ONEHANDED | WEAPONFLAG_AICANUSE | WEAPONFLAG_UNDROPPABLE
+#ifndef PLATFORM_N64
+	// VR: the bug itself is drawn at the hand, as the door decoder
+	| WEAPONFLAG_00000040
+#endif
+	,
 };
 
 struct weapon invitem_tracerbug = {
@@ -5118,7 +5123,12 @@ struct weapon invitem_nightvision = {
 	L_GUN_059, // name
 	L_GUN_000, // manufacturer
 	L_GUN_191, // description
+#ifdef PLATFORM_N64
 	WEAPONFLAG_ONEHANDED | WEAPONFLAG_AICANUSE | WEAPONFLAG_00000080 | WEAPONFLAG_UNDROPPABLE,
+#else
+	// VR: held from the chest pouch (vrHolsterIsDevice), the goggles are drawn at the hand
+	WEAPONFLAG_ONEHANDED | WEAPONFLAG_AICANUSE | WEAPONFLAG_00000040 | WEAPONFLAG_UNDROPPABLE,
+#endif
 };
 
 struct weaponfunc invfunc_horizonscanner_primary = {
@@ -5209,7 +5219,12 @@ struct weapon invitem_cloakingdevice = {
 	L_GUN_073, // name
 	L_GUN_000, // manufacturer
 	L_GUN_195, // description
-	WEAPONFLAG_ONEHANDED | WEAPONFLAG_AICANUSE | WEAPONFLAG_04000000,
+	WEAPONFLAG_ONEHANDED | WEAPONFLAG_AICANUSE | WEAPONFLAG_04000000
+#ifndef PLATFORM_N64
+	// VR: held from the chest pouch (vrHolsterIsDevice), the cloaker is drawn at the hand
+	| WEAPONFLAG_00000040
+#endif
+	,
 };
 
 struct weaponfunc_special invfunc_combatboost_boost = {
@@ -5246,11 +5261,24 @@ struct inventory_ammo invammo_combatboost = {
 	AMMOFLAG_NORESERVE, // flags
 };
 
+#ifndef PLATFORM_N64
+extern struct guncmd invanim_datauplink_equip[];
+extern struct guncmd invanim_datauplink_unequip[];
+#endif
+
+// VR: held, the boost is drawn as the data uplink in the hand (bgun's loader
+// swaps the model, these give it the uplink's raise and lower) so you can see
+// you are holding it; the pause menu still shows the pill
 struct weapon invitem_combatboost = {
 	FILE_PCHRSPEEDPILL, // hi model
 	FILE_PCHRSPEEDPILL, // lo model
+#ifdef PLATFORM_N64
 	NULL, // equip animation
 	NULL, // unequip animation
+#else
+	invanim_datauplink_equip, // equip animation
+	invanim_datauplink_unequip, // unequip animation
+#endif
 	NULL, // pritosec animation
 	NULL, // sectopri animation
 	{ &invfunc_combatboost_boost, &invfunc_combatboost_revert }, // functions
@@ -5268,7 +5296,11 @@ struct weapon invitem_combatboost = {
 	L_GUN_074, // name
 	L_GUN_000, // manufacturer
 	L_GUN_190, // description
-	WEAPONFLAG_ONEHANDED | WEAPONFLAG_AICANUSE | WEAPONFLAG_04000000 | WEAPONFLAG_DETERMINER_S_SOME | WEAPONFLAG_DETERMINER_F_SOME,
+	WEAPONFLAG_ONEHANDED | WEAPONFLAG_AICANUSE | WEAPONFLAG_04000000 | WEAPONFLAG_DETERMINER_S_SOME | WEAPONFLAG_DETERMINER_F_SOME
+#ifndef PLATFORM_N64
+	| WEAPONFLAG_00000040 | WEAPONFLAG_HASHANDS
+#endif
+	,
 };
 
 struct weaponfunc_device invfunc_suicidepill_primary = {
@@ -5358,8 +5390,14 @@ struct weaponfunc invfunc_disguise_primary = {
 };
 
 struct weapon invitem_disguise40 = {
+#ifdef PLATFORM_N64
 	0, // hi model
 	0, // lo model
+#else
+	// VR: held from the chest pouch, the briefcase is drawn at the hand
+	FILE_PCHRBRIEFCASE, // hi model
+	FILE_PCHRBRIEFCASE, // lo model
+#endif
 	NULL, // equip animation
 	NULL, // unequip animation
 	NULL, // pritosec animation
@@ -5383,12 +5421,22 @@ struct weapon invitem_disguise40 = {
 	L_GUN_043, // name
 	L_GUN_000, // manufacturer
 	L_GUN_211, // description
-	WEAPONFLAG_ONEHANDED | WEAPONFLAG_AICANUSE | WEAPONFLAG_UNDROPPABLE | WEAPONFLAG_FIRETOACTIVATE,
+	WEAPONFLAG_ONEHANDED | WEAPONFLAG_AICANUSE | WEAPONFLAG_UNDROPPABLE | WEAPONFLAG_FIRETOACTIVATE
+#ifndef PLATFORM_N64
+	| WEAPONFLAG_00000040
+#endif
+	,
 };
 
 struct weapon invitem_disguise41 = {
+#ifdef PLATFORM_N64
 	0, // hi model
 	0, // lo model
+#else
+	// VR: held from the chest pouch, the briefcase is drawn at the hand
+	FILE_PCHRBRIEFCASE, // hi model
+	FILE_PCHRBRIEFCASE, // lo model
+#endif
 	NULL, // equip animation
 	NULL, // unequip animation
 	NULL, // pritosec animation
@@ -5412,7 +5460,11 @@ struct weapon invitem_disguise41 = {
 	L_GUN_043, // name
 	L_GUN_000, // manufacturer
 	L_GUN_211, // description
-	WEAPONFLAG_ONEHANDED | WEAPONFLAG_AICANUSE | WEAPONFLAG_UNDROPPABLE | WEAPONFLAG_FIRETOACTIVATE,
+	WEAPONFLAG_ONEHANDED | WEAPONFLAG_AICANUSE | WEAPONFLAG_UNDROPPABLE | WEAPONFLAG_FIRETOACTIVATE
+#ifndef PLATFORM_N64
+	| WEAPONFLAG_00000040
+#endif
+	,
 };
 
 struct weaponfunc_device invfunc_camspy_deploy = {
@@ -5448,7 +5500,12 @@ struct weapon invitem_camspy = {
 	L_GUN_060, // name
 	L_GUN_000, // manufacturer
 	L_GUN_192, // description
-	WEAPONFLAG_ONEHANDED | WEAPONFLAG_AICANUSE | WEAPONFLAG_DUALWIELD | WEAPONFLAG_UNDROPPABLE,
+	WEAPONFLAG_ONEHANDED | WEAPONFLAG_AICANUSE | WEAPONFLAG_DUALWIELD | WEAPONFLAG_UNDROPPABLE
+#ifndef PLATFORM_N64
+	// VR: held from the chest pouch (vrHolsterIsDevice), the drone is drawn at the hand
+	| WEAPONFLAG_00000040
+#endif
+	,
 };
 
 struct weaponfunc_device invfunc_rtracker_primary = {
@@ -5484,7 +5541,12 @@ struct weapon invitem_rtracker = {
 	L_GUN_070, // name
 	L_GUN_000, // manufacturer
 	L_GUN_198, // description
-	WEAPONFLAG_ONEHANDED | WEAPONFLAG_AICANUSE | WEAPONFLAG_DUALWIELD | WEAPONFLAG_UNDROPPABLE,
+	WEAPONFLAG_ONEHANDED | WEAPONFLAG_AICANUSE | WEAPONFLAG_DUALWIELD | WEAPONFLAG_UNDROPPABLE
+#ifndef PLATFORM_N64
+	// VR: held from the chest pouch (vrHolsterIsDevice), the tracker is drawn at the hand
+	| WEAPONFLAG_00000040
+#endif
+	,
 };
 
 struct weaponfunc_device invfunc_xray_primary = {
@@ -5612,7 +5674,12 @@ struct weapon invitem_doordecoder = {
 	L_GUN_063, // name
 	L_GUN_000, // manufacturer
 	L_GUN_200, // description
-	WEAPONFLAG_ONEHANDED | WEAPONFLAG_UNDROPPABLE | WEAPONFLAG_FIRETOACTIVATE,
+	WEAPONFLAG_ONEHANDED | WEAPONFLAG_UNDROPPABLE | WEAPONFLAG_FIRETOACTIVATE
+#ifndef PLATFORM_N64
+	// VR: the decoder itself is drawn at the hand, so you can see you hold it
+	| WEAPONFLAG_00000040
+#endif
+	,
 };
 
 struct weapon invitem_rocket = {
@@ -5783,7 +5850,12 @@ struct weapon invitem_explosives = {
 	L_GUN_064, // name
 	L_GUN_000, // manufacturer
 	L_GUN_202, // description
-	WEAPONFLAG_FIRETOACTIVATE,
+	WEAPONFLAG_FIRETOACTIVATE
+#ifndef PLATFORM_N64
+	// VR: the brick itself is drawn at the hand, as the door decoder
+	| WEAPONFLAG_00000040
+#endif
+	,
 };
 
 struct weaponfunc_device invfunc_presidentscanner_primary = {

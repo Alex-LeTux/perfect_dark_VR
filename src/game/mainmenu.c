@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include "constants.h"
 #include "game/bondgun.h"
+#include "game/vr_holster.h"
 #include "game/bossfile.h"
 #include "game/challenge.h"
 #include "game/cheats.h"
@@ -25,6 +26,7 @@
 #include "game/tex.h"
 #include "game/title.h"
 #include "game/training.h"
+#include "game/trainingmenus.h"
 #include "bss.h"
 #include "lib/vi.h"
 #include "lib/joy.h"
@@ -61,10 +63,6 @@ struct menudialogdef gVROptionsMenuDialog;
 extern f32  inputRumbleGetStrength(s32 playernum);
 extern void inputRumbleSetStrength(s32 playernum, f32 strength);
 //---
-extern bool VRDebugMtxPos;
-extern bool VRDebugMtxPos;
-extern bool VRDebugMtxPos;
-//---
 static char gExtendedGameFovLabel[80];
 extern void vrSettingsSave();
 extern float gVrHeadHeightCm;   // live head height above the floor, cm
@@ -74,6 +72,9 @@ extern float gVrHeadHeightCm;   // live head height above the floor, cm
 //---
 #define WORLDSCALE_STEP   0.01f
 #define WORLDSCALE_STEPS  (s32)((WORLDSCALE_MAX - WORLDSCALE_MIN) / WORLDSCALE_STEP)
+
+#define WALKSPEED_STEP   0.05f
+#define WALKSPEED_STEPS  (s32)((WALKSPEED_MAX - WALKSPEED_MIN) / WALKSPEED_STEP + 0.5f)
 
 // Your height slider steps in whole centimetres.
 #define PLAYERHEIGHT_STEPS (s32)(PLAYERHEIGHT_MAX - PLAYERHEIGHT_MIN)
@@ -134,9 +135,10 @@ MenuItemHandlerResult menuhandlerVRLeftHandedMode(s32 operation, struct menuitem
 {
     switch (operation) {
         case MENUOP_GET:
-            return VrLeftHandedMode ? true : false;
+            return VrLeftHandedPref ? true : false;
         case MENUOP_SET:
-            VrLeftHandedMode = data->checkbox.value ? true : false;
+            VrLeftHandedPref = data->checkbox.value ? true : false;
+            VrLeftHandedMode = VrLeftHandedPref;
             g_Vars.modifiedfiles |= MODFILE_GAME;
             break;
     }
@@ -197,10 +199,29 @@ MenuItemHandlerResult menuhandlerVRStickClickToCrouch(s32 operation, struct menu
     return 0;
 }
 
+MenuItemHandlerResult menuhandlerVRStickTurn(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+    switch (operation) {
+        case MENUOP_GET:
+            return VrStickTurn ? true : false;
+        case MENUOP_SET:
+            VrStickTurn = data->checkbox.value ? true : false;
+            g_Vars.modifiedfiles |= MODFILE_GAME;
+            break;
+    }
+    return 0;
+}
+
 MenuItemHandlerResult menuhandlerVRSnapTurn(s32 operation, struct menuitem *item, union handlerdata *data) {
     static u8 lastRawValue = 0xFF;
 
     switch (operation) {
+        case MENUOP_CHECKDISABLED:
+            // Snap turn is a kind of stick turn: greyed out, and kept, while Stick Turn is off
+            if (!VrStickTurn) {
+                return true;
+            }
+            break;
         case MENUOP_GETSLIDER:
         {
             s32 stepIndex = (s32)roundf((VrUseSnapTurn - SNAP_TURN_MIN) / SNAP_TURN_STEP);
@@ -271,6 +292,39 @@ MenuItemHandlerResult menuhandlerVRWorldScale(s32 operation, struct menuitem *it
     return 0;
 }
 
+MenuItemHandlerResult menuhandlerVRWalkSpeed(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+    static u8 lastRawValue = 0xFF;
+
+    switch (operation) {
+        case MENUOP_GETSLIDER:
+        {
+            s32 stepIndex = (s32)roundf((VrWalkSpeed - WALKSPEED_MIN) / WALKSPEED_STEP);
+            data->slider.value = (u8)roundf((f32)stepIndex / (f32)WALKSPEED_STEPS * 255.0f);
+            lastRawValue = data->slider.value;
+        }
+            break;
+        case MENUOP_SET:
+        {
+            s32 delta = (s32)data->slider.value - (s32)lastRawValue;
+            if (delta != 0) {
+                s32 currentStep = (s32)roundf((VrWalkSpeed - WALKSPEED_MIN) / WALKSPEED_STEP);
+                currentStep += delta > 0 ? 1 : -1;
+                if (currentStep < 0) currentStep = 0;
+                if (currentStep > WALKSPEED_STEPS) currentStep = WALKSPEED_STEPS;
+                VrWalkSpeed = WALKSPEED_MIN + (f32)currentStep * WALKSPEED_STEP;
+                g_Vars.modifiedfiles |= MODFILE_GAME;
+                lastRawValue = data->slider.value;
+            }
+        }
+            break;
+        case MENUOP_GETSLIDERLABEL:
+            sprintf(data->slider.label, "%d%%", (s32)roundf(VrWalkSpeed * 100.0f));
+            break;
+    }
+
+    return 0;
+}
 
 MenuItemHandlerResult menuhandlerVRCharacterHeight(s32 operation, struct menuitem *item, union handlerdata *data)
 {
@@ -509,15 +563,41 @@ MenuItemHandlerResult menuhandlerVRTwoHandedAiming(s32 operation, struct menuite
     return 0;
 }
 
-MenuItemHandlerResult menuhandlerVRDebugMtxPos(s32 operation, struct menuitem *item, union handlerdata *data)
+// One body spot of the Holster Layout page: item->param is the spot (vrHolsterLayoutGet: 0 left
+// shoulder, 1 right shoulder, 2 chest, 3 left hip, 4 right hip). Picking what another spot holds
+// swaps the two.
+MenuItemHandlerResult menuhandlerVRHolsterSpot(s32 operation, struct menuitem *item, union handlerdata *data)
 {
+    static const char *slots[] = { "Gun 1", "Gun 2", "Gun 3", "Gadgets", "Throwables" };
+
     switch (operation) {
-        case MENUOP_GET:
-            return VRDebugMtxPos ? true : false;
-        case MENUOP_SET:
-            VRDebugMtxPos = data->checkbox.value ? true : false;
-            g_Vars.modifiedfiles |= MODFILE_GAME;
+        case MENUOP_GETOPTIONCOUNT:
+            data->dropdown.value = ARRAYCOUNT(slots);
             break;
+        case MENUOP_GETOPTIONTEXT: {
+            s32 i = (s32)data->dropdown.value;
+
+            return (uintptr_t) slots[i >= 0 && i < ARRAYCOUNT(slots) ? i : 0];
+        }
+        case MENUOP_GETSELECTEDINDEX:
+            data->dropdown.value = vrHolsterLayoutGet(item->param);
+            break;
+        case MENUOP_SET:
+            if ((s32)data->dropdown.value != vrHolsterLayoutGet(item->param)) {
+                vrHolsterLayoutSet(item->param, data->dropdown.value);
+                g_Vars.modifiedfiles |= MODFILE_GAME;
+            }
+            break;
+    }
+
+    return 0;
+}
+
+MenuItemHandlerResult menuhandlerVRHolsterDefault(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+    if (operation == MENUOP_SET) {
+        vrHolsterLayoutReset();
+        g_Vars.modifiedfiles |= MODFILE_GAME;
     }
 
     return 0;
@@ -560,6 +640,22 @@ struct menuitem g_VRComfortOptionsMenuItems[] = {
                 (uintptr_t)"Match Character Height",
                 0,
                 menuhandlerVRCharacterHeight,
+        },
+        {
+                MENUITEMTYPE_SLIDER,
+                0,
+                MENUITEMFLAG_LITERAL_TEXT,
+                (uintptr_t)"Walk Speed",
+                0xff,
+                menuhandlerVRWalkSpeed,
+        },
+        {
+                MENUITEMTYPE_CHECKBOX,
+                0,
+                MENUITEMFLAG_LITERAL_TEXT,
+                (uintptr_t)"Stick Turn",
+                0,
+                menuhandlerVRStickTurn,
         },
         {
                 MENUITEMTYPE_SLIDER,
@@ -683,6 +779,86 @@ struct menudialogdef g_VRDisplayOptionsMenuDialog = {
         NULL,
 };
 
+// --- 3a. Holster Layout (from Weapons & Gameplay) ---
+// The spots by their physical side; the defaults (gun 1 on the gun-hand shoulder, gun 2 on the
+// other shoulder, gun 3 on the off-hand hip) follow the left-handed setting.
+struct menuitem g_VRHolsterLayoutMenuItems[] = {
+        {
+                MENUITEMTYPE_DROPDOWN,
+                0,
+                MENUITEMFLAG_LITERAL_TEXT,
+                (uintptr_t)"Left Shoulder",
+                0,
+                menuhandlerVRHolsterSpot,
+        },
+        {
+                MENUITEMTYPE_DROPDOWN,
+                1,
+                MENUITEMFLAG_LITERAL_TEXT,
+                (uintptr_t)"Right Shoulder",
+                0,
+                menuhandlerVRHolsterSpot,
+        },
+        {
+                MENUITEMTYPE_DROPDOWN,
+                2,
+                MENUITEMFLAG_LITERAL_TEXT,
+                (uintptr_t)"Chest",
+                0,
+                menuhandlerVRHolsterSpot,
+        },
+        {
+                MENUITEMTYPE_DROPDOWN,
+                3,
+                MENUITEMFLAG_LITERAL_TEXT,
+                (uintptr_t)"Left Hip",
+                0,
+                menuhandlerVRHolsterSpot,
+        },
+        {
+                MENUITEMTYPE_DROPDOWN,
+                4,
+                MENUITEMFLAG_LITERAL_TEXT,
+                (uintptr_t)"Right Hip",
+                0,
+                menuhandlerVRHolsterSpot,
+        },
+        {
+                MENUITEMTYPE_SELECTABLE,
+                0,
+                MENUITEMFLAG_LITERAL_TEXT,
+                (uintptr_t)"Default Layout\n",
+                0,
+                menuhandlerVRHolsterDefault,
+        },
+        {
+                MENUITEMTYPE_SEPARATOR,
+                0,
+                0,
+                0x000000c8,
+                0,
+                NULL,
+        },
+        {
+                MENUITEMTYPE_SELECTABLE,
+                0,
+                MENUITEMFLAG_SELECTABLE_CLOSESDIALOG,
+                L_OPTIONS_219,   // "Back"
+                0,
+                NULL,
+        },
+        { MENUITEMTYPE_END },
+};
+
+struct menudialogdef g_VRHolsterLayoutMenuDialog = {
+        MENUDIALOGTYPE_DEFAULT,
+        (uintptr_t)"Holster Layout",
+        g_VRHolsterLayoutMenuItems,
+        menudialogVROptions,
+        MENUDIALOGFLAG_LITERAL_TEXT,
+        NULL,
+};
+
 // --- 3. Weapons & Gameplay ---
 struct menuitem g_VRWeaponsOptionsMenuItems[] = {
         {
@@ -697,9 +873,17 @@ struct menuitem g_VRWeaponsOptionsMenuItems[] = {
                 MENUITEMTYPE_CHECKBOX,
                 0,
                 MENUITEMFLAG_LITERAL_TEXT,
-                (uintptr_t)"Manual Reloading [WIP]Only Falcon2",
+                (uintptr_t)"Manual Reload [WIP]",
                 0,
                 menuhandlerVRManualReloading,
+        },
+        {
+                MENUITEMTYPE_SELECTABLE,
+                0,
+                MENUITEMFLAG_SELECTABLE_OPENSDIALOG | MENUITEMFLAG_LITERAL_TEXT,
+                (uintptr_t)"Holster Layout...\n",
+                0,
+                (void *)&g_VRHolsterLayoutMenuDialog,
         },
         {
                 MENUITEMTYPE_CHECKBOX,
@@ -5118,6 +5302,38 @@ struct menudialogdef g_SoloMissionInventoryMenuDialog = {
         &g_SoloMissionOptionsMenuDialog,
 };
 
+/**
+ * VR: the device lab's pause while a lesson runs, with the inventory beside it as a mission's pause
+ * has. With holsters the pause inventory is the only way to pick the CamSpy, the Night Vision, the
+ * X-Ray and IR Scanners, the Tracker and the Cloaking Device (the hold menus offer neither those
+ * nor the other device toggles), and the lab's pause had no inventory, so those lessons could not
+ * be finished. Only the pause takes it: the lab terminal keeps the plain details dialog.
+ */
+extern struct menuitem g_DtDetailsMenuItems[];
+extern struct menudialogdef g_DtPauseMenuDialog;
+
+struct menudialogdef g_DtInventoryMenuDialog = {
+        MENUDIALOGTYPE_DEFAULT,
+        L_OPTIONS_178, // "Inventory"
+        g_SoloMissionInventoryMenuItems,
+        inventoryMenuDialog,
+#if VERSION >= VERSION_JPN_FINAL
+        MENUDIALOGFLAG_0002 | MENUDIALOGFLAG_DISABLERESIZE | MENUDIALOGFLAG_0400 | MENUDIALOGFLAG_1000,
+#else
+        MENUDIALOGFLAG_0002 | MENUDIALOGFLAG_DISABLERESIZE | MENUDIALOGFLAG_0400,
+#endif
+        &g_DtPauseMenuDialog,
+};
+
+struct menudialogdef g_DtPauseMenuDialog = {
+        MENUDIALOGTYPE_DEFAULT,
+        (uintptr_t)&dtMenuTextName,
+        g_DtDetailsMenuItems,
+        dtTrainingDetailsMenuDialog,
+        MENUDIALOGFLAG_0002 | MENUDIALOGFLAG_STARTSELECTS | MENUDIALOGFLAG_DISABLERESIZE,
+        &g_DtInventoryMenuDialog,
+};
+
 struct menudialogdef g_FrWeaponsAvailableMenuDialog = {
         MENUDIALOGTYPE_DEFAULT,
         L_OPTIONS_179, // "Weapons Available"
@@ -5201,19 +5417,23 @@ MenuItemHandlerResult menuhandlerInventoryList(s32 operation, struct menuitem *i
 
             if (equippable) {
                 invSetCurrentIndex(data->list.value);
+            }
 
-                if (invHasDoubleWeaponIncAllGuns(weaponnum, weaponnum)) {
-                    bgunEquipWeapon2(HAND_RIGHT, weaponnum);
+            // VR: with holsters a gun goes to the holster core, which decides the equip, and a
+            // gadget or throwable to its slot (the chest pouch or the right hip), not into a hand
+            if (equippable && vrHolsterOnMenuPick(weaponnum)) {
+                equippable = false;
+            }
+
+            if (equippable) {
+                // VR: the menu never selects dual wield (pairs come from holsters): always equip one gun
+                bgunEquipWeapon2(HAND_RIGHT, weaponnum);
+                // don't unequip detonator
+                // if we already have it equipped
+                if (weaponnum == WEAPON_REMOTEMINE) {
                     bgunEquipWeapon2(HAND_LEFT, weaponnum);
                 } else {
-                    bgunEquipWeapon2(HAND_RIGHT, weaponnum);
-                    // don't unequip detonator
-                    // if we already have it equipped
-                    if (weaponnum == WEAPON_REMOTEMINE) {
-                        bgunEquipWeapon2(HAND_LEFT, weaponnum);
-                    } else {
-                        bgunEquipWeapon2(HAND_LEFT, WEAPON_NONE);
-                    }
+                    bgunEquipWeapon2(HAND_LEFT, WEAPON_NONE);
                 }
             }
 
@@ -5899,7 +6119,7 @@ bool soloChoosePauseDialog(void)
                     handled = true;
                 } else if (room == ROOM_DISH_DEVICELAB) {
                     if (dtdata->intraining) {
-                        menuPushRootDialog(&g_DtDetailsMenuDialog, MENUROOT_TRAINING);
+                        menuPushRootDialog(&g_DtPauseMenuDialog, MENUROOT_TRAINING);
                     } else if (dtdata->finished) {
                         dtPushEndscreen();
                     } else {
@@ -5908,7 +6128,7 @@ bool soloChoosePauseDialog(void)
 
                     handled = true;
                 } else if (dtdata->intraining) {
-                    menuPushRootDialog(&g_DtDetailsMenuDialog, MENUROOT_TRAINING);
+                    menuPushRootDialog(&g_DtPauseMenuDialog, MENUROOT_TRAINING);
                     handled = true;
                 } else if (dtdata->finished) {
                     dtPushEndscreen();

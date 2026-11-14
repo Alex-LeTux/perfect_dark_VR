@@ -35,14 +35,19 @@
 
 extern int weaponnum;
 extern bool VR_FUNC_SECONDARY;
-extern int vr_button_R_grip;
-extern int vr_button_L_grip;
 extern bool VrMotionThrowing;
 bool WepCanZoom = false;
 bool VrWeaponRecoil = true;
-extern "C" bool VrTwoHandsGun(int weaponnum);
-int gripPressed = false;
-int VrLeftHandedMode = 0;
+// bondgun.c's bool is s32 (types.h), so these return int
+extern "C" int VrTwoHandsGun(int weaponnum);
+extern "C" int vrTwoHandAiming(void); // bondgun.c: the gun is aimed with both hands (the scopes and the zoom)
+extern "C" int vrTwoHandGripHeld(void); // bondgun.c: the free hand grips a two-handed gun as its support hand
+extern "C" int vrGunKickOwnsRecoil(void); // bondgun.c: the gun hand's recoil is its drawn kick (the pumped Shotgun, the revolvers)
+int VrLeftHandedPref = 0;  // the user's saved setting
+int VrLeftHandedMode = 0;  // runtime gun side: equals the pref unless a holster draw flips it
+// VrLeftHandedMode as the last controller_pose saw it: gCtrlPos, gCtrlQuat and vrCtrlPoseGood keep
+// that mapping until the next frame, even when a holster draw flips the mode mid-frame
+extern "C" { int VrCtrlPoseMode = 0; }
 int VrSwapJoysticks = 0;
 bool sQuatIdleInit_reset[2] = {false, false};
 
@@ -64,17 +69,7 @@ static XrPosef gCtrlPosePlay[2] = {};
 static XrSpaceVelocity gCachedVelocityPlay[2] = {};
 float vr_ctrl_quat_play[2][4];     // {w,x,y,z}, raw OpenXR basis, play space
 float vr_ctrl_velocity_play[2][3]; // m/s,       raw OpenXR basis, play space
-
-// ===== MANUAL RELOADING =========================
-
-float gVrReloadPullLocalX = 0.0f;
-float gVrReloadPullLocalY = 0.0f;
-float gVrReloadPullLocalZ = 0.0f;
-
-static bool  sReloadPrevCaptured = false;
-static float sReloadRelPrevX = 0.0f;
-static float sReloadRelPrevY = 0.0f;
-static float sReloadRelPrevZ = 0.0f;
+float vr_ctrl_angvel_play[2][3];   // rad/s,     raw OpenXR basis, play space (the turn's axis times its rate)
 
 // Inverse of a quaternion (w,x,y,z) — for a unit quaternion, this is the conjugate
 /*static void QuatInverse(const float q[4], float out[4]) {
@@ -89,8 +84,8 @@ static float sReloadRelPrevZ = 0.0f;
 // ============================================================
 
 #define CTRL_SMOOTH_ALPHA_POS       1.00f   // Position with grip 1.0f = none
-#define CTRL_SMOOTH_ALPHA_ROT_GRIP  0.10f   // Rotation with grip (strong)
-#define CTRL_SMOOTH_ALPHA_ROT_IDLE  0.50f   // Rotation without grip (very light)
+#define CTRL_SMOOTH_ALPHA_ROT_GRIP  0.10f   // Rotation of a zoom gun aimed with both hands (strong)
+#define CTRL_SMOOTH_ALPHA_ROT_IDLE  0.50f   // Rotation otherwise (very light)
 
 
 static float  sSmoothedPos[2][3]  = {{0,0,0},{0,0,0}};
@@ -700,7 +695,14 @@ extern "C" bool get_button_state(int hand_index, const char* button_name) {
         return false;
     }
 
-    if (VrLeftHandedMode){
+    // The menu button and the stick click stay on the controller the user's saved setting
+    // put them on: they must not move when a holster draw changes the gun hand.
+    int flip = VrLeftHandedMode;
+    if (strcmp(button_name, "menu") == 0 || strcmp(button_name, "thumbstick_click") == 0) {
+        flip = VrLeftHandedPref;
+    }
+
+    if (flip){
         hand_index = 1 - hand_index;
     }
 
@@ -844,6 +846,12 @@ XrResult trigger_haptic_vibration_c(int hand_index, float amplitude, float durat
 XrResult stop_haptic_vibration_c(int hand_index) {
     return stop_haptic_vibration(hand_index);
 }
+
+// 1 when the logical controller (0 = off-hand, 1 = gun hand) had a valid pose on its last update.
+int vrCtrlPoseGood(int i) {
+    if (i < 0 || i > 1) return 0;
+    return sLastPoseGood[i] ? 1 : 0;
+}
 }
 
 
@@ -958,42 +966,6 @@ void applyCtrlRotation(int i, int axis, float angle) {
 
 
 
-// Update the local pull FOR MANUAL RELOADING
-void vrUpdateReloadPull(void) {
-    if (!sLastPoseGood[0] || !sLastPoseGood[1]) {
-        sReloadPrevCaptured = false;
-        return;
-    }
-
-    float rx = gCtrlPos[0][0] - gCtrlPos[1][0];
-    float ry = gCtrlPos[0][1] - gCtrlPos[1][1];
-    float rz = gCtrlPos[0][2] - gCtrlPos[1][2];
-
-
-    if (!sReloadPrevCaptured) {
-        sReloadRelPrevX = rx; sReloadRelPrevY = ry; sReloadRelPrevZ = rz;
-        sReloadPrevCaptured = true;
-        return;
-    }
-
-    float dx = rx - sReloadRelPrevX;
-    float dy = ry - sReloadRelPrevY;
-    float dz = rz - sReloadRelPrevZ;
-    sReloadRelPrevX = rx; sReloadRelPrevY = ry; sReloadRelPrevZ = rz;
-
-    const auto& rightPose = gControllerStates[1].controller_pose.orientation;
-    float qInv[4] = { rightPose.w, -rightPose.x, -rightPose.y, -rightPose.z };
-
-    float ldx, ldy, ldz;
-    RotVecByQuat(dx, dy, dz, qInv, ldx, ldy, ldz);
-
-    // Accumulate on the 3 local axes
-    gVrReloadPullLocalX += ldx;
-    gVrReloadPullLocalY -= ldz;
-    gVrReloadPullLocalZ -= ldy;
-
-}
-
 // SLERP between two quaternions [w,x,y,z], t in [0,1]
 void QuatSlerp(const float a[4], const float b[4], float t, float out[4])
 {
@@ -1043,7 +1015,7 @@ struct WeaponRecoilProfile {
 
 static WeaponRecoilProfile GetRecoilProfileForWeapon(int wnum)
 {
-    bool isTwoHandsGrip = VrTwoHandsGun(weaponnum) && get_button_state(0, "grip");
+    bool isTwoHandsGrip = VrTwoHandsGun(weaponnum) && vrTwoHandGripHeld();
 
     switch (wnum) {
         // --- PISTOLS (one hand only, no two-handed grip) ---
@@ -1055,8 +1027,13 @@ static WeaponRecoilProfile GetRecoilProfileForWeapon(int wnum)
         case WEAPON_CC13:
             return { 0.025f, 0.010f, -0.60f, 75.0f, 50.0f };
 
+        // The revolvers kick in their drawn gun pose (bondgun.c, vrGunKickApply, Task H4), so no
+        // spring: it turned the gun controller's pose 12.7 degrees on top of the engine's 35
         case WEAPON_DY357MAGNUM:
         case WEAPON_DY357LX:
+            if (vrGunKickOwnsRecoil()) {
+                return { 0.0f, 0.0f, 0.0f, 100.0f, 10.0f };
+            }
             return { 0.090f, 0.020f, -1.20f, 60.0f, 15.0f };
 
             // --- MAULER (no YAW, dry and very powerful translation recoil) ---
@@ -1124,9 +1101,14 @@ static WeaponRecoilProfile GetRecoilProfileForWeapon(int wnum)
                 return { 0.030f, 0.015f, -1.000f, 95.0f, 13.0f };
             }
 
-            // --- SHOTGUN (HUGE backward recoil) ---
+            // --- SHOTGUN (HUGE backward recoil). No spring while the player pumps it (manual reload,
+            // vrGunKickOwnsRecoil): its kick is then in the drawn gun pose (bondgun.c, vrGunKickApply,
+            // Task G0d), which the two-hand aim keeps; this spring moves the gun controller's pose (so
+            // the aim, the holsters and the grabs) and the two-hand aim throws it away ---
         case WEAPON_SHOTGUN:
-            if (isTwoHandsGrip) {
+            if (vrGunKickOwnsRecoil()) {
+                return { 0.0f, 0.0f, 0.0f, 100.0f, 10.0f };
+            } else if (isTwoHandsGrip) {
                 return { 0.045f, 0.005f, -3.500f, 75.0f, 13.0f };
             } else {
                 return { 0.140f, 0.020f, -7.000f, 33.0f, 6.0f };
@@ -1312,6 +1294,27 @@ void controller_pose() {
         }
     }
 
+    // The gun side changed (a holster draw, or the left-handed setting): each logical controller
+    // now reads the other physical one. Re-anchor as after a tracking loss, or the jump check
+    // would hold the old hand's pose for up to 15 frames, and restart the rotation smoothing so it
+    // does not blend from the other hand.
+    {
+        static int sPoseMode = -1;
+
+        if (VrLeftHandedMode != sPoseMode) {
+            for (int i = 0; i < 2; i++) {
+                sLastPoseGood[i] = false;
+                sRejectStreak[i] = 0;
+                sSmoothedInit[i] = false;
+                sQuatIdleInit_reset[i] = false;
+            }
+
+            sPoseMode = VrLeftHandedMode;
+        }
+
+        VrCtrlPoseMode = VrLeftHandedMode;
+    }
+
     for (int i = 0; i < 2; i++) {
         // --- INVERSION LOGIC HERE ---
         // If left-handed mode is ON:
@@ -1329,6 +1332,9 @@ void controller_pose() {
             vr_ctrl_velocity_play[i][0] = 0.0f;
             vr_ctrl_velocity_play[i][1] = 0.0f;
             vr_ctrl_velocity_play[i][2] = 0.0f;
+            vr_ctrl_angvel_play[i][0] = 0.0f;
+            vr_ctrl_angvel_play[i][1] = 0.0f;
+            vr_ctrl_angvel_play[i][2] = 0.0f;
         };
 
         if (!state.is_active) {
@@ -1358,6 +1364,19 @@ void controller_pose() {
             vr_ctrl_velocity_play[i][0] = 0.0f;
             vr_ctrl_velocity_play[i][1] = 0.0f;
             vr_ctrl_velocity_play[i][2] = 0.0f;
+        }
+
+        // The angular velocity: OpenXR gives it in the base space (play space here), rad/s, as the
+        // turn's axis scaled by its rate, so a point r (m) from the pose's origin moves at
+        // linear + angular x r
+        if (gCachedVelocityPlay[sourceIndex].velocityFlags & XR_SPACE_VELOCITY_ANGULAR_VALID_BIT) {
+            vr_ctrl_angvel_play[i][0] = gCachedVelocityPlay[sourceIndex].angularVelocity.x;
+            vr_ctrl_angvel_play[i][1] = gCachedVelocityPlay[sourceIndex].angularVelocity.y;
+            vr_ctrl_angvel_play[i][2] = gCachedVelocityPlay[sourceIndex].angularVelocity.z;
+        } else {
+            vr_ctrl_angvel_play[i][0] = 0.0f;
+            vr_ctrl_angvel_play[i][1] = 0.0f;
+            vr_ctrl_angvel_play[i][2] = 0.0f;
         }
 
 // --- Raw OpenXR position ---
@@ -1445,8 +1464,6 @@ void controller_pose() {
         gCtrlQuatRaw[i][2] = rawQuat[2];
         gCtrlQuatRaw[i][3] = rawQuat[3];
 
-        // --- Determine whether grip is pressed for THIS controller ---
-        gripPressed = (sourceIndex == 1) ? (vr_button_R_grip != 0) : (vr_button_L_grip != 0);
         WepCanZoom = weaponnum == WEAPON_SNIPERRIFLE
                      || weaponnum == WEAPON_MAGSEC4
                      || weaponnum == WEAPON_LAPTOPGUN
@@ -1460,8 +1477,14 @@ void controller_pose() {
                      || weaponnum == WEAPON_FALCON2_SCOPE;
 
 
-        if (gripPressed && WepCanZoom) {
-            // --- Initialization on the first frame with grip ---
+        // The strong rotation smoothing steadies a zoom gun's aim, so only the gun hand (logical 1)
+        // gets it and only while the gun is aimed with both hands (vrTwoHandAiming, bondgun.c). The
+        // grip alone does not count: with holsters it is held the whole time a gun is in the hand,
+        // and a one-handed zoom gun lagged behind the controller.
+        bool aimSteady = WepCanZoom && i == 1 && vrTwoHandAiming();
+
+        if (aimSteady) {
+            // --- Initialization on the first frame aimed with both hands ---
             if (!sSmoothedInit[i]) {
                 sSmoothedPos[i][0]  = rawX;
                 sSmoothedPos[i][1]  = rawY;
@@ -1496,7 +1519,7 @@ void controller_pose() {
             gCtrlQuat[i][3] = sSmoothedQuat[i][3];
 
         } else {
-            // --- Grip released: raw position, but slightly smoothed rotation ---
+            // --- Not aimed with both hands: raw position, but slightly smoothed rotation ---
             sSmoothedInit[i] = false;
 
             // Position: raw, no lag
@@ -1576,8 +1599,6 @@ void controller_pose() {
 
 
     }
-
-    vrUpdateReloadPull();
 }
 
 
@@ -1593,10 +1614,24 @@ static float s_center_x = 0.0f;
 static float s_center_y = 0.0f;
 
 
-extern "C" bool vr_get_menu_pointer_coords(float *out_x, float *out_y, bool is_first_frame) {
-    int handIndex = VrLeftHandedMode ? 0 : 1;
+extern "C" int vrHolsterMenuHand(void); // vr_holster.c: the hand whose A or X opened the menu, -1 none
 
-    if (!gControllerStates[handIndex].is_active) return false;
+extern "C" bool vr_get_menu_pointer_coords(float *out_x, float *out_y, bool is_first_frame) {
+    // The hand that opened the menu steers it: with holsters the physical hand whose A or X
+    // opened it (vrHolsterMenuHand), else the physical controller that owns logical A
+    // (gControllerStates is physical, [0] = left). Latched at open so a gun side change while
+    // the menu is open does not move the pointer to the other hand.
+    static int sPhys = 1;
+
+    if (is_first_frame) {
+        int menuhand = vrHolsterMenuHand();
+        sPhys = menuhand >= 0 ? menuhand : (VrLeftHandedMode ? 0 : 1);
+    }
+
+    if (!gControllerStates[sPhys].is_active) return false;
+
+    // gCtrlQuatRaw is logical: controller_pose filled slot i from physical i ^ VrCtrlPoseMode
+    int handIndex = sPhys ^ (VrCtrlPoseMode ? 1 : 0);
 
     float pitch_rad = vr_pointer_pitch_deg * (3.1415926535f / 180.0f);
     float base_x = 0.0f;

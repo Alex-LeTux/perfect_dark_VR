@@ -12,6 +12,7 @@
 u32 g_left_arm_node_ofs = 0;
 u32 g_right_arm_node_ofs = 0;
 extern int weaponnum;
+extern s32 g_VrGunLoadWeaponnum;
 extern bool g_VrCopyWepFilemodel;
 extern s32 handnum;
 
@@ -936,14 +937,16 @@ static u8 *relinkPointers(u8 *dst, u8 *src)
                 // VR
                 struct marker *parent = findMarker(marker->parent_src_offset);
                 struct marker *gp = parent ? findMarker(parent->parent_src_offset) : NULL;
+                // The weapon being loaded (bgunTickGunLoad), else the global as before
+                s32 loadweapon = g_VrGunLoadWeaponnum >= 0 ? g_VrGunLoadWeaponnum : weaponnum;
                 if (gp) {
                     // Left hand
-                    if (gp->src_offset == g_left_arm_node_ofs && weaponnum == WEAPON_UNARMED) {
+                    if (gp->src_offset == g_left_arm_node_ofs && loadweapon == WEAPON_UNARMED) {
                         dst_gundl->ptr_opagdl = 0;
                         dst_gundl->ptr_xlugdl = 0;
                     }
                     // right hand
-                    if (gp->src_offset == g_right_arm_node_ofs && weaponnum == WEAPON_LASER) {
+                    if (gp->src_offset == g_right_arm_node_ofs && loadweapon == WEAPON_LASER) {
                         dst_gundl->ptr_opagdl = 0;
                         dst_gundl->ptr_xlugdl = 0;
                     }

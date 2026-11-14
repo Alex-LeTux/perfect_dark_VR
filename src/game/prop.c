@@ -10,6 +10,7 @@
 #include "game/dlights.h"
 #include "game/chr.h"
 #include "game/prop.h"
+#include "game/vr_holster.h"
 #include "game/propsnd.h"
 #include "game/objectives.h"
 #include "game/floor.h"
@@ -1724,6 +1725,33 @@ void propFindForUplink(void)
     }
 }
 
+/* VR: a grabbable object the grip could grab now, not the hoverbike. Keep in step with the grab
+ * condition at the end of propobjInteract (propobj.c, the bmoveGrabProp branch). */
+static bool propCanGripGrab(struct prop *prop)
+{
+    struct defaultobj *obj;
+
+    if (prop == NULL || (prop->type != PROPTYPE_OBJ && prop->type != PROPTYPE_WEAPON)) {
+        return false;
+    }
+
+    obj = prop->obj;
+
+    return obj->type != OBJTYPE_HOVERBIKE
+        && (obj->flags3 & OBJFLAG3_GRABBABLE)
+        && g_Vars.currentplayer->bondmovemode == MOVEMODE_WALK
+        && bmoveGetCrouchPos() == CROUCHPOS_STAND
+        && g_Vars.currentplayer->crouchoffset == 0
+        && g_Vars.currentplayer->onladder == false;
+}
+
+struct prop *propFindForGripGrab(void)
+{
+    struct prop *prop = propFindForInteract(false);
+
+    return propCanGripGrab(prop) ? prop : NULL;
+}
+
 bool currentPlayerInteract(bool eyespy)
 {
     struct prop *prop;
@@ -1735,9 +1763,27 @@ bool currentPlayerInteract(bool eyespy)
         switch (prop->type) {
             case PROPTYPE_OBJ:
             case PROPTYPE_WEAPON:
+                // VR: with holsters a grip only acts on a grabbable object (vrHolsterGrabEdge):
+                // consoles, alarms, lift calls and the hoverbike are the A or X use. The grab goes
+                // through propobjInteract as before, so the object is marked activated and hooked.
+                if (!g_DisableGrabViaB && vrHolsterActive()) {
+                    if (propCanGripGrab(prop)) {
+                        op = propobjInteract(prop);
+                    }
 
-                if (g_DisableGrabViaB) { // VR disable reload using grip
-                    if (g_Vars.currentplayer->hands[HAND_RIGHT].state != HANDSTATE_RELOAD) { // VR enable reload using B when close to grabable obj.
+                    break;
+                }
+
+                // VR: the A or X use found a grabbable object: the once-per-level grab hint
+                if (vrHolsterActive() && propCanGripGrab(prop)) {
+                    vrHolsterCrateHint();
+                }
+
+                // VR disable reload using grip. With holsters this is the A or X use, and B
+                // reloads on its own (bmoveProcessInput)
+                if (g_DisableGrabViaB && !vrHolsterActive()) {
+                    if (!vrReloadEjectButton(HAND_RIGHT)
+                            && g_Vars.currentplayer->hands[HAND_RIGHT].state != HANDSTATE_RELOAD) { // VR enable reload using B when close to grabable obj.
                         bgunReloadIfPossible(HAND_RIGHT);
                     }
                 }

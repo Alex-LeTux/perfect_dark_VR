@@ -61,6 +61,7 @@
 #endif
 
 #include "../../port/vr/vr_openxr.h"
+#include "game/vr_holster.h"
 
 //VR
 extern int VrSmallW;
@@ -5464,6 +5465,7 @@ Gfx *menuRender(Gfx *gdl)
     // VR HACK : On prévient le moteur de rendu
     gDPNoOpTag(gdl++, 0x56520001);
     VrIsPaused = (g_MenuData.count > 0);
+    vrHolsterMenuSide(); // VR: the controllers follow the left-handed setting in menus
     gDPNoOpTag(gdl++, VR_MENU_HUD_CAPTURE_BEGIN_L); // VR
 
     static u32 usepiece = 1;

@@ -591,44 +591,34 @@ void invChooseCycleForwardWeapon(s32 *ptr1, s32 *ptr2, bool arg2)
 	if (g_Vars.currentplayer->equipallguns) {
 		s32 candidate = *ptr1;
 
-		if (weaponHasFlag(*ptr1, WEAPONFLAG_DUALWIELD) && *ptr2 != *ptr1) {
-			// Switching to dual from single
-			weapon1 = *ptr1;
-			weapon2 = *ptr1;
-		} else {
-			// Find next weapon
-			do {
+		// VR: no "switching to dual from single" step: the A-tap never
+		// selects dual wield (pairs come from holsters), so always find
+		// the next weapon
+		do {
+			candidate = (candidate + 1) % NUM_CYCLEABLE_WEAPONS;
+
+			if (candidate == WEAPON_NONE) {
 				candidate = (candidate + 1) % NUM_CYCLEABLE_WEAPONS;
+			}
 
-				if (candidate == WEAPON_NONE) {
-					candidate = (candidate + 1) % NUM_CYCLEABLE_WEAPONS;
-				}
-
-				if ((!arg2 || bgun0f0a1a10(candidate)) && invCanHaveAllGunsWeapon(candidate)) {
-					weapon1 = candidate;
-					weapon2 = WEAPON_NONE;
-					break;
-				}
-			} while (candidate != weapon1);
-		}
+			if ((!arg2 || bgun0f0a1a10(candidate)) && invCanHaveAllGunsWeapon(candidate)) {
+				weapon1 = candidate;
+				weapon2 = WEAPON_NONE;
+				break;
+			}
+		} while (candidate != weapon1);
 	} else {
 		struct invitem *item = g_Vars.currentplayer->weapons;
+		bool wrapped = false;
 
+		// VR: dual entries are skipped: the A-tap never selects dual wield
+		// (pairs come from holsters)
 		while (item) {
 			if (item->type == INVITEMTYPE_WEAP) {
 				if (item->type_weap.weapon1 < NUM_CYCLEABLE_WEAPONS && item->type_weap.weapon1 > weapon1) {
 					if (!arg2 || bgun0f0a1a10(item->type_weap.weapon1)) {
 						weapon1 = item->type_weap.weapon1;
 						weapon2 = WEAPON_NONE;
-						break;
-					}
-				}
-			} else if (item->type == INVITEMTYPE_DUAL) {
-				if (item->type_dual.weapon1 > weapon1
-						|| (weapon1 == item->type_dual.weapon1 && item->type_dual.weapon2 > weapon2)) {
-					if (!arg2 || bgun0f0a1a10(item->type_dual.weapon1) || bgun0f0a1a10(item->type_dual.weapon2)) {
-						weapon1 = item->type_dual.weapon1;
-						weapon2 = item->type_dual.weapon2;
 						break;
 					}
 				}
@@ -641,6 +631,15 @@ void invChooseCycleForwardWeapon(s32 *ptr1, s32 *ptr2, bool arg2)
 					break;
 				}
 
+				// VR: no single weapon left to cycle to: stay on the current
+				// one instead of looping forever
+				if (wrapped) {
+					weapon1 = *ptr1;
+					weapon2 = WEAPON_NONE;
+					break;
+				}
+
+				wrapped = true;
 				weapon1 = -1;
 				weapon2 = -1;
 			}
@@ -673,17 +672,16 @@ void invChooseCycleBackWeapon(s32 *ptr1, s32 *ptr2, bool arg2)
 				}
 			} while ((arg2 && !bgun0f0a1a10(candidate)) || !invCanHaveAllGunsWeapon(candidate));
 
-			if (weaponHasFlag(candidate, WEAPONFLAG_DUALWIELD)) {
-				weapon1 = candidate;
-				weapon2 = candidate;
-			} else {
-				weapon1 = candidate;
-				weapon2 = WEAPON_NONE;
-			}
+			// VR: cycling never selects dual wield (pairs come from holsters)
+			weapon1 = candidate;
+			weapon2 = WEAPON_NONE;
 		}
 	} else if (g_Vars.currentplayer->weapons != NULL) {
 		struct invitem *item = g_Vars.currentplayer->weapons->prev;
+		bool wrapped = false;
 
+		// VR: dual entries are skipped: cycling never selects dual wield
+		// (pairs come from holsters)
 		while (true) {
 			if (item->type == INVITEMTYPE_WEAP) {
 				if (item->type_weap.weapon1 < NUM_CYCLEABLE_WEAPONS
@@ -694,15 +692,6 @@ void invChooseCycleBackWeapon(s32 *ptr1, s32 *ptr2, bool arg2)
 						break;
 					}
 				}
-			} else if (item->type == INVITEMTYPE_DUAL) {
-				if (item->type_dual.weapon1 < weapon1
-						|| (weapon1 == item->type_dual.weapon1 && item->type_dual.weapon2 < weapon2)) {
-					if (!arg2 || bgun0f0a1a10(item->type_dual.weapon1) || bgun0f0a1a10(item->type_dual.weapon2)) {
-						weapon1 = item->type_dual.weapon1;
-						weapon2 = item->type_dual.weapon2;
-						break;
-					}
-				}
 			}
 
 			if (item == g_Vars.currentplayer->weapons) {
@@ -710,6 +699,15 @@ void invChooseCycleBackWeapon(s32 *ptr1, s32 *ptr2, bool arg2)
 					break;
 				}
 
+				// VR: no single weapon left to cycle to: stay on the current
+				// one instead of looping forever
+				if (wrapped) {
+					weapon1 = *ptr1;
+					weapon2 = WEAPON_NONE;
+					break;
+				}
+
+				wrapped = true;
 				weapon1 = 1000;
 				weapon2 = 1000;
 			}
