@@ -37,10 +37,15 @@ int vr_button_R_grip = false;
 int vr_button_L_grip = false;
 extern int vr_invert_hands;
 extern bool VrTwoHandsGun(s32 weaponnum);   // bondgun.c: weapon is held with both hands
+extern bool vrTwoHandGripHeld(void);         // bondgun.c: the free hand grips it as its support hand
 int vr_right_gun_fire;
 int vr_left_gun_fire;
 extern bool vr_grip_for_unarmed;
 extern int VrLeftHandedMode;
+extern int VrLeftHandedPref;
+extern bool VrManualReloading;
+extern bool vrHolsterGripAimBlocked(void); // vr_holster.c: with holsters a grip on a gun only holds it
+extern s32 vrHolsterMenuButton(void);      // vr_holster.c: the button of the hand that opened the weapon menu
 
 #if !SDL_VERSION_ATLEAST(2, 0, 14)
 // this was added in 2.0.14
@@ -828,6 +833,62 @@ static inline s32 inputBindPressed(const s32 idx, const u32 ck)
     return 0;
 }
 
+static const char *const vrFaceNames[4] = { "a", "b", "x", "y" };
+
+s32 inputVrFaceButton(s32 hand, const char *name)
+{
+    static int mode = -1;
+    static bool latched[2][4];
+    static bool anylatched;
+    const bool held = get_button_state(hand, name);
+    s32 b = -1;
+    s32 h, i;
+
+    for (i = 0; i < 4; i++) {
+        if (strcmp(name, vrFaceNames[i]) == 0) {
+            b = i;
+        }
+    }
+
+    if (b < 0 || hand < 0 || hand > 1) {
+        return held;
+    }
+
+    if (mode < 0) {
+        mode = VrLeftHandedMode;
+    }
+
+    if (VrLeftHandedMode != mode) {
+        mode = VrLeftHandedMode;
+        anylatched = false;
+
+        for (h = 0; h < 2; h++) {
+            for (i = 0; i < 4; i++) {
+                latched[h][i] = VrManualReloading && get_button_state(h, vrFaceNames[i]);
+                anylatched = anylatched || latched[h][i];
+            }
+        }
+    }
+
+    // Every latch whose button is up clears, read or not: some buttons are only read in some
+    // modes, and a release while unread must not hold back the next press
+    if (anylatched) {
+        anylatched = false;
+
+        for (h = 0; h < 2; h++) {
+            for (i = 0; i < 4; i++) {
+                if (latched[h][i] && !get_button_state(h, vrFaceNames[i])) {
+                    latched[h][i] = false;
+                }
+
+                anylatched = anylatched || latched[h][i];
+            }
+        }
+    }
+
+    return held && !latched[hand][b];
+}
+
 static inline s32 inputAxisScale(s32 x, const s32 deadzone, const f32 scale)
 {
     if (abs(x) < deadzone) {
@@ -880,10 +941,16 @@ s32 inputReadController(s32 idx, OSContPad *npad)
     if (idx == 0) {
         if (optionsGetControlMode(g_Vars.currentplayerstats->mpindex) == CONTROLMODE_12) { // VR-1
             // index 1 = Right hand / index 0 = Left hand
-            if (g_Vars.currentplayer->gunctrl.weaponnum != WEAPON_LASER) {
+            // Holsters: a grip holding a gun does not aim (sight mode). Stage D, which would have
+            // brought it back, was dropped (user, 2026-10-20); what needs sight mode gets it another
+            // way: the Farsight and the Rocket Launcher aimed with two hands (bondmove.c, Task J8a),
+            // the CMP150's Follow Lock-on without it (vrCmpFollowLockOn, Task J7)
+            const bool gripaims = !vrHolsterGripAimBlocked();
+
+            if (!vrLaserOnOffHand(g_Vars.currentplayer->gunctrl.weaponnum)) {
                 if (get_button_state(1, "trigger")) npad->button |= CONT_G; // Z_TRIG
                 if (get_button_state(0, "grip") && vr_leftHasWeapon) { // Aim left grip
-                    if (!vr_grip_for_unarmed) { // if not aim. For unarmed
+                    if (!vr_grip_for_unarmed && gripaims) { // if not aim. For unarmed
                         npad->button |= CONT_R;
                     }
                     vr_button_L_grip = true;
@@ -892,7 +959,7 @@ s32 inputReadController(s32 idx, OSContPad *npad)
                 }
 
                 if (get_button_state(1, "grip")) { // Aim right grip
-                    if (!vr_grip_for_unarmed) { // if not aim. For unarmed
+                    if (!vr_grip_for_unarmed && gripaims) { // if not aim. For unarmed
                         npad->button |= CONT_R;
                     }
                     vr_button_R_grip = true;
@@ -902,7 +969,7 @@ s32 inputReadController(s32 idx, OSContPad *npad)
             } else {
                 if (get_button_state(0, "trigger")) npad->button |= CONT_G; // Z_TRIG
                 if (get_button_state(1, "grip") && vr_leftHasWeapon) {
-                    if (!vr_grip_for_unarmed) { // if not aim. For unarmed
+                    if (!vr_grip_for_unarmed && gripaims) { // if not aim. For unarmed
                         npad->button |= CONT_R;
                     }
                     vr_button_L_grip = true;
@@ -911,7 +978,7 @@ s32 inputReadController(s32 idx, OSContPad *npad)
                 }
 
                 if (get_button_state(0, "grip")) {
-                    if (!vr_grip_for_unarmed) { // if not aim. For unarmed
+                    if (!vr_grip_for_unarmed && gripaims) { // if not aim. For unarmed
                         npad->button |= CONT_R;
                     }
                     vr_button_R_grip = true;
@@ -920,12 +987,18 @@ s32 inputReadController(s32 idx, OSContPad *npad)
                 }
             }
 
-            if (get_button_state(1, "a")) npad->button |= CONT_A; // A_BUTTON
-            if (get_button_state(1, "b")) npad->button |= CONT_B; // B_BUTTON
+            // A face button held through a gun side change reads as up (inputVrFaceButton). With
+            // holsters the button that opened the weapon menu, which can be the free hand's X, also
+            // sets CONT_A while the menu is open (vrHolsterMenuButton, -1 when no such menu is
+            // open). The bind loop above already sets CONT_A from the gun hand's A, so an X-opened
+            // menu also stays open while A is held.
+            const s32 vrmenubutton = vrHolsterMenuButton();
+            if (vrmenubutton >= 0 ? vrmenubutton : inputVrFaceButton(1, "a")) npad->button |= CONT_A; // A_BUTTON
+            if (inputVrFaceButton(1, "b")) npad->button |= CONT_B; // B_BUTTON
 //            if (get_button_state(0, "y")) {... Not here, in lv.c file for reloading left gun
 
 #ifdef ANDROID
-            if(!VrLeftHandedMode){
+            if(!VrLeftHandedPref){
                 if (get_button_state(0, "menu")) {
                     npad->button |= CONT_START;    // START_BUTTON
                 }
@@ -938,7 +1011,7 @@ s32 inputReadController(s32 idx, OSContPad *npad)
             }
 
 #else
-            if (get_button_state(0, "x")) {
+            if (inputVrFaceButton(0, "x")) {
                 npad->button |= CONT_START;   // START_BUTTON
             }
 #endif
@@ -979,7 +1052,7 @@ s32 inputReadController(s32 idx, OSContPad *npad)
 
 
             if (g_Vars.currentplayer->pausemode != PAUSEMODE_PAUSED &&
-                !get_button_state(1, "a")) {
+                !inputVrFaceButton(1, "a") && vrmenubutton <= 0) {
                 XrVector2f rightThumbstick;
                 if (get_2d_input(1, "thumbstick", &rightThumbstick)) {
                     s32 rawX = (s32)(rightThumbstick.x * 32767.0f);
@@ -1108,19 +1181,20 @@ void inputRumble(s32 idx, f32 strength, f32 time) {
         s32 handRight = HAND_RIGHT;
         s32 handLeft  = HAND_LEFT;
 
-        // Inversion des mains si arme = LASER
-        if (g_Vars.currentplayer->gunctrl.weaponnum == WEAPON_LASER) {
+        // Inversion des mains si arme = LASER (worn on the off hand only with holsters off)
+        if (vrLaserOnOffHand(g_Vars.currentplayer->gunctrl.weaponnum)) {
             handRight = HAND_LEFT;
             handLeft  = HAND_RIGHT;
         }
 
         // Support hand for a two-handed grip, same mapping vrBuildGunRotation uses: the
         // controller that is not the trigger hand. Only meaningful while it is actually
-        // gripping -- an idle off hand is not touching the weapon and should stay quiet.
+        // gripping -- an idle off hand is not touching the weapon and should stay quiet, and so
+        // should a hand holding a clip (vrTwoHandGripHeld).
         const s32  supportHand    = vr_invert_hands ? 1 : 0;
         const bool supportOnWeapon =
                 VrTwoHandsGun(g_Vars.currentplayer->gunctrl.weaponnum)
-                && get_button_state(supportHand, "grip");
+                && vrTwoHandGripHeld();
 
         if (strength > 0.f) {
             if (strength > 1.f) strength = 1.f;
@@ -1408,15 +1482,15 @@ s32 inputKeyPressed(u32 vk)
         switch (vk) {
             case VK_VR_LEFT_TRIGGER: return get_button_state(0, "trigger");
             case VK_VR_LEFT_GRIP: return get_button_state(0, "grip");
-            case VK_VR_LEFT_X: return get_button_state(0, "x");
-            case VK_VR_LEFT_Y: return get_button_state(0, "y");
+            case VK_VR_LEFT_X: return inputVrFaceButton(0, "x");
+            case VK_VR_LEFT_Y: return inputVrFaceButton(0, "y");
             case VK_VR_LEFT_MENU: return get_button_state(0, "menu");
             case VK_VR_LEFT_THUMBSTICK_CLICK: return get_button_state(0, "thumbstick_click");
 
             case VK_VR_RIGHT_TRIGGER: return get_button_state(1, "trigger");
             case VK_VR_RIGHT_GRIP: return get_button_state(1, "grip");
-            case VK_VR_RIGHT_A: return get_button_state(1, "a");
-            case VK_VR_RIGHT_B: return get_button_state(1, "b");
+            case VK_VR_RIGHT_A: return inputVrFaceButton(1, "a");
+            case VK_VR_RIGHT_B: return inputVrFaceButton(1, "b");
             case VK_VR_RIGHT_THUMBSTICK_CLICK: return get_button_state(1, "thumbstick_click");
 
             default: return 0;

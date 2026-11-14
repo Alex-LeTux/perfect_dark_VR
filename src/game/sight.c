@@ -50,7 +50,10 @@ extern float  vr_LeftCrossX;
 extern float  vr_LeftCrossY;
 extern bool vr_LeftCrossValid;
 extern int vr_button_R_grip;
+extern bool vrCmpFollowLockOn(void); // bondgun.c
+static bool g_VrCmpFollowWas = false;
 extern int vr_button_L_grip;
+extern bool vrTwoHandAiming(void); // bondgun.c: the gun is aimed with both hands (the scopes and the zoom)
 extern s32 g_LookingAtPropHandMask;
 s32 g_currentCrosshairHand = HAND_RIGHT;
 extern bool show_laser_dot[2]; // detect if dotpos is valable
@@ -338,6 +341,31 @@ void sightTick(bool sighton)
         }
     }
 
+    // VR: the CMP150's Follow Lock-on locks without sight mode (vrCmpFollowLockOn). As entering sight
+    // mode does, switching to it starts with no locks; a lock that leaves the view (lvUpdateTrackedProp
+    // marks it x1 -1, x2 -2) is let go, so the four slots stay free for what is in front of the player
+    {
+        bool vrfollow = vrCmpFollowLockOn();
+
+        if (vrfollow && !g_VrCmpFollowWas) {
+            for (i = 0; i < ARRAYCOUNT(g_Vars.currentplayer->trackedprops); i++) {
+                g_Vars.currentplayer->trackedprops[i].prop = NULL;
+            }
+        }
+
+        if (vrfollow) {
+            for (i = 0; i < ARRAYCOUNT(g_Vars.currentplayer->trackedprops); i++) {
+                trackedprop = &g_Vars.currentplayer->trackedprops[i];
+
+                if (trackedprop->prop && trackedprop->x1 < 0 && trackedprop->x2 < 0) {
+                    trackedprop->prop = NULL;
+                }
+            }
+        }
+
+        g_VrCmpFollowWas = vrfollow;
+    }
+
     for (i = 0; i < ARRAYCOUNT(g_Vars.currentplayer->trackedprops); i++) {
         trackedprop = &g_Vars.currentplayer->trackedprops[i];
 
@@ -403,7 +431,7 @@ void sightTick(bool sighton)
             break;
         case SIGHTTRACKTYPE_FOLLOWLOCKON:
             // Conditionally copy lookingatprop to any trackedprops slot, but only if the slot is empty
-            if (sighton && g_Vars.currentplayer->lookingatprop.prop
+            if ((sighton || vrCmpFollowLockOn()) && g_Vars.currentplayer->lookingatprop.prop
                 && sightCanTargetProp(g_Vars.currentplayer->lookingatprop.prop, 4)) {
                 index = sightFindFreeTargetIndex(4);
 
@@ -1467,6 +1495,12 @@ Gfx *sightDrawZoom(Gfx *gdl, bool sighton, f32 crossx, f32 crossy)
         if (weaponnum != WEAPON_SNIPERRIFLE) showzoomrange = false;
     } else {
         frac = maxfovy / zoominfovy;
+    }
+
+    // The zoom range corners belong to the zoom: only while the gun is aimed with both hands, and
+    // never on a pair's left gun. The crosshair below stays for one hand.
+    if (g_currentCrosshairHand != HAND_RIGHT || !vrTwoHandAiming()) {
+        showzoomrange = false;
     }
 
     if (showzoomrange) {

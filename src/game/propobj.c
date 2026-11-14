@@ -21,6 +21,7 @@
 #include "game/floor.h"
 #include "game/ceil.h"
 #include "game/bondgun.h"
+#include "game/vr_holster.h"
 #include "game/gunfx.h"
 #include "game/game_0b0fd0.h"
 #include "game/modelmgr.h"
@@ -16228,6 +16229,7 @@ bool propobjInteract(struct prop *prop)
 			if (playernum >= 0 && laptop == &g_ThrownLaptops[playernum]) {
 				obj->hidden |= OBJHFLAG_DELETING;
 				invGiveSingleWeapon(WEAPON_LAPTOPGUN);
+				vrHolsterOnPickup(WEAPON_LAPTOPGUN);
 				currentPlayerQueuePickupWeaponHudmsg(WEAPON_LAPTOPGUN, false);
 				weaponPlayPickupSound(WEAPON_LAPTOPGUN);
 
@@ -16246,6 +16248,7 @@ bool propobjInteract(struct prop *prop)
                && bmoveGetCrouchPos() == CROUCHPOS_STAND
                && g_Vars.currentplayer->crouchoffset == 0
                && g_Vars.currentplayer->onladder == false) {
+        // VR: propCanGripGrab (prop.c) gates the holsters' grip on these conditions: keep in step
         bmoveGrabProp(prop);
     }
 
@@ -17363,7 +17366,10 @@ s32 propPickupByPlayer(struct prop *prop, bool showhudmsg)
 				}
 			}
 
-			if (count == 2
+			// VR: with holsters a picked-up gun only fills a holster: no auto dual wield
+			if (vrHolsterActive()) {
+				vrHolsterOnPickup(weapon->weaponnum);
+			} else if (count == 2
 					&& bgunGetWeaponNum(HAND_RIGHT) == weapon->weaponnum
 					&& bgunGetWeaponNum(HAND_LEFT) != weapon->weaponnum) {
 				bgunEquipWeapon2(HAND_LEFT, weapon->weaponnum);

@@ -174,6 +174,7 @@ extern "C" {
 // Wrapper version for C (without default parameter)
 XrResult trigger_haptic_vibration_c(int hand_index, float amplitude, float duration);
 XrResult stop_haptic_vibration_c(int hand_index);
+int vrCtrlPoseGood(int i); // 1 when logical controller i (0 off-hand, 1 gun hand) has a valid pose
 #ifdef __cplusplus
 }
 #endif

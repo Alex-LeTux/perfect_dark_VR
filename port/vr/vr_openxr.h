@@ -65,6 +65,7 @@ extern float gCtrlQuatRaw[2][4];
 // need one self-consistent basis, which is what this pair is for.
 extern float vr_ctrl_quat_play[2][4];     // {w,x,y,z}
 extern float vr_ctrl_velocity_play[2][3]; // m/s
+extern float vr_ctrl_angvel_play[2][3];   // rad/s, the turn's axis times its rate
 extern float vr_head_velocity_play[3];    // m/s
 
 // A plausible standing head (HMD) height in centimetres, used only until real
@@ -115,12 +116,20 @@ extern void gfx_vr_hud_capture_end_H(void);
 #define VR_SCOPE_ONLY_END     0x56580003
 #define VR_SCOPE_ONLY_BEGIN_L 0x56580004
 
+// Holster render diagnostic (bgunRender, vr_holster.c): gfx_sp_tri1 counts the triangles of one hand's
+// gun model drawn between VR_HANDTRIS_BEGIN + hand (0 right, 1 left) and VR_HANDTRIS_END into
+// gVrHandTris[hand]: total, dropped by the hide signal, clip-rejected, culled, drawn
+#define VR_HANDTRIS_BEGIN 0x56590000
+#define VR_HANDTRIS_END   0x56590002
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 // Restart the LOCAL-space height calibration (called at level start).
 void vr_recalibrate_head_height(void);
+
+extern int gVrHandTris[2][5];
 
 #ifdef __cplusplus
 }

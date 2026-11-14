@@ -2,6 +2,8 @@
 #include "constants.h"
 #include "game/inv.h"
 #include "game/bondgun.h"
+#include "game/vr_holster.h"
+#include "game/vr_reload.h"
 #include "game/stagetable.h"
 #include "bss.h"
 #include "lib/memp.h"
@@ -266,4 +268,13 @@ void bgunReset(void)
 	}
 
 	bgunInitHandAnims();
+	vrReloadResetAll();
+	vrHolsterReset();
+	bgunFistReset();
+	bgunTwoHandReset();
+
+	/* VR: a knife wind-up cut by the level's end must not throw the next level's first knife */
+	if (vrHolsterActive()) {
+		bgunKnifeReset();
+	}
 }

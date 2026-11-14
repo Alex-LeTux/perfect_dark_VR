@@ -22,6 +22,8 @@
 #include "game/atan2f.h"
 #include "game/quaternion.h"
 #include "game/bondgun.h"
+#include "game/vr_holster.h"
+#include "game/vr_reload.h"
 #include "game/env.h"
 #include "game/gunfx.h"
 #include "game/game_0b0fd0.h"
@@ -568,6 +570,10 @@ void playerStartNewLife(void)
     pakEnableRumbleForPlayer(g_Vars.currentplayernum);
 
     g_Vars.currentplayer->dostartnewlife = false;
+    vrReloadResetAll();
+    vrHolsterReset();
+    bgunFistReset();
+    bgunTwoHandReset();
 
     if (g_Vars.coopplayernum < 0) {
         struct prop* prop = g_Vars.currentplayer->prop->child;

@@ -23,6 +23,7 @@
 
 #include "../../port/vr/vr_openxr.h"
 #include "../../port/vr/vr_log.h"
+#include "game/vr_holster.h"
 #include "game/atan2f.h"
 
 #ifdef ANDROID
@@ -70,11 +71,15 @@ static struct coord sVrGrabHandOff;
 
 static void bgrabVrUpdateHand(void)
 {
-	/* The logical left grip grabs (bmoveTick) */
-	s32 i = 0;
+	s32 i = vrHolsterGrabPose();
 	struct coord v;
 	XrQuaternionf q;
 	f32 len;
+
+	/* Without holsters the logical left grip grabs (bmoveTick) */
+	if (i < 0) {
+		i = 0;
+	}
 
 	/* gCtrlPos is the hand in the head's view space, cm (one cm one world unit): the head's
 	 * rotation, the stick turn and the 180 degree Y basis flip take it to the world, as the
@@ -192,7 +197,7 @@ void bgrabInit(void)
 	g_Vars.currentplayer->grabbedposoffset.z -= sVrGrabHandOff.z;
 
 	GRAB_DIAG("grab: prop %p hand %d yaw %.1f (view %.1f) hand off (%.1f %.1f) held off (%.1f %.1f)",
-			prop, 0, sVrGrabYaw, g_Vars.currentplayer->vv_theta,
+			prop, vrHolsterGrabPose(), sVrGrabYaw, g_Vars.currentplayer->vv_theta,
 			sVrGrabHandOff.x, sVrGrabHandOff.z,
 			g_Vars.currentplayer->grabbedposoffset.x, g_Vars.currentplayer->grabbedposoffset.z);
 

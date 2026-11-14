@@ -3,6 +3,7 @@
 #include "game/chraction.h"
 #include "game/game_006900.h"
 #include "game/bondgun.h"
+#include "game/vr_holster.h"
 #include "game/game_0b0fd0.h"
 #include "game/tex.h"
 #include "game/savebuffer.h"
@@ -71,6 +72,7 @@ void amOpenPickTarget(void)
 	if (!mpIsPaused()) {
 		g_AmMenus[g_AmIndex].prevallbots = g_AmMenus[g_AmIndex].allbots;
 		g_Vars.currentplayer->activemenumode = AMMODE_CLOSED;
+		vrHolsterMenuClosed(); // VR: the next menu does not inherit this one's hand and zone
 		g_MpPlayerNum = g_Vars.currentplayerstats->mpindex;
 		menuPushRootDialog(&g_AmPickTargetMenuDialog, MENUROOT_PICKTARGET);
 		g_MpPlayerNum = prevplayernum;
@@ -313,7 +315,9 @@ void amApply(s32 slot)
 			weaponnum = invGetWeaponNumByIndex(invindex);
 			pass = true;
 
-			if (weaponnum) {
+			// VR: a device picked in the holsters' chest menu goes to the pouch (the trigger
+			// toggles it once drawn), not on
+			if (weaponnum && !(vrHolsterMenuHand() >= 0 && vrHolsterIsDevice(weaponnum))) {
 				state = currentPlayerGetDeviceState(weaponnum);
 
 				if (state != DEVICESTATE_UNEQUIPPED) {
@@ -340,27 +344,26 @@ void amApply(s32 slot)
 
 				if (pass) {
 					invSetCurrentIndex(invindex);
+				}
 
-					if (invHasDoubleWeaponIncAllGuns(weaponnum, weaponnum)) {
-						if (bgunGetWeaponNum(HAND_RIGHT) != weaponnum) {
-							bgunEquipWeapon2(HAND_RIGHT, weaponnum);
-						}
+				// VR: with holsters a gun, gadget or throwable goes to the holster core, which
+				// decides the equip from the hand that opened the menu
+				if (pass && vrHolsterOnMenuPickHand(weaponnum)) {
+					pass = false;
+				}
 
-						if (bgunGetWeaponNum(HAND_LEFT) != weaponnum) {
-							bgunEquipWeapon2(HAND_LEFT, weaponnum);
-						}
-					} else {
-						if (bgunGetWeaponNum(HAND_RIGHT) != weaponnum) {
-							bgunEquipWeapon2(HAND_RIGHT, weaponnum);
-						}
+				if (pass) {
+					// VR: the menu never selects dual wield (pairs come from holsters): always equip one gun
+					if (bgunGetWeaponNum(HAND_RIGHT) != weaponnum) {
+						bgunEquipWeapon2(HAND_RIGHT, weaponnum);
+					}
 
-						// don't unequip detonator
-						// if we already have it equipped
-						if (weaponnum == WEAPON_REMOTEMINE) {
-							bgunEquipWeapon2(HAND_LEFT, weaponnum);
-						} else if (bgunGetWeaponNum(HAND_LEFT) != WEAPON_NONE) {
-							bgunEquipWeapon2(HAND_LEFT, WEAPON_NONE);
-						}
+					// don't unequip detonator
+					// if we already have it equipped
+					if (weaponnum == WEAPON_REMOTEMINE) {
+						bgunEquipWeapon2(HAND_LEFT, weaponnum);
+					} else if (bgunGetWeaponNum(HAND_LEFT) != WEAPON_NONE) {
+						bgunEquipWeapon2(HAND_LEFT, WEAPON_NONE);
 					}
 				}
 			}
@@ -659,6 +662,22 @@ void amAssignWeaponSlots(void)
 		i++;
 	}
 
+	// VR: with holsters the menu shows one kind, the one of the zone it opened in (chest gadgets,
+	// right hip throwables, anywhere else guns; no fists and no device toggles), in inventory order
+	// in the slots' usual order. The favourites belong to the vanilla menu: not used or changed.
+	if (vrHolsterActive()) {
+		j = 0;
+
+		for (i = 0; i < numitems && j < ARRAYCOUNT(g_AmMapping); i++) {
+			if (vrHolsterMenuOffers(invGetWeaponNumByIndex(i))) {
+				g_AmMenus[g_AmIndex].invindexes[g_AmMapping[j]] = i;
+				j++;
+			}
+		}
+
+		return;
+	}
+
 	// Assign favourites
 	for (i = 0; i < numitems; i++) {
 		weaponnum = invGetWeaponNumByIndex(i);
@@ -760,6 +779,7 @@ void amClose(void)
 	g_Vars.currentplayer->activemenumode = AMMODE_CLOSED;
 	g_Vars.currentplayer->joybutinhibit = 0xffffffff;
 	g_PlayersWithControl[g_Vars.currentplayernum] = 1;
+	vrHolsterMenuClosed(); // VR: the next menu does not inherit this one's hand and zone
 }
 
 bool amIsCramped(void)

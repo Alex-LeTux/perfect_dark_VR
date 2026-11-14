@@ -129,6 +129,11 @@ static float vr_clip_margin_y_w = 0.0f;
 // Backface winding: only ex survives the differencing of the cross product (ey
 // and ew are constant per vertex and cancel), so this is all the cull test needs.
 static float vr_cull_eye_dx[2] = { 0.0f, 0.0f };
+
+// VR_HANDTRIS_BEGIN/END (vr_openxr.h): the hand whose triangles are counted, -1 for none
+extern "C" int gVrHandTris[2][5];
+int gVrHandTris[2][5];
+static int vr_handtris_slot = -1;
 static bool vr_cull_stereo = false;
 
 static void vr_set_cull_offsets(const float offsets[8]) {
@@ -1396,8 +1401,15 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bo
     struct LoadedVertex* v3 = &rsp.loaded_vertices[vtx3_idx];
     struct LoadedVertex* v_arr[3] = { v1, v2, v3 };
 
+    if (vr_handtris_slot >= 0) {
+        gVrHandTris[vr_handtris_slot][0]++;
+    }
+
     // --- CUSTOM VR HIDE: SMART REMOVAL ---
     if ((v1->clip_rej & 64) && (v2->clip_rej & 64) && (v3->clip_rej & 64)) {
+        if (vr_handtris_slot >= 0) {
+            gVrHandTris[vr_handtris_slot][1]++;
+        }
         return;
     }
     // -------------------------------------------------
@@ -1405,6 +1417,9 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bo
     if ((rsp.extra_geometry_mode & G_NO_CLIPPING_EXT) == 0) {
         if (v1->clip_rej & v2->clip_rej & v3->clip_rej) {
             // The whole triangle lies outside the visible area
+            if (vr_handtris_slot >= 0) {
+                gVrHandTris[vr_handtris_slot][2]++;
+            }
             return;
         }
     }
@@ -1443,8 +1458,15 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bo
         }
 
         if (cull) {
+            if (vr_handtris_slot >= 0) {
+                gVrHandTris[vr_handtris_slot][3]++;
+            }
             return;
         }
+    }
+
+    if (vr_handtris_slot >= 0) {
+        gVrHandTris[vr_handtris_slot][4]++;
     }
 
     bool depth_test = ((rsp.geometry_mode & G_ZBUFFER) == G_ZBUFFER || (rdp.other_mode_l & G_ZS_PRIM) == G_ZS_PRIM) &&
@@ -2652,6 +2674,16 @@ static void gfx_run_dl(Gfx* cmd) {
                     case VR_SCOPE_REC_END:
                         gfx_flush();
                         gfx_vr_scope_record(false, false);
+                        break;
+
+                    case VR_HANDTRIS_BEGIN:
+                    case VR_HANDTRIS_BEGIN + 1:
+                        vr_handtris_slot = tag_w1 - VR_HANDTRIS_BEGIN;
+                        memset(gVrHandTris[vr_handtris_slot], 0, sizeof(gVrHandTris[0]));
+                        break;
+
+                    case VR_HANDTRIS_END:
+                        vr_handtris_slot = -1;
                         break;
 
                     case VR_SCOPE_ONLY_BEGIN:

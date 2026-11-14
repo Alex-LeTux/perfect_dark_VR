@@ -568,6 +568,50 @@ void hudmsgCreateWithFlags(char *text, s32 type, u32 flags)
 			-1, flags);
 }
 
+/* VR holsters: hudmsgCreateWithFlags that first removes the message previd (queued or showing; -1
+ * or one already gone: nothing), so the new one does not wait behind it. Other messages are left.
+ * duration60: how long it shows, in 60ths (TICKS), as hudmsgCreateWithDuration's; 0: the type's own
+ * duration. colournum: the text and box colour, an index into g_HudmsgColours (COLOR_09_BLUE: the
+ * reload hints, Task F11b); -1: the type's own. Unlike hudmsgCreateWithColour it leaves the type's
+ * colour as it was. Returns the new message's id, -1 when none was created. */
+s32 hudmsgCreateReplacing(char *text, s32 type, u32 flags, s32 previd, s32 duration60, s32 colournum)
+{
+	u32 id = g_NextHudMessageId;
+	s32 i;
+
+	if (previd >= 0) {
+		for (i = 0; i < g_NumHudMessages; i++) {
+			if (g_HudMessages[i].state != HUDMSGSTATE_FREE && g_HudMessages[i].id == previd) {
+				g_HudMessages[i].state = HUDMSGSTATE_FREE;
+				g_HudMessages[i].timer = 0;
+			}
+		}
+	}
+
+	if (duration60 > 0 || colournum >= 0) {
+		/* The message's own duration: HUDMSGFLAG_NOCHANNEL reads the last argument as it (the type's
+		 * path passes channel -1, which a message with no channel has too), so the type's duration
+		 * here is the type's path */
+		hudmsgCreateFromArgs(text, type,
+				g_HudmsgTypes[type].unk00,
+				g_HudmsgTypes[type].unk01,
+				g_HudmsgTypes[type].unk02,
+				g_HudmsgTypes[type].unk04,
+				g_HudmsgTypes[type].unk08,
+				colournum >= 0 ? g_HudmsgColours[colournum] : g_HudmsgTypes[type].colour,
+				g_HudmsgTypes[type].unk10,
+				g_HudmsgTypes[type].alignh,
+				g_HudmsgTypes[type].unk16,
+				g_HudmsgTypes[type].alignv,
+				g_HudmsgTypes[type].unk18,
+				duration60 > 0 ? duration60 : g_HudmsgTypes[type].duration, flags | HUDMSGFLAG_NOCHANNEL);
+	} else {
+		hudmsgCreateWithFlags(text, type, flags);
+	}
+
+	return g_NextHudMessageId != id ? (s32) id : -1;
+}
+
 void hudmsgCreateWithColour(char *text, s32 type, u8 colournum)
 {
 	g_HudmsgTypes[type].colour = g_HudmsgColours[colournum];

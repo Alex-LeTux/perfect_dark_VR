@@ -33,7 +33,7 @@ extern "C" void vrSettingsSave(void)
     fprintf(f, "StickTurn=%d\n", VrStickTurn ? 1 : 0);
     fprintf(f, "SnapTurn=%.1f\n", VrUseSnapTurn);
     fprintf(f, "TwoHandedAiming=%d\n", VrTwoHandAim ? 1 : 0);
-    fprintf(f, "LeftHandedMode=%d\n", VrLeftHandedMode ? 1 : 0);
+    fprintf(f, "LeftHandedMode=%d\n", VrLeftHandedPref ? 1 : 0);
     fprintf(f, "SwapJoysticks=%d\n", VrSwapJoysticks ? 1 : 0);
     fprintf(f, "HideArms=%d\n", VrHideArms ? 1 : 0);
     fprintf(f, "ActiveTexturePack=%s\n", g_ActiveExtTexPack);
@@ -44,6 +44,10 @@ extern "C" void vrSettingsSave(void)
     fprintf(f, "; 1 = stand at the height of the character you are playing instead of your own,\n");
     fprintf(f, "; so Elvis is short and Mr Blonde towers. 0 = you are your own height throughout.\n");
     fprintf(f, "MatchCharacterHeight=%d\n", VrMatchCharacterHeight ? 1 : 0);
+    fprintf(f, "; What each holster holds (the Holster Layout page): off-hand hip, gun-hand shoulder,\n");
+    fprintf(f, "; chest, gun-hand hip, off-hand shoulder; 0-2 = gun 1-3, 3 = gadgets, 4 = throwables.\n");
+    fprintf(f, "HolsterLayout=%d,%d,%d,%d,%d\n", VrHolsterLayout[0], VrHolsterLayout[1], VrHolsterLayout[2],
+            VrHolsterLayout[3], VrHolsterLayout[4]);
 
     // --- VR hand placement (no menu UI; edit here) --------------------------------------------
     fprintf(f, "\n");
@@ -82,14 +86,31 @@ extern "C" void vrSettingsLoad(void)
     float fval;
     int ival;
     char sval[256];
+    int layout[HOLSTER_LAYOUT_SPOTS];
 
     while (fgets(line, sizeof(line), f)) {
         if (line[0] == '[' || line[0] == '\n' || line[0] == ';' || line[0] == '#') continue;
 
+        // Unknown keys fall through every branch and are ignored, such as the old "Holsters"
+        // key: holsters now follow ManualReloading.
+        // 0. The holster layout: five slots, each 0-4 once; anything else keeps the default
+        // (the integer branch below would take its first number alone).
+        if (strncmp(line, "HolsterLayout=", 14) == 0) {
+            int seen = 0;
+            bool ok = sscanf(line + 14, "%d,%d,%d,%d,%d", &layout[0], &layout[1], &layout[2],
+                    &layout[3], &layout[4]) == HOLSTER_LAYOUT_SPOTS;
+
+            for (int i = 0; ok && i < HOLSTER_LAYOUT_SPOTS; i++) {
+                ok = layout[i] >= 0 && layout[i] < HOLSTER_LAYOUT_SPOTS && (seen & (1 << layout[i])) == 0;
+                seen |= ok ? 1 << layout[i] : 0;
+            }
+
+            if (ok) memcpy(VrHolsterLayout, layout, sizeof(layout));
+        }
         // 1. Is it an integer (%d)? A decimal value is not: %d alone takes "0.5000" as 0 and the
         // float branch below never saw it, so every decimal setting (Walk Speed, World Scale, eye
         // height, HUD distance, snap turn, vibration, the grip trims) was dropped on load.
-        if (strchr(line, '.') == NULL && sscanf(line, "%63[^=]=%d", key, &ival) == 2) {
+        else if (strchr(line, '.') == NULL && sscanf(line, "%63[^=]=%d", key, &ival) == 2) {
             if (strcmp(key, "ManualReloading") == 0) VrManualReloading = ival != 0;
             else if (strcmp(key, "LaserDotForAll") == 0) VrlaserDotForALL = ival != 0;
             else if (strcmp(key, "SeatedMode") == 0) VrSeatedMode = ival != 0;
@@ -99,7 +120,7 @@ extern "C" void vrSettingsLoad(void)
             else if (strcmp(key, "PauseHub") == 0) VrPauseHub = (ival != 0);
             else if (strcmp(key, "StickTurn") == 0) VrStickTurn = (ival != 0);
             else if (strcmp(key, "TwoHandedAiming") == 0) VrTwoHandAim = (ival != 0);
-            else if (strcmp(key, "LeftHandedMode") == 0) VrLeftHandedMode = (ival != 0);
+            else if (strcmp(key, "LeftHandedMode") == 0) VrLeftHandedMode = VrLeftHandedPref = (ival != 0);
             else if (strcmp(key, "SwapJoysticks") == 0) VrSwapJoysticks = (ival != 0);
             else if (strcmp(key, "HideArms") == 0) VrHideArms = (ival != 0);
             else if (strcmp(key, "MatchCharacterHeight") == 0) VrMatchCharacterHeight = (ival != 0);

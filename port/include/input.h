@@ -153,6 +153,13 @@ s32 inputInit(void);
 // returns 0 if read, non-0 if failed
 s32 inputReadController(s32 idx, OSContPad *npad);
 
+// VR face button (a, b, x, y) on logical controller hand, as get_button_state, for every game read
+// of those names. With manual reload on, a gun side change (a holster draw, a Y reload of the left
+// gun) remaps them, and a button held through it reads as up until it is let go: a held Y would
+// read as B (its release an activate and a second eject), a held A as X (START, previous weapon).
+// With manual reload off, or no side change, this is the plain read.
+s32 inputVrFaceButton(s32 hand, const char *name);
+
 // returns 1 if rumble is supported for specified player's controller
 s32 inputRumbleSupported(s32 idx);
 

@@ -328,14 +328,15 @@ float vr_head_velocity_play[3] = { 0.0f, 0.0f, 0.0f };
 // ============================================================
 #define HMD_SMOOTH_ALPHA_POS  0.05f   // Position
 #define HMD_SMOOTH_ALPHA_ROT  0.05f   // Rotation
+#define HMD_SMOOTH_RELEASE_FRAMES 6   // Frames to blend back to the raw pose when the zoom ends
 
 static float          sSmoothedHeadPos[3]  = {0, 0, 0};
 static XrQuaternionf  sSmoothedHeadQ       = {0, 0, 0, 1};
 static bool           sSmoothedHeadInit    = false;
+static int            sSmoothedHeadRelease = 0;   // frames blended back since the zoom ended
 extern void QuatSlerp(const float a[4], const float b[4], float t, float out[4]);
-extern int vr_button_R_grip;
-extern int vr_button_L_grip;
-extern bool WepCanZoom;
+// bondgun.c: the game's full screen zoom is on (the head is steadied); its bool is s32 (types.h)
+extern "C" int vrZoomViewOn(void);
 // ============================================================================
 // vr_is_initialized
 // ============================================================================
@@ -1733,11 +1734,13 @@ static void vr_update_head_tracking(XrTime predictedDisplayTime)
             vr_head_velocity_play[2] = headVelocity.linearVelocity.z;
         }
 
-        // --- Grip pressed on either controller ---
-        bool gripAny = (vr_button_R_grip != 0) || (vr_button_L_grip != 0);
+        // --- The head is steadied only while the game's full screen zoom is on (vrZoomViewOn: the
+        // Farsight aimed with both hands). A grip alone does not count: with holsters it is held the
+        // whole time a gun is in the hand, so the view lagged whenever a zoom gun's lens was hidden ---
+        if (vrZoomViewOn()) {
+            sSmoothedHeadRelease = 0;
 
-        if (gripAny && WepCanZoom && !gevrScopeOn) {
-            // Initialize the buffer on the first frame with grip
+            // Initialize the buffer on the first frame of the zoom
             if (!sSmoothedHeadInit) {
                 sSmoothedHeadPos[0] = rawHead.x;
                 sSmoothedHeadPos[1] = rawHead.y;
@@ -1758,9 +1761,24 @@ static void vr_update_head_tracking(XrTime predictedDisplayTime)
             vr_HMD_rot_Q      = sSmoothedHeadQ;
 
 
+        } else if (sSmoothedHeadInit && sSmoothedHeadRelease < HMD_SMOOTH_RELEASE_FRAMES - 1) {
+            // The zoom ended (released, or the free hand took a clip): blend the smoothed pose to
+            // the raw one over HMD_SMOOTH_RELEASE_FRAMES frames instead of snapping to it
+            sSmoothedHeadRelease++;
+            float t = (float)sSmoothedHeadRelease / (float)HMD_SMOOTH_RELEASE_FRAMES;
+
+            sSmoothedHeadPos[0] += (rawHead.x - sSmoothedHeadPos[0]) * t;
+            sSmoothedHeadPos[1] += (rawHead.y - sSmoothedHeadPos[1]) * t;
+            sSmoothedHeadPos[2] += (rawHead.z - sSmoothedHeadPos[2]) * t;
+            gHeadPos = {sSmoothedHeadPos[0], sSmoothedHeadPos[1], sSmoothedHeadPos[2]};
+
+            sSmoothedHeadQ = SlerpQuaternions(sSmoothedHeadQ, rawQ, t);
+            vr_HMD_rot_Q   = sSmoothedHeadQ;
+
         } else {
-            // Grip released: raw values + reset initialization
-            sSmoothedHeadInit = false;
+            // No zoom (the last release frame lands on the raw pose): raw values + reset initialization
+            sSmoothedHeadInit    = false;
+            sSmoothedHeadRelease = 0;
             gHeadPos          = rawHead;
             vr_HMD_rot_Q         = rawQ;
         }

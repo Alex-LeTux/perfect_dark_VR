@@ -653,6 +653,7 @@ s16 psCreate(struct pschannel *channel, struct prop *prop, s16 soundnum, s16 pad
 	u32 stack[2];
 	s32 pan;
 
+	sndNoteRecent(soundnum, 2, __builtin_return_address(0));
 #if VERSION >= VERSION_NTSC_1_0
 	struct pad pad;
 	s32 i;

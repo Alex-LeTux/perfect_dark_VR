@@ -44,6 +44,9 @@
 #include "game/inv.h"
 #include "game/lang.h"
 #include "game/lv.h"
+#include "game/vr_holster.h"
+#include "game/vr_reload.h"
+#include "input.h"
 #include "game/menu.h"
 #include "game/mplayer/mplayer.h"
 #include "game/mplayer/scenarios.h"
@@ -1250,6 +1253,20 @@ Gfx *lvRender(Gfx *gdl)
                 g_Vars.currentplayer->gunctrl.loadall = bgunLoadAll();
             }
 
+            // VR: the Y reload press, sampled in every frame this player is drawn, also while the
+            // block that acts on it is skipped (a lock screen, a menu): a Y held through one is
+            // no press. A button held through a gun side change reads as up (inputVrFaceButton).
+            s32 vrYHeld, vrYPress;
+
+            {
+                static s32 prevy[MAX_PLAYERS];
+                s32 y = inputVrFaceButton(0, "y");
+
+                vrYHeld = y;
+                vrYPress = y && !prevy[g_Vars.currentplayernum];
+                prevy[g_Vars.currentplayernum] = y;
+            }
+
             if (g_Vars.lockscreen) {
                 gdl = bviewDrawMotionBlur(gdl, 0xffffffff, 255);
                 g_Vars.lockscreen--;
@@ -1408,7 +1425,8 @@ Gfx *lvRender(Gfx *gdl)
                 }
 
                 if (g_Vars.currentplayer->bondactivateorreload & JO_ACTION_RELOAD) {
-                    if (g_Vars.currentplayer->hands[HAND_RIGHT].state != HANDSTATE_RELOAD) {
+                    if (!vrReloadEjectButton(HAND_RIGHT)
+                            && g_Vars.currentplayer->hands[HAND_RIGHT].state != HANDSTATE_RELOAD) {
                         bgunReloadIfPossible(HAND_RIGHT);
                     }
                     //if (g_Vars.currentplayer->hands[HAND_LEFT].state != HANDSTATE_RELOAD) { Removed for VR
@@ -1417,9 +1435,16 @@ Gfx *lvRender(Gfx *gdl)
                     g_Vars.currentplayer->bondactivateorreload = (g_Vars.currentplayer->bondactivateorreload & ~JO_ACTION_RELOAD);
                 }
 
-                if (get_button_state(0, "y") && g_Vars.currentplayer->hands[HAND_LEFT].state != HANDSTATE_RELOAD) {	// VR BUTTON Y RELOAD LEFT HAND
-                    bgunReloadIfPossible(HAND_LEFT);
-                    g_Vars.currentplayer->bondactivateorreload = (g_Vars.currentplayer->bondactivateorreload & ~JO_ACTION_RELOAD);
+                // VR BUTTON Y RELOAD LEFT HAND. A press on a gun manual reload owns goes to it
+                // (vrReloadEjectButton); a gun it does not own reloads as before while Y is held.
+                {
+                    if (vrYPress && vrReloadEjectButton(HAND_LEFT)) {
+                        g_Vars.currentplayer->bondactivateorreload = (g_Vars.currentplayer->bondactivateorreload & ~JO_ACTION_RELOAD);
+                    } else if (vrYHeld && !vrReloadOwnsGun(HAND_LEFT)
+                            && g_Vars.currentplayer->hands[HAND_LEFT].state != HANDSTATE_RELOAD) {
+                        bgunReloadIfPossible(HAND_LEFT);
+                        g_Vars.currentplayer->bondactivateorreload = (g_Vars.currentplayer->bondactivateorreload & ~JO_ACTION_RELOAD);
+                    }
                 }
 
                 propsTestForPickup();
@@ -2574,6 +2599,9 @@ void lvSetPaused(bool paused)
     if (paused) {
         pakDisableRumbleForAllPlayers();
         snd0000fe20();
+
+        // VR: no gameplay tick runs while paused: the holsters see the pause on the next one
+        vrHolsterNotePause();
     } else {
         snd0000fe50();
         pakEnableRumbleForAllPlayers();
