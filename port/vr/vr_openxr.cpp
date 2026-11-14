@@ -1610,6 +1610,15 @@ static float GetYawDegreesFromQuaternion(XrQuaternionf q) {
     return std::atan2f(siny_cosp, cosy_cosp) * (180.0f / 3.14159265f);
 }
 
+// A recenter (the Quest's hold-Meta-button recenter, or the runtime's own after a wake) moves the
+// play space, which turns the raw head yaw. The yaw offset is redone so the game view keeps facing
+// where it did (sRealignYaw, the view yaw before the change): the recenter moves the room, not the
+// game. It waits for a head pose located in the new space (at or after changeTime).
+static bool   sRealignPending = false;
+static XrTime sRealignTime    = 0;
+static float  sRealignYaw     = 0.0f;
+static float GetYawDegreesFromQuaternion(XrQuaternionf q);
+
 extern "C" void vr_align_with_game_angle(float target_game_angle) {
     float current_physical_yaw = GetYawDegreesFromQuaternion(gRawHeadQ);
     g_yawOffsetDegrees = target_game_angle - current_physical_yaw;
@@ -1695,6 +1704,14 @@ static void vr_update_head_tracking(XrTime predictedDisplayTime)
 
     positionValid    = (headLocation.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT)    != 0;
     orientationValid = (headLocation.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT) != 0;
+
+    if (positionValid && orientationValid && sRealignPending && predictedDisplayTime >= sRealignTime) {
+        gRawHeadQ = headLocation.pose.orientation;
+        vr_align_with_game_angle(sRealignYaw);
+        sSmoothedHeadInit = false;
+        sRealignPending = false;
+        LOGI("Recentered: view kept at yaw %.1f, yaw offset %.1f", sRealignYaw, g_yawOffsetDegrees);
+    }
 
     if (positionValid && orientationValid) {
         // Raw position and rotation (with yaw offset) — same calculation as the original
@@ -2465,10 +2482,13 @@ extern "C" void vr_poll_events(void)
                         break;
                     case XR_SESSION_STATE_STOPPING:
                         if (g_vrState.sessionRunning) {
+                            // The headset went to sleep or the app lost the display: end the
+                            // session and wait for READY to begin it again. The game is held
+                            // meanwhile (mainTick skips ticks without a frame). Exiting here
+                            // killed the game on every headset sleep.
                             xrEndSession(g_vrState.session);
                             g_vrState.sessionRunning = false;
-                            LOGI("Session ended");
-                            exit(0);
+                            LOGI("Session ended, waiting for READY");
                         }
                         break;
                     case XR_SESSION_STATE_EXITING:
@@ -2492,7 +2512,17 @@ extern "C" void vr_poll_events(void)
                 LOGI("Instance loss pending");
                 needs_shutdown = true; // Flag that a restart is required
                 break;
-            case XR_TYPE_EVENT_DATA_REFERENCE_SPACE_CHANGE_PENDING:
+            case XR_TYPE_EVENT_DATA_REFERENCE_SPACE_CHANGE_PENDING: {
+                const XrEventDataReferenceSpaceChangePending* rsEvent =
+                        (const XrEventDataReferenceSpaceChangePending*)baseEvent;
+                // A second change before the first was applied keeps the first view yaw
+                if (!sRealignPending) {
+                    sRealignYaw = GetYawDegreesFromQuaternion(gRawHeadQ) + g_yawOffsetDegrees;
+                }
+                sRealignPending = true;
+                sRealignTime    = rsEvent->changeTime;
+                LOGI("Reference space change pending: type %d", (int)rsEvent->referenceSpaceType);
+
                 if (g_vrState.playSpace != XR_NULL_HANDLE) {
                     xrDestroySpace(g_vrState.playSpace);
                     g_vrState.playSpace = XR_NULL_HANDLE;
@@ -2501,6 +2531,7 @@ extern "C" void vr_poll_events(void)
                     LOGE("REFERENCE_SPACE_CHANGE_PENDING: play space recreate FAILED");
                 }
                 break;
+            }
             default: break;
         }
     }

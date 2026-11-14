@@ -196,6 +196,29 @@ void bheadUpdate(f32 arg0, f32 arg1)
     }
 
     if (animspeed > 0) {
+        // VR: the original moved the player by the walk animation's own root
+        // motion, which sways left and right with each step and surges
+        // forward unevenly within it. Only the strafe input moves you
+        // sideways now (the mirrored steps cancel over a stride, so no net
+        // drift is lost), and forward motion is the stride's average for
+        // each animation frame played this tick, so the walk speed is
+        // unchanged. A death animation keeps its own.
+        //
+        // translateperframe is not quite that average: bheadReset sums whole
+        // frames from the loop frame cut to an integer (7.5 becomes 7, so 10
+        // frames for the moving loop) but divides by the 9.5 the loop plays,
+        // 5.3% high. Scaling it back by played over summed frames gives the
+        // distance the animation itself covers.
+        if (g_Vars.currentplayer->headanim >= 0) {
+            struct headanim *anim = &g_HeadAnims[g_Vars.currentplayer->headanim];
+            f32 steady = animspeed * anim->translateperframe
+                    * (anim->endframe - anim->loopframe) / (anim->endframe - (s32) anim->loopframe)
+                    * g_Vars.lvupdate60freal;
+
+            g_Vars.currentplayer->bondheadmatrices[0].m[3][0] = 0;
+            g_Vars.currentplayer->bondheadmatrices[0].m[3][2] = steady;
+        }
+
         g_Vars.currentplayer->bondheadmatrices[0].m[3][0] += arg1;
         g_Vars.currentplayer->bondheadmatrices[0].m[3][2] *= arg0;
 
@@ -223,8 +246,10 @@ void bheadUpdate(f32 arg0, f32 arg1)
             }
         }
         else{
-            headpos.y = (g_Vars.currentplayer->bondheadmatrices[0].m[3][1] - g_Vars.currentplayer->standheight) *
-                        g_Vars.currentplayer->headamplitude + g_Vars.currentplayer->standheight;
+            // Seated: the eye stays at standing height while walking. The
+            // original rode the walk animation's head bone up and down here,
+            // a vertical bob that causes motion sickness in a headset.
+            headpos.y = g_Vars.currentplayer->standheight;
         }
 
         headpos.z = g_Vars.currentplayer->bondheadmatrices[0].m[3][2] * g_Vars.currentplayer->headamplitude;

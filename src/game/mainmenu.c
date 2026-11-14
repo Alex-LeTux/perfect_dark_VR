@@ -75,6 +75,9 @@ extern float gVrHeadHeightCm;   // live head height above the floor, cm
 #define WORLDSCALE_STEP   0.01f
 #define WORLDSCALE_STEPS  (s32)((WORLDSCALE_MAX - WORLDSCALE_MIN) / WORLDSCALE_STEP)
 
+#define WALKSPEED_STEP   0.05f
+#define WALKSPEED_STEPS  (s32)((WALKSPEED_MAX - WALKSPEED_MIN) / WALKSPEED_STEP + 0.5f)
+
 // Your height slider steps in whole centimetres.
 #define PLAYERHEIGHT_STEPS (s32)(PLAYERHEIGHT_MAX - PLAYERHEIGHT_MIN)
 
@@ -197,10 +200,29 @@ MenuItemHandlerResult menuhandlerVRStickClickToCrouch(s32 operation, struct menu
     return 0;
 }
 
+MenuItemHandlerResult menuhandlerVRStickTurn(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+    switch (operation) {
+        case MENUOP_GET:
+            return VrStickTurn ? true : false;
+        case MENUOP_SET:
+            VrStickTurn = data->checkbox.value ? true : false;
+            g_Vars.modifiedfiles |= MODFILE_GAME;
+            break;
+    }
+    return 0;
+}
+
 MenuItemHandlerResult menuhandlerVRSnapTurn(s32 operation, struct menuitem *item, union handlerdata *data) {
     static u8 lastRawValue = 0xFF;
 
     switch (operation) {
+        case MENUOP_CHECKDISABLED:
+            // Snap turn is a kind of stick turn: greyed out, and kept, while Stick Turn is off
+            if (!VrStickTurn) {
+                return true;
+            }
+            break;
         case MENUOP_GETSLIDER:
         {
             s32 stepIndex = (s32)roundf((VrUseSnapTurn - SNAP_TURN_MIN) / SNAP_TURN_STEP);
@@ -271,6 +293,39 @@ MenuItemHandlerResult menuhandlerVRWorldScale(s32 operation, struct menuitem *it
     return 0;
 }
 
+MenuItemHandlerResult menuhandlerVRWalkSpeed(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+    static u8 lastRawValue = 0xFF;
+
+    switch (operation) {
+        case MENUOP_GETSLIDER:
+        {
+            s32 stepIndex = (s32)roundf((VrWalkSpeed - WALKSPEED_MIN) / WALKSPEED_STEP);
+            data->slider.value = (u8)roundf((f32)stepIndex / (f32)WALKSPEED_STEPS * 255.0f);
+            lastRawValue = data->slider.value;
+        }
+            break;
+        case MENUOP_SET:
+        {
+            s32 delta = (s32)data->slider.value - (s32)lastRawValue;
+            if (delta != 0) {
+                s32 currentStep = (s32)roundf((VrWalkSpeed - WALKSPEED_MIN) / WALKSPEED_STEP);
+                currentStep += delta > 0 ? 1 : -1;
+                if (currentStep < 0) currentStep = 0;
+                if (currentStep > WALKSPEED_STEPS) currentStep = WALKSPEED_STEPS;
+                VrWalkSpeed = WALKSPEED_MIN + (f32)currentStep * WALKSPEED_STEP;
+                g_Vars.modifiedfiles |= MODFILE_GAME;
+                lastRawValue = data->slider.value;
+            }
+        }
+            break;
+        case MENUOP_GETSLIDERLABEL:
+            sprintf(data->slider.label, "%d%%", (s32)roundf(VrWalkSpeed * 100.0f));
+            break;
+    }
+
+    return 0;
+}
 
 MenuItemHandlerResult menuhandlerVRCharacterHeight(s32 operation, struct menuitem *item, union handlerdata *data)
 {
@@ -560,6 +615,22 @@ struct menuitem g_VRComfortOptionsMenuItems[] = {
                 (uintptr_t)"Match Character Height",
                 0,
                 menuhandlerVRCharacterHeight,
+        },
+        {
+                MENUITEMTYPE_SLIDER,
+                0,
+                MENUITEMFLAG_LITERAL_TEXT,
+                (uintptr_t)"Walk Speed",
+                0xff,
+                menuhandlerVRWalkSpeed,
+        },
+        {
+                MENUITEMTYPE_CHECKBOX,
+                0,
+                MENUITEMFLAG_LITERAL_TEXT,
+                (uintptr_t)"Stick Turn",
+                0,
+                menuhandlerVRStickTurn,
         },
         {
                 MENUITEMTYPE_SLIDER,

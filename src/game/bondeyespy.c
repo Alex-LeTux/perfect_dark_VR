@@ -45,6 +45,7 @@ u32 g_EyespyMaxFallSpeed = 3000;
 
 // VR
 extern void vr_rotate_vector_by_quaternion(struct coord* v, const XrQuaternionf* q);
+extern float VrWalkSpeed;
 extern void joy_for_vr(void);
 extern XrQuaternionf vr_joy_rot_Q;
 
@@ -780,7 +781,11 @@ void eyespyProcessInput(bool allowbuttons)
 			activatepressed = c1buttons & (BUTTON_CANCEL_USE | BUTTON_ACCEPT_USE);
 		} else
 #endif
-		{
+		if (controlmode == CONTROLMODE_12) {
+			// VR: A uses, as it does with holsters (doors and objects), and B returns to Joanna
+			exitpressed = (c1buttons | c2buttons) & B_BUTTON;
+			activatepressed = (c1buttons | c2buttons) & A_BUTTON;
+		} else {
 			exitpressed = (c1buttons | c2buttons) & A_BUTTON;
 			activatepressed = (c1buttons | c2buttons) & B_BUTTON;
 		}
@@ -1068,16 +1073,18 @@ void eyespyProcessInput(bool allowbuttons)
 			g_Vars.currentplayer->eyespy->bobactive = false;
 		}
 
-		g_Vars.currentplayer->eyespy->velf[0] += spcc;
-		g_Vars.currentplayer->eyespy->velf[1] += spc8;
-		g_Vars.currentplayer->eyespy->vels[0] += spd4;
-		g_Vars.currentplayer->eyespy->vels[1] += spd0;
+		// VR: the Walk Speed setting scales the drone's push and top speeds as it scales Joanna's
+		// stride (bondwalk.c): at 100% the drone's forward top speed, 9.5 a frame, is her walk's
+		g_Vars.currentplayer->eyespy->velf[0] += spcc * VrWalkSpeed;
+		g_Vars.currentplayer->eyespy->velf[1] += spc8 * VrWalkSpeed;
+		g_Vars.currentplayer->eyespy->vels[0] += spd4 * VrWalkSpeed;
+		g_Vars.currentplayer->eyespy->vels[1] += spd0 * VrWalkSpeed;
 
 		spcc = g_Vars.currentplayer->eyespy->velf[0] * g_Vars.currentplayer->eyespy->velf[0]
 			+ g_Vars.currentplayer->eyespy->velf[1] * g_Vars.currentplayer->eyespy->velf[1];
 
-		if (spcc > 90.25f * g_Vars.lvupdate60freal * g_Vars.lvupdate60freal) {
-			spcc = 9.5f * g_Vars.lvupdate60freal / sqrtf(spcc);
+		if (spcc > 90.25f * VrWalkSpeed * VrWalkSpeed * g_Vars.lvupdate60freal * g_Vars.lvupdate60freal) {
+			spcc = 9.5f * VrWalkSpeed * g_Vars.lvupdate60freal / sqrtf(spcc);
 
 			g_Vars.currentplayer->eyespy->velf[0] *= spcc;
 			g_Vars.currentplayer->eyespy->velf[1] *= spcc;
@@ -1086,8 +1093,8 @@ void eyespyProcessInput(bool allowbuttons)
 		spd4 = g_Vars.currentplayer->eyespy->vels[0] * g_Vars.currentplayer->eyespy->vels[0]
 			+ g_Vars.currentplayer->eyespy->vels[1] * g_Vars.currentplayer->eyespy->vels[1];
 
-		if (spd4 > 225.0f * g_Vars.lvupdate60freal * g_Vars.lvupdate60freal) {
-			spd4 = 15.0f * g_Vars.lvupdate60freal / sqrtf(spd4);
+		if (spd4 > 225.0f * VrWalkSpeed * VrWalkSpeed * g_Vars.lvupdate60freal * g_Vars.lvupdate60freal) {
+			spd4 = 15.0f * VrWalkSpeed * g_Vars.lvupdate60freal / sqrtf(spd4);
 
 			g_Vars.currentplayer->eyespy->vels[0] *= spd4;
 			g_Vars.currentplayer->eyespy->vels[1] *= spd4;
@@ -1114,9 +1121,8 @@ void eyespyProcessInput(bool allowbuttons)
 #ifdef PLATFORM_N64
 			g_Vars.currentplayer->eyespy->vel.y += 0.025f * g_Vars.currentplayer->eyespy->bobdir;
 #else
-			// HACK: how do I scale this properly?
-			const f32 scale = (g_Vars.lvupdate60freal <= 1.1f) ? 0.0055f : 0.0125f;
-			g_Vars.currentplayer->eyespy->vel.y += scale * g_Vars.lvupdate60freal * g_Vars.currentplayer->eyespy->bobdir;
+			// VR: no idle hover. The camera rising and falling on its own every
+			// two seconds is unrequested vertical motion in a headset.
 #endif
 
 			if (g_Vars.currentplayer->eyespy->bobtimer > TICKS(120)) {

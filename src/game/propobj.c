@@ -20253,10 +20253,29 @@ void doorsCalcFrac(struct doorobj *door)
 			if ((door->doorflags & DOORFLAG_UNBLOCKABLEOPEN) == 0)
 #endif
 			{
+				u32 blocktypes = CDTYPE_OBJS | CDTYPE_PLAYERS | CDTYPE_CHRS | CDTYPE_PATHBLOCKER | CDTYPE_OBJSNOTSAFEORHELI;
+
+				// VR: a sliding door that is opening moves away from the player, so the
+				// player never stops it. The test below is not of the door where it is:
+				// once frac passes perimfrac, doorUpdateTiles stops moving the block
+				// (a vertical door's block is always the shut slab) and the player's own
+				// collision with the door is off. The VR body follows the real head
+				// (vr_player_pos), so someone standing at the door with their head
+				// against it walks into that stale block the moment the door's
+				// collision goes off, and the door stalls part open on them until they
+				// step back. Closing still stops for the player.
+				if (loopdoor->mode == DOORMODE_OPENING
+						&& (loopdoor->doortype == DOORTYPE_SLIDING
+							|| loopdoor->doortype == DOORTYPE_VERTICAL
+							|| loopdoor->doortype == DOORTYPE_FLEXI1
+							|| loopdoor->doortype == DOORTYPE_FLEXI2
+							|| loopdoor->doortype == DOORTYPE_FLEXI3)) {
+					blocktypes &= ~CDTYPE_PLAYERS;
+				}
+
 				propSetPerimEnabled(loopprop, false);
 
-				cdresult = cdTestBlockOverlapsAnyProp(loopdoor->base.geoblock, loopprop->rooms,
-						CDTYPE_OBJS | CDTYPE_PLAYERS | CDTYPE_CHRS | CDTYPE_PATHBLOCKER | CDTYPE_OBJSNOTSAFEORHELI);
+				cdresult = cdTestBlockOverlapsAnyProp(loopdoor->base.geoblock, loopprop->rooms, blocktypes);
 
 				propSetPerimEnabled(loopprop, true);
 

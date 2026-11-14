@@ -118,6 +118,7 @@ static f32 g_RefHMDQuat[4] = { 1.0f, 0.0f, 0.0f, 0.0f };
 extern float XrFov;
 extern float XrAspect;
 float VrSetWorldScale = 1.0f;
+float VrWalkSpeed = 1.0f;
 //---
 
 //VR Slayer HMD rotation
@@ -3796,8 +3797,10 @@ void playerTick(bool arg0)
              && g_Vars.currentplayer->eyespy->active) {
         // Controlling an eyespy
         struct coord sp308;
-        playermgrSetFovY(120);
-        viSetFovY(120);
+        // VR: the headset's own field of view. The original's 120 squeezed a
+        // wider view into the lenses, shrinking and curving the whole scene.
+        playermgrSetFovY(XrFov);
+        viSetFovY(XrFov);
         sp308.x = g_Vars.currentplayer->eyespy->prop->pos.x;
         sp308.y = g_Vars.currentplayer->eyespy->prop->pos.y;
         sp308.z = g_Vars.currentplayer->eyespy->prop->pos.z;

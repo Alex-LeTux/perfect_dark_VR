@@ -14,6 +14,11 @@ extern bool VrWeaponRecoil;
 #define WORLDSCALE_MIN    0.50f
 #define WORLDSCALE_MAX    1.50f
 extern float VrSetWorldScale;
+// Top walking speed as a fraction of the original's, for players who want slower
+// movement; full stick deflection reaches this
+#define WALKSPEED_MIN     0.25f
+#define WALKSPEED_MAX     1.00f
+extern float VrWalkSpeed;
 extern int VrPauseHub;
 
 // Your standing EYE height in cm -- where your eyes are off the floor, roughly
@@ -30,6 +35,7 @@ extern float VrPlayerHeight;
 // character you are playing, so Elvis is short and Mr Blonde towers.
 extern bool VrMatchCharacterHeight;
 extern float VrUseSnapTurn;
+extern int VrStickTurn;         // 0: the stick does not turn the player (smooth or snap); the headset still does
 extern bool VrTwoHandAim;       // two-handed weapons aim along the line between both controllers
 extern int VrStickClickToCrouch;
 extern int VrLeftHandedMode;

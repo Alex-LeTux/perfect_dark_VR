@@ -143,6 +143,16 @@ bool vr_L_func_secondary_knife = false;
 bool vr_L_knife_sec_anim_run = false;
 bool vr_L_trigger = false;
 
+// VR: the DY357s (Magnum and LX) fire from a cocked hammer (Task J10, the user: "the two magnums have
+// an awkward delay between when the user pulls the trigger and when the gun fires"). Their fire
+// animation (ANIM_GUN_DY357_SHOOT, 26 frames) is a double-action pull: the hammer goes back 58 degrees
+// over frames 0 to 9 and falls over 10 and 11, and the script's shot (gunscript_waittime(12, 2)) comes
+// at frame 12, 12 frames (0.2 s) after the pull; the Falcon 2's script has no such wait and fires on
+// the pull. From frame 9 the hammer falls at once and the shot goes off 2 frames (33 ms) after the
+// pull, with the hammer. Taken by the animation's load (bgun0f0981e8) in the attack state only: the
+// equip animation is the same one.
+#define VR_DY357_COCKED_FRAME 9.0f
+
 // VR Trow Grenade / Mine etc -----------------------------------------
 #define VR_THROW_HISTORY_FRAMES 15
 #define VR_THROW_HISTORY_MAX    64
@@ -3397,6 +3407,14 @@ void bgun0f0981e8(struct hand* hand, struct modeldef* modeldef)
                 modelSetAnimation(&hand->gunmodel, hand->animload, false, 0.0f, animspeedmult * animspeed, 0.0f);
             }
 
+
+            // VR: the DY357s' shot from a cocked hammer (see VR_DY357_COCKED_FRAME)
+            if ((hand->gset.weaponnum == WEAPON_DY357MAGNUM || hand->gset.weaponnum == WEAPON_DY357LX)
+                    && hand->gset.weaponfunc == FUNC_PRIMARY && hand->state == HANDSTATE_ATTACK
+                    && hand->animload == ANIM_GUN_DY357_SHOOT && animspeed > 0.0f
+                    && modelGetNumAnimFrames(&hand->gunmodel) > VR_DY357_COCKED_FRAME) {
+                modelSetAnimFrame(&hand->gunmodel, VR_DY357_COCKED_FRAME);
+            }
 
             hand->animload = -1;
             hand->animmode = HANDANIMMODE_BUSY;
@@ -8417,9 +8435,12 @@ void bgunSwivel(f32 screenx, f32 screeny, f32 crossdamp, f32 aimdamp)
         }
     }
 
-    // Compute the raw weapon direction in screen space
+    // Compute the raw weapon direction in screen space. VR: not before the first frame has set the
+    // camera's world-to-screen matrix (it is NULL at level start): with holsters on, the level-start
+    // equip no longer waits 3 ticks to free the old gun, so a hand is in use in the first tick,
+    // before any frame is drawn.
     for (h = 0; h < 2; h++) {
-        if (!ignore[h]) {
+        if (!ignore[h] && camGetWorldToScreenMtxf() != NULL) {
             hand = &player->hands[h];
             Mtxf *matrix = hand->useposrot ? &hand->posrotmtx : &hand->posmtx;
 

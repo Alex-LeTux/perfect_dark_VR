@@ -3,8 +3,9 @@
 
 #include "vr_settings.h"
 
-extern "C" float inputRumbleGetStrength(int playernum);
-extern "C" void inputRumbleSetStrength(int playernum, int strength);
+// Real signatures from port/include/input.h (s32 cidx, f32 val).
+extern "C" float inputRumbleGetStrength(int cidx);
+extern "C" void inputRumbleSetStrength(int cidx, float val);
 
 #define FS_MAXPATH 256
 extern char g_ActiveExtTexPack[FS_MAXPATH];
@@ -21,13 +22,15 @@ extern "C" void vrSettingsSave(void)
     fprintf(f, "LaserDotForAll=%d\n", VrlaserDotForALL ? 1 : 0);
     fprintf(f, "SeatedMode=%d\n", VrSeatedMode ? 1 : 0);
     fprintf(f, "MotionThrowing=%d\n", VrMotionThrowing ? 1 : 0);
-    fprintf(f, "Vibration=%.4f\n", inputRumbleGetStrength(g_ExtMenuPlayer));
+    fprintf(f, "Vibration=%.4f\n", inputRumbleGetStrength(0));
     fprintf(f, "StereoCrosshair=%.4f\n", VrStereoCrosshair);
     fprintf(f, "HudDistance=%.4f\n", VrHudDistance);
     fprintf(f, "WeaponRecoil=%d\n", VrWeaponRecoil ? 1 : 0);
     fprintf(f, "WorldScale=%.4f\n", VrSetWorldScale);
+    fprintf(f, "WalkSpeed=%.4f\n", VrWalkSpeed);
     fprintf(f, "PauseHub=%d\n", VrPauseHub ? 1 : 0);
     fprintf(f, "StickClickToCrouch=%d\n", VrStickClickToCrouch ? 1 : 0);
+    fprintf(f, "StickTurn=%d\n", VrStickTurn ? 1 : 0);
     fprintf(f, "SnapTurn=%.1f\n", VrUseSnapTurn);
     fprintf(f, "TwoHandedAiming=%d\n", VrTwoHandAim ? 1 : 0);
     fprintf(f, "LeftHandedMode=%d\n", VrLeftHandedMode ? 1 : 0);
@@ -83,8 +86,10 @@ extern "C" void vrSettingsLoad(void)
     while (fgets(line, sizeof(line), f)) {
         if (line[0] == '[' || line[0] == '\n' || line[0] == ';' || line[0] == '#') continue;
 
-        // 1. Is it an integer (%d)?
-        if (sscanf(line, "%63[^=]=%d", key, &ival) == 2) {
+        // 1. Is it an integer (%d)? A decimal value is not: %d alone takes "0.5000" as 0 and the
+        // float branch below never saw it, so every decimal setting (Walk Speed, World Scale, eye
+        // height, HUD distance, snap turn, vibration, the grip trims) was dropped on load.
+        if (strchr(line, '.') == NULL && sscanf(line, "%63[^=]=%d", key, &ival) == 2) {
             if (strcmp(key, "ManualReloading") == 0) VrManualReloading = ival != 0;
             else if (strcmp(key, "LaserDotForAll") == 0) VrlaserDotForALL = ival != 0;
             else if (strcmp(key, "SeatedMode") == 0) VrSeatedMode = ival != 0;
@@ -92,6 +97,7 @@ extern "C" void vrSettingsLoad(void)
             else if (strcmp(key, "WeaponRecoil") == 0) VrWeaponRecoil = (ival != 0);
             else if (strcmp(key, "StickClickToCrouch") == 0) VrStickClickToCrouch = (ival != 0);
             else if (strcmp(key, "PauseHub") == 0) VrPauseHub = (ival != 0);
+            else if (strcmp(key, "StickTurn") == 0) VrStickTurn = (ival != 0);
             else if (strcmp(key, "TwoHandedAiming") == 0) VrTwoHandAim = (ival != 0);
             else if (strcmp(key, "LeftHandedMode") == 0) VrLeftHandedMode = (ival != 0);
             else if (strcmp(key, "SwapJoysticks") == 0) VrSwapJoysticks = (ival != 0);
@@ -101,7 +107,11 @@ extern "C" void vrSettingsLoad(void)
         }
             // 2. OTHERWISE, is it a floating-point number (%f)?
         else if (sscanf(line, "%63[^=]=%f", key, &fval) == 2) {
-            if (strcmp(key, "Vibration") == 0) inputRumbleGetStrength(fval);
+            if (strcmp(key, "Vibration") == 0) {
+                if (fval < 0.f) fval = 0.f;
+                if (fval > 1.f) fval = 1.f;
+                inputRumbleSetStrength(0, fval);
+            }
             else if (strcmp(key, "StereoCrosshair") == 0) {
                 if (fval < HUD_STEREO_DEPTH_MIN) fval = HUD_STEREO_DEPTH_MIN;
                 if (fval > HUD_STEREO_DEPTH_MAX) fval = HUD_STEREO_DEPTH_MAX;
@@ -116,6 +126,11 @@ extern "C" void vrSettingsLoad(void)
                 if (fval < WORLDSCALE_MIN) fval = WORLDSCALE_MIN;
                 if (fval > WORLDSCALE_MAX) fval = WORLDSCALE_MAX;
                 VrSetWorldScale = fval;
+            }
+            else if (strcmp(key, "WalkSpeed") == 0) {
+                if (fval < WALKSPEED_MIN) fval = WALKSPEED_MIN;
+                if (fval > WALKSPEED_MAX) fval = WALKSPEED_MAX;
+                VrWalkSpeed = fval;
             }
             else if (strcmp(key, "PlayerHeight") == 0) {
                 if (fval < PLAYERHEIGHT_MIN) fval = PLAYERHEIGHT_MIN;

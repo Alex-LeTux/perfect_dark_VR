@@ -56,6 +56,7 @@ float VrYawRot = 0.0f;
 extern bool vr_is_duel;
 extern float vr_player_angle;
 extern float VrSetWorldScale;
+extern float VrWalkSpeed;
 static f32 sVrEyeheightClamped = 150.0f; // default for starting game
 
 // VR height settings. See vr_settings.h for what they mean; the menu writes
@@ -77,6 +78,17 @@ extern bool VrSeatedMode;
 
 bool is_grabbing_mode = false;
 bool is_hoverbike_mode = false;
+
+#ifdef ANDROID
+#include <android/log.h>
+#define WALK_DIAG(...) __android_log_print(ANDROID_LOG_INFO, "PD-VRR", __VA_ARGS__)
+#else
+#define WALK_DIAG(...) ((void) 0)
+#endif
+
+// VR: PD-VRR "grab release:" lines for this many walk ticks after a grab is let go
+#define VR_GRAB_RELEASE_TICKS 12
+static s32 sVrGrabReleaseTicks = 0;
 
 int VrStickClickToCrouch = false;
 
@@ -102,13 +114,17 @@ void vr_rotate_vector_by_quaternion(struct coord* v, const XrQuaternionf* q) {
 #define VR_SNAP_DEACTIVATE  0.0001f     // re-arm threshold (hysteresis)
 static bool vr_snapArmed = true;
 float VrUseSnapTurn = 0.0f;   // true = snap turn, false = continuous turn
+int VrStickTurn = true;       // 0: the stick's left and right do not turn the player, smooth or snap
 
 
 
 void joy_for_vr(void) {
     XrVector2f rightThumbstick;
 
-    if (get_2d_input(1, "thumbstick", &rightThumbstick)) {
+    if (!VrStickTurn) {
+        // Stick Turn off: only the headset turns the player. The turn already made is kept.
+        vr_snapArmed = true;
+    } else if (get_2d_input(1, "thumbstick", &rightThumbstick)) {
 
         // Retrieving the deadzone and sensitivity of the right stick (Player 0, Stick 1, X Axis 0)
         float dz = inputControllerGetAxisDeadzone(0, 1, 0);
@@ -484,7 +500,8 @@ void vr_player_rot(void) {
        && g_Vars.currentplayer->bondmovemode != MOVEMODE_BIKE
        && g_Vars.currentplayer->bondmovemode != MOVEMODE_GRAB
        && !vr_is_duel
-       && !is_grabbing_mode
+       // VR: not is_grabbing_mode: vr_special_rot_mode sets it after the move tick, so on the tick
+       // a grab is let go it still said grabbing and the view kept the last tick's turn for a frame
        && !is_hoverbike_mode
             ) {
 
@@ -704,7 +721,9 @@ void bwalkInit(void)
     g_Vars.currentplayer->bondforcespeed.y = 0;
     g_Vars.currentplayer->bondforcespeed.z = 0;
 
-    if (prevmode != MOVEMODE_WALK && prevmode != MOVEMODE_CUTSCENE) {
+    // VR: not after a grab either, which now holds the walk's eye height crouch included
+    // (vr_grab_eye_height), so a seated player's crouch no longer pops up on letting go
+    if (prevmode != MOVEMODE_WALK && prevmode != MOVEMODE_CUTSCENE && prevmode != MOVEMODE_GRAB) {
         g_Vars.currentplayer->sumcrouch = 0;
         g_Vars.currentplayer->crouchheight = 0;
         g_Vars.currentplayer->crouchtime240 = 0;
@@ -1430,6 +1449,66 @@ void bwalkUpdateSpeedForwards(f32 targetspeed, f32 accelspeed)
     g_Vars.currentplayer->speedforwards = g_Vars.currentplayer->speedgo;
 }
 
+// VR standing: the real head height above the physical floor in game units, before the stick
+// click's crouch and the ceiling check (the units are explained in bwalkUpdateVertical)
+static f32 vrStandingEyeHeight(void)
+{
+    float unitsPerCm = VrMatchCharacterHeight
+                       ? (g_Vars.currentplayer->vv_eyeheight / VrPlayerHeight)
+                       : 0.85f * VrSetWorldScale;
+    f32 eyeheight = gVrHeadHeightCm * unitsPerCm;
+
+    // Sanity clamp against tracking glitches, not a height cap -- VR_MAX_HEAD_CM is
+    // above any real tracked head. The ceiling check is what keeps the view out of
+    // level geometry.
+    if (eyeheight > VR_MAX_HEAD_CM * unitsPerCm) eyeheight = VR_MAX_HEAD_CM * unitsPerCm;
+    if (eyeheight < 0.0f) eyeheight = 0.0f;
+
+    return eyeheight;
+}
+
+// VR standing: the stick click's crouch (sVrEyeheightMode) applied to a standing height
+static f32 vrEyeheightModeScale(f32 eyeheight)
+{
+    switch (sVrEyeheightMode) {
+        case VR_EYEHEIGHT_DUCK:
+            return eyeheight / 1.3f;
+        case VR_EYEHEIGHT_SQUAT:
+            return eyeheight / 1.6f;
+        case VR_EYEHEIGHT_STAND:
+        default:
+            return eyeheight;
+    }
+}
+
+// VR seated: the original game's eye height, its crouch included (bmoveTick sets crouchpos from
+// the click), before the walk's floor of 30
+static f32 vrSeatedEyeHeight(void)
+{
+    return g_Vars.currentplayer->vv_height +
+           g_Vars.currentplayer->crouchoffsetrealsmall +
+           g_Vars.currentplayer->crouchheight *
+           g_Vars.currentplayer->vv_eyeheight * 0.0062893079593778f;
+}
+
+// VR: the eye's height above vv_manground the walk gives (bwalkUpdateVertical), for a grab
+// (bgrabUpdateVertical), which used the character's animated eye height instead, so grabbing and
+// letting go moved the view up or down by the difference from the player's real height. The walk's
+// ceiling check is left to the grab's own upward move test (bgrabTryMoveUpwards). vv_height must
+// be this tick's.
+f32 vr_grab_eye_height(void)
+{
+    f32 eyeheight;
+
+    if (!VrSeatedMode) {
+        return vrEyeheightModeScale(vrStandingEyeHeight());
+    }
+
+    eyeheight = vrSeatedEyeHeight();
+
+    return eyeheight < 30 ? 30 : eyeheight;
+}
+
 void bwalkUpdateVertical(void)
 {
     s32 i;
@@ -1843,11 +1922,15 @@ void bwalkUpdateVertical(void)
 // Nothing is remembered between frames, so a physical jump can no longer latch
 // a reference and leave you shorter for the session.
 //
-//   real height mode      one real cm is one game unit -- the scale the game
-//                         itself is modelled at, Joanna's eye sitting at 159
-//                         units for 1.59 m. The body you are wearing does not
-//                         come into it, so you are your own height in every
-//                         level. World scale applies, as it does to the IPD.
+//   real height mode      one real cm is the game units the IPD and the hands
+//                         take for it: 0.85 times World Scale (vr_world_scale
+//                         is 85 per meter, in world units on every level once
+//                         the half-scale levels' bg scale is taken out), so
+//                         your eye sits as high as the stereo says it does.
+//                         One unit per cm put it 17.6% higher. The body you
+//                         are wearing does not come into it, so you are your
+//                         own height in every level. At World Scale 1.18 a
+//                         unit is a cm, the scale the game is modelled at.
 //   character height mode your standing height maps onto the character's own
 //                         standing eye height (vv_eyeheight -- 159 for Joanna,
 //                         106 for Elvis, 175 for Mr Blonde), so standing up
@@ -1855,17 +1938,7 @@ void bwalkUpdateVertical(void)
 //                         deliberately left out: the promise here is the
 //                         character's height relative to the level, and scaling
 //                         it would break that.
-        float unitsPerCm = VrMatchCharacterHeight
-                           ? (g_Vars.currentplayer->vv_eyeheight / VrPlayerHeight)
-                           : VrSetWorldScale;
-
-        eyeheight = gVrHeadHeightCm * unitsPerCm;
-
-// Sanity clamp against tracking glitches, not a height cap -- VR_MAX_HEAD_CM is
-// above any real tracked head. The ceiling check below is what keeps the view
-// out of level geometry.
-        if (eyeheight > VR_MAX_HEAD_CM * unitsPerCm) eyeheight = VR_MAX_HEAD_CM * unitsPerCm;
-        if (eyeheight < 0.0f) eyeheight = 0.0f;
+        eyeheight = vrStandingEyeHeight();
 
 // --- VR EYEHEIGHT DIVIDER TOGGLE (thumbstick click) ---
         {
@@ -1873,6 +1946,11 @@ void bwalkUpdateVertical(void)
             static bool sPrevThumbstickClick = false;
 
             bool curThumbstickClick = VrStickClickToCrouch && get_button_state(0, "thumbstick_click");
+
+            // Left Stick Click to Crouch off: a crouch the click left in place goes too
+            if (!VrStickClickToCrouch) {
+                sVrEyeheightMode = VR_EYEHEIGHT_STAND;
+            }
 
             // Rising edge detection: only switch when the button is pressed
             if (curThumbstickClick && !sPrevThumbstickClick) {
@@ -1891,18 +1969,7 @@ void bwalkUpdateVertical(void)
             }
             sPrevThumbstickClick = curThumbstickClick;
 
-
-            switch (sVrEyeheightMode) {
-                case VR_EYEHEIGHT_DUCK:
-                    eyeheight = eyeheight / 1.3f;
-                    break;
-                case VR_EYEHEIGHT_SQUAT:
-                    eyeheight = eyeheight / 1.6f;
-                    break;
-                case VR_EYEHEIGHT_STAND:
-                default:
-                    break;
-            }
+            eyeheight = vrEyeheightModeScale(eyeheight);
         }
 
 // --- VR CEILING CHECK ---
@@ -1935,15 +2002,18 @@ void bwalkUpdateVertical(void)
         // --- END VR CEILING CHECK ---
     }
     else{
-        eyeheight = g_Vars.currentplayer->vv_height +
-                    g_Vars.currentplayer->crouchoffsetrealsmall +
-                    g_Vars.currentplayer->crouchheight *
-                    g_Vars.currentplayer->vv_eyeheight * 0.0062893079593778f;
+        eyeheight = vrSeatedEyeHeight();
 
 
         static bool sPrevThumbstickClick = false;
 
-        bool curThumbstickClick = get_button_state(0, "thumbstick_click");
+        // Seated, the click's crouch is the player's only one (bmoveTick sets crouchpos from it), and
+        // follows Left Stick Click to Crouch as standing does: it was read whatever the setting
+        bool curThumbstickClick = VrStickClickToCrouch && get_button_state(0, "thumbstick_click");
+
+        if (!VrStickClickToCrouch) {
+            sVrEyeheightMode = VR_EYEHEIGHT_STAND;
+        }
 
         // Rising edge detection: only switch when the button is pressed
         if (curThumbstickClick && !sPrevThumbstickClick) {
@@ -2516,8 +2586,9 @@ void bwalk0f0c69b8(void)
 
         g_Vars.currentplayer->gunspeed = maxspeed;
 
-        spdc = g_Vars.currentplayer->headpos.x;
-        spd8 = g_Vars.currentplayer->headpos.z;
+        // VR: the Walk Speed setting scales the walk and strafe stride
+        spdc = g_Vars.currentplayer->headpos.x * VrWalkSpeed;
+        spd8 = g_Vars.currentplayer->headpos.z * VrWalkSpeed;
 
 #if VERSION >= VERSION_NTSC_1_0
         if (cheatIsActive(CHEAT_SMALLJO)) {
@@ -2768,6 +2839,31 @@ void bwalkTick(void)
         bmove0f0cc19c(&headpos);
     }
 
+    // VR: the first ticks after a grab is let go (vr_grab_release_note)
+    if (sVrGrabReleaseTicks > 0) {
+        WALK_DIAG("grab release: +%d cam (%.1f %.1f %.1f) body (%.1f %.1f %.1f) head off (%.1f %.1f)"
+                  " look yaw %.1f theta %.1f",
+                  VR_GRAB_RELEASE_TICKS - sVrGrabReleaseTicks,
+                  g_Vars.currentplayer->bond2.unk10.x, g_Vars.currentplayer->bond2.unk10.y,
+                  g_Vars.currentplayer->bond2.unk10.z, g_Vars.currentplayer->prop->pos.x,
+                  g_Vars.currentplayer->prop->pos.y, g_Vars.currentplayer->prop->pos.z,
+                  sVrHeadOffset.x, sVrHeadOffset.z,
+                  atan2f(g_Vars.currentplayer->bond2.unk1c.x, g_Vars.currentplayer->bond2.unk1c.z) * 180.0f / M_PI,
+                  g_Vars.currentplayer->vv_theta);
+        sVrGrabReleaseTicks--;
+    }
+
     playerUpdatePerimInfo();
     doorsCheckAutomatic();
+}
+
+void vr_grab_release_note(void)
+{
+    sVrGrabReleaseTicks = VR_GRAB_RELEASE_TICKS;
+    WALK_DIAG("grab release: cam (%.1f %.1f %.1f) body (%.1f %.1f %.1f) look yaw %.1f theta %.1f",
+              g_Vars.currentplayer->bond2.unk10.x, g_Vars.currentplayer->bond2.unk10.y,
+              g_Vars.currentplayer->bond2.unk10.z, g_Vars.currentplayer->prop->pos.x,
+              g_Vars.currentplayer->prop->pos.y, g_Vars.currentplayer->prop->pos.z,
+              atan2f(g_Vars.currentplayer->bond2.unk1c.x, g_Vars.currentplayer->bond2.unk1c.z) * 180.0f / M_PI,
+              g_Vars.currentplayer->vv_theta);
 }

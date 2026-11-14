@@ -97,6 +97,11 @@ extern bool gfx_external_textures_enabled;
 extern void vr_initialize();
 extern bool vr_is_initialized();
 extern bool vr_begin_frame_and_update_poses();
+
+/* The last mainTick held the game (VR: no frame to draw): its frame is not ended, so the window,
+ * audio and input stay as they were until ticks resume */
+static bool g_MainTickHeld = false;
+
 extern void vr_poll_events();
 extern void vr_end_frame_and_submit();
 extern bool vr_apply_pending_scale(void);
@@ -559,7 +564,10 @@ void mainLoop(void)
             if (!g_Vars.mininc60 || (cycles >= g_Vars.mininc60 * CYCLES_PER_FRAME - CYCLES_PER_FRAME / 2)) {
                 schedStartFrame(&g_Sched);
                 mainTick();
-                schedEndFrame(&g_Sched);
+
+                if (!g_MainTickHeld) {
+                    schedEndFrame(&g_Sched);
+                }
             }
             if (g_TickExtraSleep) {
                 sysSleep(EXTRA_SLEEP_TIME);
@@ -586,6 +594,8 @@ void mainTick(void)
     Gfx *gdlstart = NULL;
     OSScMsg msg = {OS_SC_DONE_MSG};
     s32 i;
+
+    g_MainTickHeld = false;
 
     if (g_MainChangeToStageNum < 0) {
         static bool wasPressed = false;
@@ -632,7 +642,15 @@ void mainTick(void)
         // VR
         if(vr_init_done) {
             vr_poll_events();
-            vr_begin_frame_and_update_poses();
+
+            // No frame to draw (the session is stopped while the headset sleeps, or the runtime
+            // asked for no rendering): hold the game instead of running it blind. Ticks resume
+            // with the next frame.
+            if (!vr_begin_frame_and_update_poses()) {
+                g_MainTickHeld = true;
+                return;
+            }
+
             VrApplySettingsOnStart();
         }
 
