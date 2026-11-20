@@ -117,7 +117,7 @@ static void vrrFillOutput(const struct vrrgun *g, const struct vrrinput *in, str
 		glow = VRR_GLOW_RACK;
 		break;
 	case VRR_RACKING:
-		glow = g->racked ? 0 : VRR_GLOW_RACK;
+		glow = 0;
 		break;
 	}
 
@@ -125,6 +125,10 @@ static void vrrFillOutput(const struct vrrgun *g, const struct vrrinput *in, str
 	 * grab: no rack marker, so no rack zone to enter (VRR_HOT_RACK, VRR_FX_ZONE_ENTER) */
 	if (in->loadsoninsert || in->rackslap) {
 		glow &= ~VRR_GLOW_RACK;
+	}
+
+	if (in->directchest && in->atshoulder && (in->clipsize - g->chamber - g->clip > 0 || !g->magin)) {
+		glow |= VRR_HOT_CLIP;
 	}
 
 	if (in->inclip && (glow & VRR_GLOW_CLIP)) {
@@ -167,7 +171,9 @@ static void vrrGrabShell(struct vrrgun *g, const struct vrrinput *in, struct vrr
 	}
 
 	if (in->reserve > 0) {
-		g->held = 1;
+		int32_t tograb = in->directchest ? (in->clipsize - g->chamber - g->clip) : 1;
+		if (tograb > in->reserve) tograb = in->reserve;
+		g->held = tograb;
 		g->state = VRR_HOLDING_CLIP;
 		out->fx |= VRR_FX_GRAB_CLIP;
 	} else {
@@ -223,6 +229,16 @@ void vrrTick(struct vrrgun *g, const struct vrrinput *in, struct vrroutput *out)
 
 	switch (g->state) {
 	case VRR_READY:
+		if (in->directchest && down && in->atshoulder && (in->clipsize - g->chamber - g->clip > 0 || !g->magin)) {
+			if (in->reserve > 0) {
+				g->held = in->clipsize < in->reserve ? in->clipsize : in->reserve;
+				g->state = VRR_HOLDING_CLIP;
+				out->fx |= VRR_FX_GRAB_CLIP;
+			} else {
+				out->fx |= VRR_FX_NO_AMMO;
+			}
+			break;
+		}
 		vrrGrabShell(g, in, out, down);
 		break;
 	case VRR_CLIP_OUT:
@@ -241,10 +257,15 @@ void vrrTick(struct vrrgun *g, const struct vrrinput *in, struct vrroutput *out)
 			if (up || (in->seated && in->inclip)) {
 				/* The shell goes into the tube if it still has room and the reserve the round
 				 * comes from still has it; otherwise it goes back, and nothing was taken */
-				if (in->inclip && g->held > 0 && in->reserve > 0
+				if (in->inclip && (in->seated || in->directchest) && g->held > 0 && in->reserve > 0
 						&& in->clipsize - g->chamber - g->clip > 0) {
-					g->clip += 1;
-					out->reservedelta -= 1;
+					int32_t toload = in->directchest ? g->held : 1;
+					if (toload > (in->clipsize - g->chamber - g->clip))
+						toload = in->clipsize - g->chamber - g->clip;
+					if (toload > in->reserve)
+						toload = in->reserve;
+					g->clip += toload;
+					out->reservedelta -= toload;
 					out->fx |= VRR_FX_INSERT;
 				} else {
 					out->fx |= VRR_FX_DROP_CLIP;
@@ -264,6 +285,13 @@ void vrrTick(struct vrrgun *g, const struct vrrinput *in, struct vrroutput *out)
 					room = 0;
 				}
 
+				/* If the gun already had rounds in the magazine (direct / tactical reload),
+				 * return those old rounds to the reserve so ammo count is exact */
+				if (g->magin && g->clip > 0) {
+					out->reservedelta += g->clip;
+					g->clip = 0;
+				}
+
 				g->clip = g->held < room ? g->held : room;
 				out->reservedelta -= g->clip;
 				g->magin = 1;
@@ -274,7 +302,11 @@ void vrrTick(struct vrrgun *g, const struct vrrinput *in, struct vrroutput *out)
 			} else {
 				g->held = 0;
 				out->fx |= VRR_FX_DROP_CLIP;
-				g->state = VRR_CLIP_OUT;
+				if (in->directchest && g->magin) {
+					vrrSettleState(g, in->loadsoninsert);
+				} else {
+					g->state = VRR_CLIP_OUT;
+				}
 			}
 		}
 		break;
@@ -283,6 +315,17 @@ void vrrTick(struct vrrgun *g, const struct vrrinput *in, struct vrroutput *out)
 		if (in->rackslap && in->slap && !in->paused) {
 			vrrRackAction(g, out);
 			vrrSettleState(g, 0);
+		}
+
+		if (in->directchest && down && in->atshoulder && (in->clipsize - g->chamber - g->clip > 0 || !g->magin)) {
+			if (in->reserve > 0) {
+				g->held = in->clipsize < in->reserve ? in->clipsize : in->reserve;
+				g->state = VRR_HOLDING_CLIP;
+				out->fx |= VRR_FX_GRAB_CLIP;
+			} else {
+				out->fx |= VRR_FX_NO_AMMO;
+			}
+			break;
 		}
 
 		vrrGrabShell(g, in, out, down);
@@ -295,9 +338,15 @@ void vrrTick(struct vrrgun *g, const struct vrrinput *in, struct vrroutput *out)
 			break;
 		}
 
-		if (!g->racked && in->rackpull >= (in->racktravel > 0.0f ? in->racktravel : VRR_RACK_PULL_CM)) {
-			vrrRackAction(g, out);
-			g->racked = 1;
+		{
+			float maxpull = (in->racktravel > 0.0f ? in->racktravel : VRR_RACK_PULL_CM);
+			if (!g->racked && in->rackpull >= maxpull) {
+				vrrRackAction(g, out);
+				g->racked = 1;
+			} else if (g->racked && !in->pumpaction && in->rackpull <= maxpull * 0.35f) {
+				/* Hand pushed forward while still gripping: reset racked so pulling back again re-cocks/cycles */
+				g->racked = 0;
+			}
 		}
 
 		/* Pump-action guns finish their rack at full pull so the forward stroke (sPumpRide) can run.

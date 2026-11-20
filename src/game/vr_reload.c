@@ -2100,7 +2100,7 @@ void vrReloadAlignHeldHand(s32 handnum, struct modeldef *modeldef, Mtxf *matrice
 	/* Then the row's clip turn (vrreloaddef.clipturnaxis), the held part's matrices alone, about the
 	 * palm (clipturnpivot on heldmtx as now turned), so the clip sits in the hand as the Falcon 2's
 	 * sits in its hand; mirrored with the root as the hand turn is */
-	if (def != NULL && def->insertframefrom <= 0.0f && def->heldmtx >= 0 && def->heldmtx < modeldef->nummatrices
+	if (def != NULL && (def->insertframefrom <= 0.0f || def->weaponnum == WEAPON_CROSSBOW) && def->heldmtx >= 0 && def->heldmtx < modeldef->nummatrices
 			&& vrReloadRootTurn(def->clipturnaxis, def->clipturndeg, root, v)) {
 		s32 last = def->heldmtxlast >= def->heldmtx ? def->heldmtxlast : def->heldmtx;
 		f32 pivot[3];
@@ -2137,7 +2137,7 @@ void vrReloadAlignHeldHand(s32 handnum, struct modeldef *modeldef, Mtxf *matrice
 	 * sits in the palm as the Falcon 2's does, not on the knuckles: through heldmtx as now turned, so
 	 * it is mirrored with the model in left-handed mode, as the pivot is. The capture (sHeld, the
 	 * guide's top and axis) and the playback's hand-off (sHeldMtx) read the matrices after this */
-	if (def != NULL && def->insertframefrom <= 0.0f && def->heldmtx >= 0 && def->heldmtx < modeldef->nummatrices
+	if (def != NULL && (def->insertframefrom <= 0.0f || def->weaponnum == WEAPON_CROSSBOW) && def->heldmtx >= 0 && def->heldmtx < modeldef->nummatrices
 			&& (def->clipshift[0] != 0.0f || def->clipshift[1] != 0.0f || def->clipshift[2] != 0.0f)) {
 		s32 last = def->heldmtxlast >= def->heldmtx ? def->heldmtxlast : def->heldmtx;
 		f32 zero[3] = { 0.0f, 0.0f, 0.0f };
@@ -2298,7 +2298,7 @@ void vrReloadPoseHeldLook(s32 handnum, struct modeldef *modeldef, Mtxf *matrices
 
 	def = vrReloadOwnedDef(handnum);
 
-	if (def == NULL || def->insertframefrom > 0.0f || def->heldmtx < 0 || def->heldmtx >= modeldef->nummatrices) {
+	if (def == NULL || (def->insertframefrom > 0.0f && def->weaponnum != WEAPON_CROSSBOW) || def->heldmtx < 0 || def->heldmtx >= modeldef->nummatrices) {
 		return;
 	}
 
@@ -2579,6 +2579,29 @@ static void vrReloadGuide(s32 h, struct hand *hand, struct vrreloaddef *def)
 	 * (vrReloadBuildInput sets seated) and the hand is drawn empty from then on, as the reload
 	 * animation hides its orb once it is at the intake */
 	if (!vrReloadHasClip(def)) {
+		if (def->weaponnum == WEAPON_CROSSBOW && v.numreach > 0 && def->clipinsertdepth > 0.0f) {
+			static s32 sBoltNockBuzz[2] = { 0, 0 };
+			f32 t = 0.0f;
+			f32 d = vrReloadSegDist(top, mouth, v.reach[0], &t);
+			if (d <= def->clipguiderad + (sGuided[h] ? VRR_GUIDE_EXIT_CM : 0.0f)) {
+				sGuided[h] = 1;
+				sProgress[h] = vrReloadClamp(t, 0.0f, 1.0f) * def->clipinsertdepth;
+				if (t >= 0.75f) {
+					if (!sBoltNockBuzz[h]) {
+						vrReloadBuzz(VRR_CTRL_OFF, 0.4f, 0.05f);
+						sBoltNockBuzz[h] = 1;
+					}
+				} else if (t < 0.60f) {
+					sBoltNockBuzz[h] = 0;
+				}
+			} else {
+				sGuided[h] = 0;
+				sProgress[h] = 0.0f;
+				sBoltNockBuzz[h] = 0;
+			}
+			return;
+		}
+
 		/* A gun held open to its load (ejecthold: the Rocket Launcher's hatch) takes its round once the
 		 * opening has played out, so the close starts from the open pose: a rocket held at the intake
 		 * meanwhile loads as the hatch is fully open */
@@ -2620,7 +2643,7 @@ static void vrReloadGuide(s32 h, struct hand *hand, struct vrreloaddef *def)
 	 * so only tops near a stretch's far part go deeper: near the mouth and off the stretches the
 	 * margin stays VRR_GUIDE_START_PAST_CM, and a row whose points are no deeper than that (the
 	 * MagSec's) is unchanged */
-	startpast = VRR_GUIDE_START_PAST_CM;
+	startpast = (def != NULL && def->weaponnum == WEAPON_REAPER) ? 5.0f : VRR_GUIDE_START_PAST_CM;
 
 	for (i = 0; i < v.numreach; i++) {
 		f32 t;
@@ -2780,6 +2803,7 @@ static void vrReloadBuildInput(s32 h, struct hand *hand, struct vrreloaddef *def
 	if (VrLeftHandedMode != VrCtrlPoseMode) {
 		in->clipsize = hand->clipsizes[ammoindex];
 		in->reserve = player->ammoheldarr[ammotype];
+		in->directchest = (def != NULL && (def->weaponnum == WEAPON_PHOENIX || def->weaponnum == WEAPON_CALLISTO || def->weaponnum == WEAPON_FARSIGHT));
 		in->racktravel = def->racktravel;
 		in->loadsoninsert = def->loadsoninsert;
 		in->rackslap = def->rackslap;
@@ -2882,6 +2906,7 @@ static void vrReloadBuildInput(s32 h, struct hand *hand, struct vrreloaddef *def
 	}
 
 	/* The slide goes forward at the grab (vrReloadMoveSlide), so a rack is always a full pull */
+	in->directchest = (def != NULL && (def->weaponnum == WEAPON_PHOENIX || def->weaponnum == WEAPON_CALLISTO || def->weaponnum == WEAPON_FARSIGHT));
 	in->racktravel = def->racktravel;
 	in->loadsoninsert = def->loadsoninsert;
 	in->rackslap = def->rackslap;
@@ -2890,7 +2915,13 @@ static void vrReloadBuildInput(s32 h, struct hand *hand, struct vrreloaddef *def
 	in->slap = sSlap[h].pending; /* vrReloadStepSlap: the drawn palm reached the clip */
 
 	/* Pushed in until the drawn clip is seated: no need to let go */
-	in->seated = sGuided[h] && sProgress[h] >= def->clipinsertdepth;
+	if (def != NULL && def->weaponnum == WEAPON_CROSSBOW) {
+		/* Crossbow bolt stays gripped in hand until grip is released (like slide/culasse).
+		 * When grip is released near the nock (progress >= 75%), it seats and locks into the crossbow. */
+		in->seated = !in->grip && sGuided[h] && sProgress[h] >= def->clipinsertdepth * 0.75f;
+	} else {
+		in->seated = sGuided[h] && sProgress[h] >= def->clipinsertdepth;
+	}
 }
 
 /* Applies the core output: ammo, cached getter values, sounds and haptics */
@@ -3027,7 +3058,7 @@ static void vrReloadMoveSlide(s32 h, struct hand *hand, struct vrreloaddef *def,
 	}
 
 	/* From fully forward, back with the pull: racktravel cm of pull is the slide's whole travel */
-	t = (sGun[h].racked || def->racktravel <= 0.0f) ? slidemax
+	t = (def->racktravel <= 0.0f) ? slidemax
 		: in->rackpull / def->racktravel * slidemax;
 	hand->slidetrans = vrReloadClamp(t, 0.0f, slidemax);
 }
@@ -3313,7 +3344,7 @@ static void vrReloadStepRack(s32 h, struct vrreloaddef *def, s32 wasracking, str
 
 	if (sGun[h].state == VRR_RACKING || wasracking) {
 		if (in->tracked) {
-			sRackBack[h] = sGun[h].racked ? def->racktravel : vrReloadClamp(in->rackpull, 0.0f, def->racktravel);
+			sRackBack[h] = vrReloadClamp(in->rackpull, 0.0f, def->racktravel);
 		}
 
 		sRackBackFrame[h] = g_Vars.lvframenum;
@@ -4407,7 +4438,7 @@ void vrReloadTick(s32 handnum)
 
 		/* A row with a playback (the Phoenix's orb, the Crossbow's bolt sliding in) starts it with
 		 * the insert sound: its first frame is drawn this frame, and it steps from the next. */
-		if (vrReloadHasPlay(def)) {
+		if (vrReloadHasPlay(def) && (def == NULL || def->weaponnum != WEAPON_CROSSBOW)) {
 			vrReloadStartPlay(handnum, hand, def, 0);
 		}
 	}
@@ -5502,10 +5533,6 @@ bool vrReloadRackDrawn(s32 handnum, f32 *frame)
 		if (pullRatio < 0.0f) pullRatio = 0.0f;
 		if (pullRatio > 1.0f) pullRatio = 1.0f;
 
-		if (sGun[handnum].racked) {
-			pullRatio = 1.0f;
-		}
-
 		f = def->rackframefrom + pullRatio * (def->rackframeto - def->rackframefrom);
 		sRackLastFrame[handnum] = f;
 		if (frame != NULL) {
@@ -6234,21 +6261,39 @@ void vrReloadCollapseClip(s32 handnum, struct modeldef *modeldef, Mtxf *matrices
 
 /* The right hand's owned gun state: the shape a draw restored while its first tick has not applied
  * it, else the live one. NULL when the gun is not owned or the core is not driving it. */
-static struct vrrgun *vrReloadRightGun(void)
+static struct vrrgun *vrReloadHandGun(s32 handnum)
 {
 	struct vrrgun *g;
 
-	if (!vrReloadOwnsGun(HAND_RIGHT)) {
+	if (!vrReloadOwnsGun(handnum)) {
 		return NULL;
 	}
 
-	g = vrReloadPendingFor(HAND_RIGHT);
+	g = vrReloadPendingFor(handnum);
 
-	if (g == NULL && sGunWeapon[HAND_RIGHT] >= 0) {
-		g = &sGun[HAND_RIGHT];
+	if (g == NULL && sGunWeapon[handnum] >= 0) {
+		g = &sGun[handnum];
 	}
 
 	return g;
+}
+
+static struct vrrgun *vrReloadRightGun(void)
+{
+	return vrReloadHandGun(HAND_RIGHT);
+}
+
+static s32 vrReloadHandReserve(s32 handnum)
+{
+	struct player *player = g_Vars.currentplayer;
+	struct vrreloaddef *def = vrReloadOwnedDef(handnum);
+	s32 ammotype = -1;
+
+	if (def != NULL && def->ammoindex >= 0 && def->ammoindex < VRR_MAGS) {
+		ammotype = player->gunctrl.ammotypes[def->ammoindex];
+	}
+
+	return ammotype >= 0 ? player->ammoheldarr[ammotype] : 0;
 }
 
 bool vrReloadEjectRefused(void)
@@ -6336,24 +6381,32 @@ bool vrReloadFreeHandAtAmmo(void)
 	struct vrrgun *g;
 	f32 shoulder[3], off[3];
 	s32 clipsize;
+	s32 gunhand = HAND_RIGHT;
 
 	/* As vrReloadBuildInput reads the shoulder: this frame's gun side in the poses, the free hand free
 	 * (empty, or its gun of a pair parked) */
-	if (player == NULL || VrLeftHandedMode != VrCtrlPoseMode || !vrReloadOwnsGun(HAND_RIGHT)
-			|| (player->hands[HAND_LEFT].inuse && !vrHandParked(HAND_LEFT))) {
+	if (player == NULL || VrLeftHandedMode != VrCtrlPoseMode) {
 		return false;
 	}
 
-	g = vrReloadRightGun();
-	def = vrReloadOwnedDef(HAND_RIGHT);
+	if (vrReloadOwnsGun(HAND_RIGHT) && (!player->hands[HAND_LEFT].inuse || vrHandParked(HAND_LEFT))) {
+		gunhand = HAND_RIGHT;
+	} else if (vrReloadOwnsGun(HAND_LEFT) && (!player->hands[HAND_RIGHT].inuse || vrHandParked(HAND_RIGHT))) {
+		gunhand = HAND_LEFT;
+	} else {
+		return false;
+	}
 
-	if (g == NULL || def->ammoindex < 0 || def->ammoindex >= VRR_MAGS || vrReloadRightReserve() <= 0) {
+	g = vrReloadHandGun(gunhand);
+	def = vrReloadOwnedDef(gunhand);
+
+	if (g == NULL || def == NULL || def->ammoindex < 0 || def->ammoindex >= VRR_MAGS || vrReloadHandReserve(gunhand) <= 0) {
 		return false;
 	}
 
 	/* What a squeeze there takes (vrrTick): a clip while the clip is out, a shell while a gun loaded
 	 * shell by shell has room in its tube */
-	clipsize = player->hands[HAND_RIGHT].clipsizes[def->ammoindex];
+	clipsize = player->hands[gunhand].clipsizes[def->ammoindex];
 
 	if (!(g->state == VRR_CLIP_OUT
 				|| (def->shellbyshell && (g->state == VRR_READY || g->state == VRR_NEED_RACK)

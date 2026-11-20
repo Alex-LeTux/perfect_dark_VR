@@ -58,6 +58,7 @@ struct vrrinput {
 	int32_t inclip;     /* off-hand is inside the clip zone */
 	int32_t inrack;     /* off-hand is inside the rack zone */
 	int32_t atshoulder; /* off-hand is inside the shoulder clip-source zone */
+	int32_t directchest; /* alien guns (Phoenix, Callisto, FarSight): can grab ammo from chest without eject button */
 	float rackpull;     /* cm the off-hand moved along the rack axis since the rack grab, >= 0 */
 	float racktravel;   /* cm of pull for a full rack (the slide's travel); 0: VRR_RACK_PULL_CM.
 	                     * The rack happens and the grab ends as the pull reaches it */

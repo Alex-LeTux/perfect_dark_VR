@@ -15774,7 +15774,9 @@ void bgunRender(Gfx * *gdlptr)
 
                         // A clip guided into the well is drawn in the gun: the hand stays in its
                         // holding pose, empty, so it does not jump away from the clip.
-                        vrHideAllExcept(vrReloadHeldClipDrawn(HAND_RIGHT) ? vrLeftHandAndMagMtx(holddef) : LeftHandMtx);
+                        // Guns with no clip in gun model (Crossbow) keep held bolt visible.
+                        bool drawClip = vrReloadHeldClipDrawn(HAND_RIGHT) || (holddef->clippart < 0);
+                        vrHideAllExcept(drawClip ? vrLeftHandAndMagMtx(holddef) : LeftHandMtx);
                         vrHideGunParts(g_VrCopyWepModel.matrices, handnum);
                         drawnarm = placed;
 
