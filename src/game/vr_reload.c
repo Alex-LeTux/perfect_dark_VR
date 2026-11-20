@@ -2643,7 +2643,7 @@ static void vrReloadGuide(s32 h, struct hand *hand, struct vrreloaddef *def)
 	 * so only tops near a stretch's far part go deeper: near the mouth and off the stretches the
 	 * margin stays VRR_GUIDE_START_PAST_CM, and a row whose points are no deeper than that (the
 	 * MagSec's) is unchanged */
-	startpast = (def != NULL && def->weaponnum == WEAPON_REAPER) ? 3.0f : VRR_GUIDE_START_PAST_CM;
+	startpast = (def != NULL && def->weaponnum == WEAPON_REAPER) ? 2.0f : VRR_GUIDE_START_PAST_CM;
 
 	for (i = 0; i < v.numreach; i++) {
 		f32 t;

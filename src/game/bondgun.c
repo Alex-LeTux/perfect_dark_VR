@@ -3262,6 +3262,15 @@ s32 bgunTickIncIdle(struct handweaponinfo* info, s32 handnum, struct hand* hand,
         return lvupdate;
     }
 
+    if ((hand->gset.weaponnum == WEAPON_FALCON2 ||
+         hand->gset.weaponnum == WEAPON_FALCON2_SCOPE ||
+         hand->gset.weaponnum == WEAPON_FALCON2_SILENCER ||
+         hand->gset.weaponnum == WEAPON_DY357MAGNUM ||
+         hand->gset.weaponnum == WEAPON_DY357LX)
+        && hand->gset.weaponfunc == FUNC_SECONDARY) {
+        hand->gset.weaponfunc = FUNC_PRIMARY;
+    }
+
     if (gunfunc == hand->gset.weaponfunc) {
         hand->unk0cc8_07 = false;
     }
@@ -5146,8 +5155,19 @@ s32 bgunTickIncAttack(struct handweaponinfo* info, s32 handnum, struct hand* han
             finished = false;
         }
 
-        if (finished && bgunSetState(handnum, HANDSTATE_IDLE)) {
-            return lvupdate;
+        if (finished) {
+            if ((hand->gset.weaponnum == WEAPON_FALCON2 ||
+                 hand->gset.weaponnum == WEAPON_FALCON2_SCOPE ||
+                 hand->gset.weaponnum == WEAPON_FALCON2_SILENCER ||
+                 hand->gset.weaponnum == WEAPON_DY357MAGNUM ||
+                 hand->gset.weaponnum == WEAPON_DY357LX)
+                && hand->gset.weaponfunc == FUNC_SECONDARY) {
+                hand->gset.weaponfunc = FUNC_PRIMARY;
+            }
+
+            if (bgunSetState(handnum, HANDSTATE_IDLE)) {
+                return lvupdate;
+            }
         }
     }
 
@@ -17428,13 +17448,6 @@ void bgunTickGameplay(bool triggeron) {
                        weaponnum == WEAPON_FALCON2_SILENCER ||
                        weaponnum == WEAPON_DY357MAGNUM ||
                        weaponnum == WEAPON_DY357LX) {
-                // VR: with holsters a gun never whips (a draw is a fast swing, and the melee is the
-                // fists': let go and punch)
-                if (vrHolsterFastSwitch()) {
-                    vr_hand_triggered[i] = false;
-                    continue;
-                }
-
                 // A pistol whip is a swing, not a thrust: the grip travels in an
                 // arc about the wrist, so most of the speed lands perpendicular
                 // to the barrel. Testing thrust alone missed nearly all of them.
@@ -17528,6 +17541,28 @@ void bgunTickGameplay(bool triggeron) {
                     } else {
                         vrpunchwait = true;
                         g_VrFist[i].waited = true;
+                    }
+                }
+            }
+
+            bool vrpistol = (weaponnum == WEAPON_FALCON2 ||
+                             weaponnum == WEAPON_FALCON2_SCOPE ||
+                             weaponnum == WEAPON_FALCON2_SILENCER ||
+                             weaponnum == WEAPON_DY357MAGNUM ||
+                             weaponnum == WEAPON_DY357LX);
+
+            if (vr_set_motion_triggered && !vr_hand_triggered[i] && vrpistol) {
+                if (vrHolsterSwingSettling()) {
+                    // As the fists: a draw from the holster is a fast swing. For half a second after
+                    // a holster switch the swing counts as already started, so it gives no whip.
+                    vrHolsterNoteSwing(handnum, false);
+                    vr_hand_triggered[i] = true;
+                } else if (hand->state == HANDSTATE_ATTACK) {
+                    if (hand->stateminor == HANDSTATEMINOR_ATTACK_MELEE_2
+                            || hand->stateminor == HANDSTATEMINOR_ATTACK_MELEE_3) {
+                        vrpunchrestart = true;
+                    } else {
+                        vrpunchwait = true;
                     }
                 }
             }

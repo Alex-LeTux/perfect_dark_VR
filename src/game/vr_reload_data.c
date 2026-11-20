@@ -1706,7 +1706,7 @@
 	{ -4.501f, -1.337f, -5.286f }, \
 	{ 0.0f, 0.0f, 0.0f }, 0.0f, { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f }, \
 	"insert magazine, pull the cocking lever", \
-	42.0f, 47.0f, 60.0f, 66.0f, \
+	42.0f, 47.0f, 65.0f, 76.0f, \
 }
 
 /* Farsight XR-20 model (Gz2020Z), read from the ntsc-final ROM's model data and reload animation
