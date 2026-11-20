@@ -2643,7 +2643,7 @@ static void vrReloadGuide(s32 h, struct hand *hand, struct vrreloaddef *def)
 	 * so only tops near a stretch's far part go deeper: near the mouth and off the stretches the
 	 * margin stays VRR_GUIDE_START_PAST_CM, and a row whose points are no deeper than that (the
 	 * MagSec's) is unchanged */
-	startpast = (def != NULL && def->weaponnum == WEAPON_REAPER) ? 5.0f : VRR_GUIDE_START_PAST_CM;
+	startpast = (def != NULL && def->weaponnum == WEAPON_REAPER) ? 3.0f : VRR_GUIDE_START_PAST_CM;
 
 	for (i = 0; i < v.numreach; i++) {
 		f32 t;
@@ -2803,7 +2803,7 @@ static void vrReloadBuildInput(s32 h, struct hand *hand, struct vrreloaddef *def
 	if (VrLeftHandedMode != VrCtrlPoseMode) {
 		in->clipsize = hand->clipsizes[ammoindex];
 		in->reserve = player->ammoheldarr[ammotype];
-		in->directchest = (def != NULL && (def->weaponnum == WEAPON_PHOENIX || def->weaponnum == WEAPON_CALLISTO || def->weaponnum == WEAPON_FARSIGHT));
+		in->directchest = (def != NULL && (def->weaponnum == WEAPON_PHOENIX || def->weaponnum == WEAPON_CALLISTO || def->weaponnum == WEAPON_FARSIGHT || def->weaponnum == WEAPON_CYCLONE));
 		in->racktravel = def->racktravel;
 		in->loadsoninsert = def->loadsoninsert;
 		in->rackslap = def->rackslap;
@@ -2906,7 +2906,7 @@ static void vrReloadBuildInput(s32 h, struct hand *hand, struct vrreloaddef *def
 	}
 
 	/* The slide goes forward at the grab (vrReloadMoveSlide), so a rack is always a full pull */
-	in->directchest = (def != NULL && (def->weaponnum == WEAPON_PHOENIX || def->weaponnum == WEAPON_CALLISTO || def->weaponnum == WEAPON_FARSIGHT));
+	in->directchest = (def != NULL && (def->weaponnum == WEAPON_PHOENIX || def->weaponnum == WEAPON_CALLISTO || def->weaponnum == WEAPON_FARSIGHT || def->weaponnum == WEAPON_CYCLONE));
 	in->racktravel = def->racktravel;
 	in->loadsoninsert = def->loadsoninsert;
 	in->rackslap = def->rackslap;
