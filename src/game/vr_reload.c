@@ -585,6 +585,29 @@ struct vrrwrist {
 
 static struct vrrwrist sHoldWrist[2] = { { -1 }, { -1 } };
 
+#define VRR_RACK_EASE_60THS 8.0f
+
+static f32 sRackEase[2];
+static f32 sRackLastFrame[2];
+static f32 sRackPull[2];
+
+/* The gun's drawn slide matrix in cm (matrices over bg_scale), for placing the rack hand */
+static Mtxf sRackSlide[2];
+static s32 sRackSlideFrame[2];
+static s32 sRackSlideWeapon[2] = { -1, -1 };
+static s32 sRackSlideIndex[2] = { -1, -1 };
+
+/* The gun body matrix in cm (matrices over bg_scale), for rebasing the rack and guided hands */
+static Mtxf sGunBody[2];
+static s32 sGunBodyFrame[2];
+static s32 sGunBodyWeapon[2] = { -1, -1 };
+static s32 sGunBodyIndex[2] = { -1, -1 };
+
+/* The gun's drawn clip matrix while guided in cm */
+static Mtxf sGuidedClip[2];
+static s32 sGuidedClipFrame[2];
+static s32 sGuidedClipWeapon[2] = { -1, -1 };
+
 static void vrReloadSlapReset(s32 h)
 {
 	memset(&sSlap[h], 0, sizeof(sSlap[h]));
@@ -1354,7 +1377,7 @@ void vrReloadCaptureParts(s32 handnum, struct modeldef *modeldef, Mtxf *matrices
 	static const f32 unitx[3] = { 1.0f, 0.0f, 0.0f };
 	static const f32 unity[3] = { 0.0f, 1.0f, 0.0f };
 	struct vrreloaddef *def;
-	struct modelnode *node;
+	struct modelnode *node = NULL;
 	struct hand *hand;
 	struct vrrpartsview v;
 	struct vrrparts p;
@@ -1424,6 +1447,42 @@ void vrReloadCaptureParts(s32 handnum, struct modeldef *modeldef, Mtxf *matrices
 	if (v.hasrack) {
 		vrReloadMtxPoint(&matrices[rackframe], def->rackoffset, invscale, v.rackpos);
 		vrReloadMtxPoint(&matrices[rackframe], origin, invscale, v.rackorigin);
+
+		s32 bmtx = (def->bodymtx >= 0 && def->bodymtx < modeldef->nummatrices) ? def->bodymtx : 33;
+
+		for (i = 0; i < 4; i++) {
+			s32 j;
+			for (j = 0; j < 4; j++) {
+				sRackSlide[handnum].m[i][j] = matrices[rackframe].m[i][j] * (j < 3 ? invscale : 1.0f);
+				if (bmtx >= 0 && bmtx < modeldef->nummatrices) {
+					sGunBody[handnum].m[i][j] = matrices[bmtx].m[i][j] * (j < 3 ? invscale : 1.0f);
+				}
+			}
+		}
+		sRackSlideFrame[handnum] = g_Vars.lvframenum;
+		sRackSlideWeapon[handnum] = g_Vars.currentplayer->hands[handnum].gset.weaponnum;
+		sRackSlideIndex[handnum] = rackframe;
+
+		if (bmtx >= 0 && bmtx < modeldef->nummatrices) {
+			sGunBodyFrame[handnum] = g_Vars.lvframenum;
+			sGunBodyWeapon[handnum] = g_Vars.currentplayer->hands[handnum].gset.weaponnum;
+			sGunBodyIndex[handnum] = bmtx;
+		}
+	}
+
+	if (sGunBodyFrame[handnum] != g_Vars.lvframenum) {
+		s32 bmtx = (def->bodymtx >= 0 && def->bodymtx < modeldef->nummatrices) ? def->bodymtx : 33;
+		if (bmtx >= 0 && bmtx < modeldef->nummatrices) {
+			s32 ri, rj;
+			for (ri = 0; ri < 4; ri++) {
+				for (rj = 0; rj < 4; rj++) {
+					sGunBody[handnum].m[ri][rj] = matrices[bmtx].m[ri][rj] * (rj < 3 ? invscale : 1.0f);
+				}
+			}
+			sGunBodyFrame[handnum] = g_Vars.lvframenum;
+			sGunBodyWeapon[handnum] = g_Vars.currentplayer->hands[handnum].gset.weaponnum;
+			sGunBodyIndex[handnum] = bmtx;
+		}
 	}
 
 	/* The guide's reach points, each as given and with x negated (as given only on a row with
@@ -1879,7 +1938,7 @@ bool vrReloadPlaceHeldArm(s32 handnum, struct modeldef *modeldef, Mtxf *matrices
 	s32 i, j;
 	s32 p = vrReloadOffPhysHand();
 
-	if (p < 0 || !sFistArmOk[p] || (!vrReloadHandHoldsClip(handnum) && !vrReloadSlapDrawn(handnum, NULL))
+	if (p < 0 || !sFistArmOk[p] || (!vrReloadHandHoldsClip(handnum) && !vrReloadSlapDrawn(handnum, NULL) && !vrReloadRackDrawn(handnum, NULL))
 			|| modeldef == NULL || matrices == NULL
 			|| armmtx < 0 || armmtx >= modeldef->nummatrices || wristmtx < 0 || wristmtx >= modeldef->nummatrices) {
 		return false;
@@ -2041,7 +2100,7 @@ void vrReloadAlignHeldHand(s32 handnum, struct modeldef *modeldef, Mtxf *matrice
 	/* Then the row's clip turn (vrreloaddef.clipturnaxis), the held part's matrices alone, about the
 	 * palm (clipturnpivot on heldmtx as now turned), so the clip sits in the hand as the Falcon 2's
 	 * sits in its hand; mirrored with the root as the hand turn is */
-	if (def != NULL && def->heldmtx >= 0 && def->heldmtx < modeldef->nummatrices
+	if (def != NULL && def->insertframefrom <= 0.0f && def->heldmtx >= 0 && def->heldmtx < modeldef->nummatrices
 			&& vrReloadRootTurn(def->clipturnaxis, def->clipturndeg, root, v)) {
 		s32 last = def->heldmtxlast >= def->heldmtx ? def->heldmtxlast : def->heldmtx;
 		f32 pivot[3];
@@ -2078,7 +2137,7 @@ void vrReloadAlignHeldHand(s32 handnum, struct modeldef *modeldef, Mtxf *matrice
 	 * sits in the palm as the Falcon 2's does, not on the knuckles: through heldmtx as now turned, so
 	 * it is mirrored with the model in left-handed mode, as the pivot is. The capture (sHeld, the
 	 * guide's top and axis) and the playback's hand-off (sHeldMtx) read the matrices after this */
-	if (def != NULL && def->heldmtx >= 0 && def->heldmtx < modeldef->nummatrices
+	if (def != NULL && def->insertframefrom <= 0.0f && def->heldmtx >= 0 && def->heldmtx < modeldef->nummatrices
 			&& (def->clipshift[0] != 0.0f || def->clipshift[1] != 0.0f || def->clipshift[2] != 0.0f)) {
 		s32 last = def->heldmtxlast >= def->heldmtx ? def->heldmtxlast : def->heldmtx;
 		f32 zero[3] = { 0.0f, 0.0f, 0.0f };
@@ -2239,7 +2298,7 @@ void vrReloadPoseHeldLook(s32 handnum, struct modeldef *modeldef, Mtxf *matrices
 
 	def = vrReloadOwnedDef(handnum);
 
-	if (def == NULL || def->heldmtx < 0 || def->heldmtx >= modeldef->nummatrices) {
+	if (def == NULL || def->insertframefrom > 0.0f || def->heldmtx < 0 || def->heldmtx >= modeldef->nummatrices) {
 		return;
 	}
 
@@ -2817,6 +2876,11 @@ static void vrReloadBuildInput(s32 h, struct hand *hand, struct vrreloaddef *def
 		in->rackpull = d > 0.0f ? d : 0.0f;
 	}
 
+	sRackPull[h] = in->rackpull;
+	if (sGun[h].state == VRR_RACKING) {
+		sRackEase[h] = 0.0f;
+	}
+
 	/* The slide goes forward at the grab (vrReloadMoveSlide), so a rack is always a full pull */
 	in->racktravel = def->racktravel;
 	in->loadsoninsert = def->loadsoninsert;
@@ -3249,7 +3313,7 @@ static void vrReloadStepRack(s32 h, struct vrreloaddef *def, s32 wasracking, str
 
 	if (sGun[h].state == VRR_RACKING || wasracking) {
 		if (in->tracked) {
-			sRackBack[h] = vrReloadClamp(in->rackpull, 0.0f, def->racktravel);
+			sRackBack[h] = sGun[h].racked ? def->racktravel : vrReloadClamp(in->rackpull, 0.0f, def->racktravel);
 		}
 
 		sRackBackFrame[h] = g_Vars.lvframenum;
@@ -4341,11 +4405,9 @@ void vrReloadTick(s32 handnum)
 		sFinishStart[handnum] = sFinish[handnum];
 		sFinishFrame[handnum] = g_Vars.lvframenum;
 
-		/* A row with a playback (the Phoenix's orb going in) starts it with the insert sound: its
-		 * first frame is drawn this frame, and it steps from the next. A row that keeps its loaded round
-		 * seen (playhold: the Crossbow's bolt at the nock) plays none for a round that only goes into the
-		 * tube behind a chambered one: the loaded round stays where it is (a playback under way goes on) */
-		if (vrReloadHasPlay(def) && !(vrReloadHoldsPlay(def) && waschamber)) {
+		/* A row with a playback (the Phoenix's orb, the Crossbow's bolt sliding in) starts it with
+		 * the insert sound: its first frame is drawn this frame, and it steps from the next. */
+		if (vrReloadHasPlay(def)) {
 			vrReloadStartPlay(handnum, hand, def, 0);
 		}
 	}
@@ -4422,6 +4484,12 @@ void vrReloadTick(s32 handnum)
 
 	vrReloadApplyOutput(handnum, hand, def, ammoindex, ammotype, &out);
 	vrReloadMoveSlide(handnum, hand, def, func, wasracking, &in);
+
+	if (wasracking && sGun[handnum].state != VRR_RACKING && def != NULL && def->rackframefrom > 0.0f) {
+		sRackEase[handnum] = VRR_RACK_EASE_60THS;
+	} else if (sRackEase[handnum] > 0.0f) {
+		sRackEase[handnum] -= 1.0f;
+	}
 
 	/* The pump still back after its rack (vrReloadStepRack): no shot until it is forward */
 	if (sPumpRide[handnum]) {
@@ -4822,18 +4890,27 @@ void vrReloadPlaceClip(s32 handnum, struct modeldef *modeldef, Mtxf *matrices)
 		}
 	}
 
-	if (back <= 0.0f) {
-		return;
+	if (back > 0.0f) {
+		/* Back along the clip's own insert axis, in model units: the clip matrix turns it into camera
+		 * space with the model scale, bg_scale and the left-handed mirror, as the engine's slide offset */
+		for (j = 0; j < 3; j++) {
+			v[j] = -def->clipaxis[j] * back * VRR_MODEL_UNITS_PER_CM;
+		}
+
+		for (j = 0; j < 3; j++) {
+			m->m[3][j] += v[0] * m->m[0][j] + v[1] * m->m[1][j] + v[2] * m->m[2][j];
+		}
 	}
 
-	/* Back along the clip's own insert axis, in model units: the clip matrix turns it into camera
-	 * space with the model scale, bg_scale and the left-handed mirror, as the engine's slide offset */
-	for (j = 0; j < 3; j++) {
-		v[j] = -def->clipaxis[j] * back * VRR_MODEL_UNITS_PER_CM;
-	}
-
-	for (j = 0; j < 3; j++) {
-		m->m[3][j] += v[0] * m->m[0][j] + v[1] * m->m[1][j] + v[2] * m->m[2][j];
+	if (sGuided[handnum]) {
+		s32 ri, rj;
+		for (ri = 0; ri < 4; ri++) {
+			for (rj = 0; rj < 4; rj++) {
+				sGuidedClip[handnum].m[ri][rj] = m->m[ri][rj];
+			}
+		}
+		sGuidedClipFrame[handnum] = g_Vars.lvframenum;
+		sGuidedClipWeapon[handnum] = g_Vars.currentplayer->hands[handnum].gset.weaponnum;
 	}
 }
 
@@ -5406,6 +5483,182 @@ bool vrReloadPlaceSlapHand(s32 handnum, struct modeldef *modeldef, Mtxf *matrice
 	return true;
 }
 
+bool vrReloadRackDrawn(s32 handnum, f32 *frame)
+{
+	struct vrreloaddef *def;
+	f32 pullRatio, f;
+
+	if (handnum < 0 || handnum >= 2) {
+		return false;
+	}
+
+	def = vrReloadOwnedDef(handnum);
+	if (def == NULL || def->rackframefrom <= 0.0f) {
+		return false;
+	}
+
+	if (sGun[handnum].state == VRR_RACKING) {
+		pullRatio = def->racktravel > 0.0f ? (sRackPull[handnum] / def->racktravel) : 0.0f;
+		if (pullRatio < 0.0f) pullRatio = 0.0f;
+		if (pullRatio > 1.0f) pullRatio = 1.0f;
+
+		if (sGun[handnum].racked) {
+			pullRatio = 1.0f;
+		}
+
+		f = def->rackframefrom + pullRatio * (def->rackframeto - def->rackframefrom);
+		sRackLastFrame[handnum] = f;
+		if (frame != NULL) {
+			*frame = f;
+		}
+		return true;
+	}
+
+	if (sRackEase[handnum] > 0.0f) {
+		if (frame != NULL) {
+			*frame = sRackLastFrame[handnum];
+		}
+		return true;
+	}
+
+	return false;
+}
+
+bool vrReloadPlaceRackHand(s32 handnum, struct modeldef *modeldef, Mtxf *matrices, s32 wristmtx)
+{
+	struct vrreloaddef *def;
+	struct vrrwrist *w;
+	s32 age, i, p, held;
+	s32 sidx, bidx;
+	bool useSlide;
+	Mtxf from;
+	const Mtxf *to;
+
+	if (handnum < 0 || handnum >= 2 || modeldef == NULL || matrices == NULL) {
+		return false;
+	}
+
+	def = vrReloadOwnedDef(handnum);
+	if (def == NULL) {
+		return false;
+	}
+
+	age = g_Vars.lvframenum - sGunBodyFrame[handnum];
+	if (age < 0 || age > VRR_PARTS_MAX_AGE
+			|| sGunBodyWeapon[handnum] != g_Vars.currentplayer->hands[handnum].gset.weaponnum
+			|| sGunBodyIndex[handnum] < 0 || sGunBodyIndex[handnum] >= modeldef->nummatrices
+			|| wristmtx < 0 || wristmtx >= modeldef->nummatrices) {
+		return false;
+	}
+
+	sidx = sRackSlideIndex[handnum];
+	bidx = sGunBodyIndex[handnum];
+	useSlide = (sidx >= 0 && sidx < modeldef->nummatrices
+			&& sRackSlideFrame[handnum] == sGunBodyFrame[handnum]);
+
+	/* from: slide (or gun body) in g_VrCopyWepModel (posed at rackframe)
+	 * to:   slide (or gun body) on hand->gunmodel (real gun in camera space) */
+	from = matrices[useSlide ? sidx : bidx];
+	to = useSlide ? &sRackSlide[handnum] : &sGunBody[handnum];
+
+	for (i = 0; i < modeldef->nummatrices; i++) {
+		vrReloadRebaseMtx(&matrices[i], &matrices[i], &from, to);
+	}
+
+	/* Ease out when grip is released */
+	w = &sHoldWrist[handnum];
+	p = vrReloadOffPhysHand();
+	held = w->weaponnum == g_Vars.currentplayer->hands[handnum].gset.weaponnum;
+
+	if (sRackEase[handnum] > 0.0f && (held || (p >= 0 && sFistWristOk[p]))) {
+		Mtxf r, home, wrist, now;
+
+		wrist = matrices[wristmtx];
+		home = wrist;
+		vrReloadOffRot(&r);
+
+		if (held) {
+			for (i = 0; i < 3; i++) {
+				vrReloadGunToView(&r, w->rows[i], home.m[i]);
+			}
+		}
+
+		vrReloadGunToView(&r, held ? w->pos : sFistWrist[p], home.m[3]);
+
+		for (i = 0; i < 3; i++) {
+			home.m[3][i] += gCtrlPos[VRR_CTRL_OFF][i];
+		}
+
+		vrReloadBlendWrist(&wrist, &home,
+				vrReloadClamp(1.0f - sRackEase[handnum] / VRR_RACK_EASE_60THS, 0.0f, 1.0f), &now);
+
+		for (i = 0; i < modeldef->nummatrices; i++) {
+			vrReloadRebaseMtx(&matrices[i], &matrices[i], &wrist, &now);
+		}
+	}
+
+	return true;
+}
+
+bool vrReloadClipIsGuided(s32 handnum)
+{
+	return handnum >= 0 && handnum < 2 && sGuided[handnum] != 0;
+}
+
+f32 vrReloadGuideProgress(s32 handnum)
+{
+	struct vrreloaddef *def;
+	f32 p;
+
+	if (handnum < 0 || handnum >= 2 || !sGuided[handnum]) {
+		return 0.0f;
+	}
+
+	def = vrReloadOwnedDef(handnum);
+	if (def == NULL || def->clipinsertdepth <= 0.0f) {
+		return 1.0f;
+	}
+
+	p = sProgress[handnum] / def->clipinsertdepth;
+	if (p < 0.0f) p = 0.0f;
+	if (p > 1.0f) p = 1.0f;
+	return p;
+}
+
+bool vrReloadPlaceGuidedHand(s32 handnum, struct modeldef *modeldef, Mtxf *matrices, s32 wristmtx)
+{
+	struct vrreloaddef *def;
+	s32 age, i;
+	Mtxf from;
+
+	if (handnum < 0 || handnum >= 2 || modeldef == NULL || matrices == NULL) {
+		return false;
+	}
+
+	def = vrReloadOwnedDef(handnum);
+	if (def == NULL) {
+		return false;
+	}
+
+	age = g_Vars.lvframenum - sGunBodyFrame[handnum];
+	if (age < 0 || age > VRR_PARTS_MAX_AGE
+			|| sGunBodyWeapon[handnum] != g_Vars.currentplayer->hands[handnum].gset.weaponnum
+			|| sGunBodyIndex[handnum] < 0 || sGunBodyIndex[handnum] >= modeldef->nummatrices
+			|| wristmtx < 0 || wristmtx >= modeldef->nummatrices) {
+		return false;
+	}
+
+	/* from: gun body in g_VrCopyWepModel (posed at guided insertion frame)
+	 * to:   gun body on hand->gunmodel (real gun in camera space) */
+	from = matrices[sGunBodyIndex[handnum]];
+
+	for (i = 0; i < modeldef->nummatrices; i++) {
+		vrReloadRebaseMtx(&matrices[i], &matrices[i], &from, &sGunBody[handnum]);
+	}
+
+	return true;
+}
+
 /* Whether a turn's rows are mirrored (a negative determinant) */
 static s32 vrReloadRowsMirrored(const Mtxf *m)
 {
@@ -5540,9 +5793,11 @@ static void vrReloadPoseScratch(struct model *model, s32 animnum, bool flip, f32
 	model->anim = &sPlayAnim;
 	g_ModelJointPositionedFunc = NULL;
 	modelSetAnimation(model, animnum, flip, frame, 0.0f, 0.0f);
-	/* No var8005efb0_2/var8005efd8_2 as the gun's own pose sets them: they exist only from PAL beta,
-	 * and the Quest build is ntsc-final (so plate slides step at whole frames, as the gun's own do) */
+	var8005efd8_2 = true;
+	var8005efb0_2 = true;
 	modelSetMatricesWithAnim(&renderdata, model);
+	var8005efd8_2 = false;
+	var8005efb0_2 = false;
 	g_ModelJointPositionedFunc = jointfunc;
 	model->anim = anim;
 	model->matrices = drawn;
@@ -6260,6 +6515,11 @@ void vrReloadSideChanged(void)
 		vrReloadSlapReset(h);
 		/* The held wrist was aligned for the other gun side's free hand */
 		sHoldWrist[h].weaponnum = -1;
+		sRackEase[h] = 0.0f;
+		sRackPull[h] = 0.0f;
+		sGunBodyWeapon[h] = -1;
+		sRackSlideWeapon[h] = -1;
+		sGuidedClipWeapon[h] = -1;
 	}
 }
 
@@ -6271,6 +6531,14 @@ void vrReloadResetAll(void)
 	memset(sRackGrab, 0, sizeof(sRackGrab));
 	memset(sSlideGrab, 0, sizeof(sSlideGrab));
 	memset(sPending, 0, sizeof(sPending));
+	memset(sRackEase, 0, sizeof(sRackEase));
+	memset(sRackPull, 0, sizeof(sRackPull));
+	memset(sRackLastFrame, 0, sizeof(sRackLastFrame));
+	for (i = 0; i < 2; i++) {
+		sGunBodyWeapon[i] = -1;
+		sRackSlideWeapon[i] = -1;
+		sGuidedClipWeapon[i] = -1;
+	}
 	vrReloadFreeSaved();
 	sHintLast = -100000;
 	vrReloadHintReset();

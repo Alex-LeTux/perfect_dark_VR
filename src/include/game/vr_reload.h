@@ -249,6 +249,19 @@ bool vrReloadPlaceSlapHand(s32 handnum, struct modeldef *modeldef, Mtxf *matrice
  * vrReloadNoteSlapClip, then poses it at vrReloadSlapDrawn's frame as usual. Read once per gun. */
 bool vrReloadSlapNeedsContact(s32 handnum, f32 *frame);
 void vrReloadNoteSlapClip(s32 handnum, struct modeldef *modeldef, Mtxf *matrices);
+
+/* The free hand is racking or easing out from a rack: frame is the reload animation frame (or NULL) */
+bool vrReloadRackDrawn(s32 handnum, f32 *frame);
+/* The copy-weapon model posed at vrReloadRackDrawn's frame: rebased so the hand sits on the gun slide */
+bool vrReloadPlaceRackHand(s32 handnum, struct modeldef *modeldef, Mtxf *matrices, s32 wristmtx);
+
+/* Whether the held clip is currently guided into the gun's well */
+bool vrReloadClipIsGuided(s32 handnum);
+/* Progress of the clip insertion: 0.0 at well mouth, 1.0 when fully seated */
+f32 vrReloadGuideProgress(s32 handnum);
+/* The copy-weapon model posed at the guided insertion frame: rebased so the hand seats the clip in the well */
+bool vrReloadPlaceGuidedHand(s32 handnum, struct modeldef *modeldef, Mtxf *matrices, s32 wristmtx);
+
 void vrReloadResetAll(void);
 /* A haptic pulse on logical controller ctrl (flipped by the gun side, as trigger_haptic_vibration
  * does), scaled by the rumble strength setting: amplitude 0..1, duration in seconds */

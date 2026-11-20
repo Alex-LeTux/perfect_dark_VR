@@ -114,8 +114,10 @@ static void vrrFillOutput(const struct vrrgun *g, const struct vrrinput *in, str
 		glow = VRR_GLOW_CLIP;
 		break;
 	case VRR_NEED_RACK:
-	case VRR_RACKING:
 		glow = VRR_GLOW_RACK;
+		break;
+	case VRR_RACKING:
+		glow = g->racked ? 0 : VRR_GLOW_RACK;
 		break;
 	}
 
@@ -298,8 +300,9 @@ void vrrTick(struct vrrgun *g, const struct vrrinput *in, struct vrroutput *out)
 			g->racked = 1;
 		}
 
-		/* A full pull finishes the rack at once; letting go early ends the grab with no rack */
-		if (up || g->racked) {
+		/* Pump-action guns finish their rack at full pull so the forward stroke (sPumpRide) can run.
+		 * Slide / cocking handle weapons remain gripped in VRR_RACKING until the player releases the grip button. */
+		if (up || (in->pumpaction && g->racked)) {
 			vrrSettleState(g, 0);
 		}
 		break;

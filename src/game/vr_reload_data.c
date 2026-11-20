@@ -57,6 +57,7 @@
 	{ 0.0f, 0.0f, 0.0f }, \
 	{ 0.0f, 0.0f, 0.0f }, 0.0f, { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f }, \
 	"insert magazine, rack the slide", \
+	21.0f, 24.0f, 53.0f, 63.0f, \
 }
 
 /* MagSec 4 model (Gleegun1Z), read from the ntsc-final ROM's model data and reload animation
@@ -147,6 +148,7 @@
 	{ 0.0f, 0.0f, 0.0f }, \
 	{ 0.0f, 0.0f, 0.0f }, 0.0f, { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f }, \
 	"insert magazine, rack the slide", \
+	22.0f, 27.0f, 52.0f, 58.0f, \
 }
 
 /* Mauler model (GskpistolZ), read from the ntsc-final ROM's model data and reload animation
@@ -236,6 +238,7 @@
 	{ 0.0f, 0.0f, 0.0f }, \
 	{ 0.0f, 0.0f, 0.0f }, 0.0f, { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f }, \
 	"insert magazine, rack the slide", \
+	20.0f, 25.0f, 56.0f, 61.0f, \
 }
 
 /* Tranquilizer model (GdruggunZ, shared with the Psychosis Gun, which takes this row too: see the
@@ -373,6 +376,7 @@
 	{ 0.0f, 0.0f, 0.0f }, \
 	{ 0.0f, 0.0f, 0.0f }, 0.0f, { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f }, \
 	"drop a vial into the holder", \
+	35.0f, 39.0f, 0.0f, 0.0f, \
 }
 
 /* Phoenix model (GmaianpistolZ), read from the ntsc-final ROM's model data and reload animation
@@ -474,6 +478,7 @@
 	{ 0.0f, 0.0f, 0.0f }, \
 	{ 0.0f, 0.0f, 0.0f }, 0.0f, { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f }, \
 	"press an orb into the side intake", \
+	0.0f, 0.0f, 0.0f, 0.0f, \
 }
 
 /* CMP150 model (Gcmp150Z), read from the ntsc-final ROM's model data and reload animation
@@ -557,6 +562,7 @@
 	{ 0.0f, 0.0f, 0.0f }, \
 	{ 0.0f, 0.0f, 0.0f }, 0.0f, { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f }, \
 	"insert magazine, pull the charging handle", \
+	39.0f, 44.0f, 79.0f, 97.0f, \
 }
 
 /* AR34 model (Gar34Z), read from the ntsc-final ROM's model data and reload animation
@@ -660,12 +666,12 @@
 	6.0f, 180.0f, 3.0f, { 0.0f, 1.0f, 0.0f }, 1.0f, 0.0f, \
 	0, { { 0.0f } }, \
 	-1, 0.0f, { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f }, 0.0f, 0, 1, 0, 0, \
-	MODELPART_AR34_MAGAZINE1, 38, -1, { 0.0f, 0.0f, 0.0f }, -1, 64.0f, \
+	MODELPART_AR34_MAGAZINE1, 38, -1, { 0.0f, 0.0f, 0.0f }, -1, 67.0f, \
 	{ -0.5993f, 0.6974f, 0.3929f }, 165.8f, \
 	MODELPART_AR34_MAGAZINE2, 39, -1, { 0.0f, 0.0f, 0.0f }, { 0.0f, 1.0f, 0.0f }, \
 	83, 32805, 1477, 0, 0.0f, \
 	0.0f, 0.0f, 0.0f, -1, -1, \
-	91.0f, 93.0f, 95.0f, { -1.87f, -16.19f, 0.06f }, 12.5f, \
+	90.0f, 94.0f, 98.0f, { -1.87f, -16.19f, 0.06f }, 12.5f, \
 	0, -1, 0.0f, \
 	0.0f, 0.0f, -1, 0, { 0.0f, 0.0f, 0.0f }, { { 0.0f } }, 0.0f, 0.0f, -1, -1, { 0, 0, 0, 0 }, { 0.0f, 0.0f, 0.0f, 0.0f }, 0, \
 	0, 0, 0, { 0, 0, 0, 0 }, { 0.0f, 0.0f, 0.0f, 0.0f }, \
@@ -673,6 +679,7 @@
 	{ -5.475f, 1.135f, -1.665f }, \
 	{ 0.0f, 0.0f, 0.0f }, 0.0f, { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f }, \
 	"insert magazine, slap it home", \
+	67.0f, 70.0f, 0.0f, 0.0f, \
 }
 
 /* K7 Avenger model (Gk7avengerZ), read from the ntsc-final ROM's model data and reload animation
@@ -771,7 +778,7 @@
 	MODELPART_K7AVENGER_MAGAZINE2, 40, -1, { -0.937f, -1.523f, -0.266f }, { -0.5289f, 0.2256f, 0.8182f }, \
 	83, 32805, 1477, 0, 0.0f, \
 	0.0f, 0.0f, 0.0f, -1, -1, \
-	90.0f, 92.0f, 95.0f, { 2.56f, -13.50f, -0.60f }, 12.5f, \
+	84.0f, 91.0f, 96.0f, { 2.56f, -13.50f, -0.60f }, 12.5f, \
 	0, -1, 0.0f, \
 	0.0f, 0.0f, -1, 0, { 0.0f, 0.0f, 0.0f }, { { 0.0f } }, 0.0f, 0.0f, -1, -1, { 0, 0, 0, 0 }, { 0.0f, 0.0f, 0.0f, 0.0f }, 0, \
 	0, 0, 0, { 0, 0, 0, 0 }, { 0.0f, 0.0f, 0.0f, 0.0f }, \
@@ -779,6 +786,7 @@
 	{ -3.905f, -3.132f, 0.321f }, \
 	{ 0.0f, 0.0f, 0.0f }, 0.0f, { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f }, \
 	"insert magazine, slap it home", \
+	65.0f, 70.0f, 0.0f, 0.0f, \
 }
 
 /* RC-P120 model (Grcp120Z), read from the ntsc-final ROM's model data and reload animation
@@ -892,6 +900,7 @@
 	{ -5.439f, 1.034f, -1.386f }, \
 	{ 0.0f, 0.0f, 0.0f }, 0.0f, { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f }, \
 	"insert magazine, pull the cocking knob", \
+	65.0f, 74.0f, 106.0f, 112.0f, \
 }
 
 /* Dragon model (GdydragonZ), read from the ntsc-final ROM's model data and reload animation
@@ -974,6 +983,7 @@
 	{ -6.384f, -0.618f, 0.388f }, \
 	{ 0.0f, 0.0f, 0.0f }, 0.0f, { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f }, \
 	"insert magazine", \
+	39.0f, 45.0f, 0.0f, 0.0f, \
 }
 
 /* SuperDragon model (GdysuperdragonZ), read from the ntsc-final ROM's model data and reload
@@ -1034,6 +1044,7 @@
 	{ -6.384f, -0.618f, 0.388f }, \
 	{ 0.0f, 0.0f, 0.0f }, 0.0f, { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f }, \
 	"insert magazine", \
+	39.0f, 45.0f, 0.0f, 0.0f, \
 }
 
 /* SuperDragon grenade launcher (Task F9e; user, 2026-10-19: "the super dragon grenade reload works
@@ -1082,7 +1093,7 @@
 	6.0f, 180.0f, 2.5f, { 0.0f, 1.0f, 0.0f }, 1.0f, 0.0f, \
 	0, { { 0.0f } }, \
 	-1, 0.0f, { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f }, 0.0f, 1, 0, 0, 0, \
-	MODELPART_SUPERDRAGON_MAGAZINE4, 39, -1, { 0.0f, 0.0f, 0.0f }, -1, 61.0f, \
+	MODELPART_SUPERDRAGON_MAGAZINE4, 39, -1, { 0.0f, 0.0f, 0.0f }, -1, 64.0f, \
 	{ -0.2130f, 0.2963f, 0.9310f }, 99.3f, \
 	MODELPART_SUPERDRAGON_MAGAZINE2, 40, -1, { 0.0f, 0.0f, 0.0f }, { 0.0f, 1.0f, 0.0f }, \
 	83, 1477, 0, 0, 0.0f, \
@@ -1095,6 +1106,7 @@
 	{ -6.652f, 1.198f, -1.191f }, \
 	{ 0.0f, 0.0f, 0.0f }, 0.0f, { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f }, \
 	"insert grenade magazine", \
+	64.0f, 67.0f, 0.0f, 0.0f, \
 }
 
 /* Sniper Rifle model (GsniperrifleZ), read from the ntsc-final ROM's model data and reload animation
@@ -1165,6 +1177,7 @@
 	{ -5.356f, 0.707f, 0.970f }, \
 	{ 0.0f, 0.0f, 0.0f }, 0.0f, { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f }, \
 	"insert magazine", \
+	60.0f, 70.0f, 0.0f, 0.0f, \
 }
 
 /* Callisto model (GmaiansmgZ), read from the ntsc-final ROM's model data and reload animation
@@ -1240,6 +1253,7 @@
 	{ 0.0f, 0.0f, 0.0f }, \
 	{ 0.0f, 0.0f, 0.0f }, 0.0f, { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f }, \
 	"press an orb into the side intake", \
+	0.0f, 0.0f, 0.0f, 0.0f, \
 }
 
 /* Cyclone model (GcycloneZ), read from the ntsc-final ROM's model data and reload animation
@@ -1313,6 +1327,7 @@
 	{ 0.0f, 0.0f, 0.0f }, \
 	{ 0.0f, 0.0f, 0.0f }, 0.0f, { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f }, \
 	"set the magazine into the slot", \
+	0.0f, 0.0f, 0.0f, 0.0f, \
 }
 
 /* Laptop Gun model (GpcgunZ), read from the ntsc-final ROM's model data and reload animation
@@ -1472,12 +1487,12 @@
 	6.0f, 180.0f, 2.8f, { 0.0f, 0.0f, -1.0f }, 1.0f, 0.0f, \
 	0, { { 0.0f } }, \
 	-1, 0.0f, { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f }, 0.0f, 0, 1, 0, 0, \
-	MODELPART_LAPTOPGUN_MAGAZINE1, 44, -1, { 0.0f, 0.0f, 0.0f }, -1, 63.0f, \
+	MODELPART_LAPTOPGUN_MAGAZINE1, 44, -1, { 0.0f, 0.0f, 0.0f }, -1, 62.0f, \
 	{ -0.3809f, 0.4014f, 0.8329f }, 156.0f, \
 	MODELPART_LAPTOPGUN_MAGAZINE2, 45, -1, { 0.29f, -0.12f, 0.21f }, { 0.02f, -0.01f, -1.0f }, \
 	0, 1272, 1477, 0, 0.0f, \
 	84.0f, 121.0f, 0.0f, 44, 44, \
-	84.0f, 86.0f, 86.0f, { -0.58f, -4.91f, 6.48f }, 12.5f, \
+	83.0f, 85.0f, 88.0f, { -0.58f, -4.91f, 6.48f }, 12.5f, \
 	0, -1, 0.0f, \
 	0.0f, 0.0f, 33, 1, { -0.08f, -3.28f, 45.83f }, { { 1.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 1.0f }, { 0.0f, -1.0f, 0.0f } }, \
 	1.0f, 52.0f, 35, 36, { 1275, 1274, 1271, 83 }, { 4.0f, 15.0f, 25.0f, 42.0f }, 1, \
@@ -1486,6 +1501,7 @@
 	{ -2.404f, -9.170f, -8.819f }, \
 	{ 0.5436f, -0.7021f, 0.4599f }, 70.4f, { 0.0f, 0.5f, 0.15f }, { -1.369f, 2.266f, 0.618f }, \
 	"insert magazine, slap it home", \
+	62.0f, 64.0f, 0.0f, 0.0f, \
 }
 
 /* Reaper model (GskminigunZ), read from the ntsc-final ROM's model data and reload animation
@@ -1589,6 +1605,7 @@
 	{ 0.044f, -8.062f, -0.508f }, \
 	{ 0.0f, 0.0f, 0.0f }, 0.0f, { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f }, \
 	"insert magazine", \
+	124.0f, 134.0f, 0.0f, 0.0f, \
 }
 
 /* Devastator model (GdydevastatorZ), read from the ntsc-final ROM's model data and reload animation
@@ -1689,6 +1706,7 @@
 	{ -4.501f, -1.337f, -5.286f }, \
 	{ 0.0f, 0.0f, 0.0f }, 0.0f, { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f }, \
 	"insert magazine, pull the cocking lever", \
+	42.0f, 47.0f, 60.0f, 66.0f, \
 }
 
 /* Farsight XR-20 model (Gz2020Z), read from the ntsc-final ROM's model data and reload animation
@@ -1764,6 +1782,7 @@
 	{ 0.0f, 0.0f, 0.0f }, \
 	{ 0.0f, 0.0f, 0.0f }, 0.0f, { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f }, \
 	"press an orb into the side intake", \
+	0.0f, 0.0f, 0.0f, 0.0f, \
 }
 
 /* Shotgun model (GshotgunZ), read from the ntsc-final ROM's model data, its reload animation
@@ -1851,6 +1870,7 @@
 	{ 0.0f, 0.0f, 0.0f }, \
 	{ 0.0f, 0.0f, 0.0f }, 0.0f, { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f }, \
 	"load shells into the port, pump after each shot", \
+	0.0f, 0.0f, 0.0f, 0.0f, \
 	0x804f, \
 	0, 0.0f, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f }, 0, 0, 0.0f, { 0.0f, 0.0f }, \
 	1, \
@@ -1944,6 +1964,7 @@
 	{ 0.0f, 0.0f, 0.0f }, \
 	{ 0.0f, 0.0f, 0.0f }, 0.0f, { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f }, \
 	"load a rocket into the open hatch", \
+	0.0f, 0.0f, 0.0f, 0.0f, \
 }
 
 /* Crossbow model (GcrossbowZ), read from the ntsc-final ROM's model data, its reload animation
@@ -2030,6 +2051,7 @@
 	{ -7.75f, 0.0f, 0.0f }, \
 	{ 0.0f, 0.0f, 0.0f }, 0.0f, { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f }, \
 	"slide a bolt into the groove", \
+	0.0f, 0.0f, 0.0f, 0.0f, \
 }
 
 /* DY357 Magnum and DY357-LX models (Gdy357Z, Gdy357trentZ: the same 47 matrices, parts and poses, the
@@ -2130,6 +2152,7 @@
 	{ 0.0f, 0.0f, 0.0f }, \
 	{ 0.0f, 0.0f, 0.0f }, 0.0f, { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f }, \
 	"load the open cylinder, flick or push it shut", \
+	0.0f, 0.0f, 0.0f, 0.0f, \
 	0, \
 	MODELPART_MAGNUM_CART6, \
 	145.0f, 150.0f, 147.0f, \

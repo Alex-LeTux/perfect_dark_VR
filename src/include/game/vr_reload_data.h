@@ -281,6 +281,10 @@ struct vrreloaddef {
 	                      * (vrReloadStepHint): short, so the line wraps to two at most with the longest
 	                      * name in the VR wrap (VR_HUDMSG_WRAP_MAX, hudmsg.c;
 	                      * tools/vr_measure/hintwidth.py). NULL: none */
+	f32 insertframefrom; /* frame where insertion begins (0: use holdframe) */
+	f32 insertframeto;   /* frame where clip is fully seated (0: no insertion anim) */
+	f32 rackframefrom;   /* frame where the off-hand grips the slide/rack (0: no rack pose) */
+	f32 rackframeto;     /* frame where the slide/rack is fully pulled back */
 	s32 sndfull;         /* a shellbyshell row's sound for the round that fills the gun (chamber and
 	                      * tube at clipsize), in place of sndinsert and sndinsert2 and at the time
 	                      * the second would play (Task F11d: the user wants to hear it is full).
