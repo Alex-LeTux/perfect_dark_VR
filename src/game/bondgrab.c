@@ -64,10 +64,21 @@ static bool sVrGrabHeadPosValid = false;
 static f32 sVrGrabYaw;
 static f32 sVrGrabPrevYaw;          /* sVrGrabYaw at the tick's start: the release's spin */
 static struct coord sVrGrabHandOff;
+static struct coord sVrGrabLocalHand;
+static struct coord sVrGrabLocalDir;
+static bool sVrGrabHandValid = false;
 
 /* Below this horizontal length of the controller's forward (unit) its yaw is not trusted (the
  * controller points near straight up or down) and the last one is kept */
 #define VR_GRAB_YAW_MIN_XZ 0.25f
+
+/* Smoothing coefficient for hand movement when holding grabbed objects (0.0f to 1.0f).
+ * A value around 0.20f - 0.30f provides a satisfying sense of weight and eliminates tracking tremble,
+ * without creating latency or collision lockups. */
+#define VR_GRAB_SMOOTH_FACTOR 0.12f
+
+/* Micro-tremor deadzone in centimeters: ignores physical controller jitter below this threshold (~2.5 mm) */
+#define VR_GRAB_DEADZONE_CM 0.25f
 
 static void bgrabVrUpdateHand(void)
 {
@@ -75,26 +86,14 @@ static void bgrabVrUpdateHand(void)
 	struct coord v;
 	XrQuaternionf q;
 	f32 len;
+	f32 nx, nz;
 
 	/* Without holsters the logical left grip grabs (bmoveTick) */
 	if (i < 0) {
 		i = 0;
 	}
 
-	/* gCtrlPos is the hand in the head's view space, cm (one cm one world unit): the head's
-	 * rotation, the stick turn and the 180 degree Y basis flip take it to the world, as the
-	 * camera does (mtxf0068 from cam_look and cam_up, vr_special_rot_mode) */
-	v.x = gCtrlPos[i][0];
-	v.y = gCtrlPos[i][1];
-	v.z = gCtrlPos[i][2];
-	vr_rotate_vector_by_quaternion(&v, &vr_HMD_rot_Q);
-	vr_rotate_vector_by_quaternion(&v, &vr_joy_rot_Q);
-	sVrGrabHandOff.x = -v.x;
-	sVrGrabHandOff.y = 0.0f;
-	sVrGrabHandOff.z = -v.z;
-
-	/* The controller's forward (OpenXR -Z) in play space, to the world as vr_throw does: the
-	 * recenter, the stick turn, the basis flip */
+	/* The controller's forward (OpenXR -Z) in play space (unturned by stick rotation vr_joy_rot_Q) */
 	q.w = vr_ctrl_quat_play[i][0];
 	q.x = vr_ctrl_quat_play[i][1];
 	q.y = vr_ctrl_quat_play[i][2];
@@ -104,21 +103,85 @@ static void bgrabVrUpdateHand(void)
 	v.z = -1.0f;
 	vr_rotate_vector_by_quaternion(&v, &q);
 	vr_rotate_vector_by_quaternion(&v, &vr_recenter_rot_Q);
-	vr_rotate_vector_by_quaternion(&v, &vr_joy_rot_Q);
-	v.x = -v.x;
-	v.z = -v.z;
 
 	len = sqrtf(v.x * v.x + v.z * v.z);
 
 	if (len > VR_GRAB_YAW_MIN_XZ) {
-		/* vv_theta's convention: minus the look's atan2(x, z) (vr_special_rot_mode) */
-		f32 yaw = -atan2f(v.x, v.z) * 180.0f / M_PI;
+		f32 invLen = 1.0f / len;
+		nx = v.x * invLen;
+		nz = v.z * invLen;
+	} else {
+		nx = sVrGrabLocalDir.x;
+		nz = sVrGrabLocalDir.z;
+	}
 
-		if (yaw < 0.0f) {
-			yaw += 360.0f;
+	if (!sVrGrabHandValid) {
+		sVrGrabLocalHand.x = gCtrlPos[i][0];
+		sVrGrabLocalHand.y = gCtrlPos[i][1];
+		sVrGrabLocalHand.z = gCtrlPos[i][2];
+		sVrGrabLocalDir.x = nx;
+		sVrGrabLocalDir.z = nz;
+		sVrGrabHandValid = true;
+	} else {
+		f32 smooth = VR_GRAB_SMOOTH_FACTOR * g_Vars.lvupdate60freal;
+		if (smooth > 1.0f) {
+			smooth = 1.0f;
 		}
 
-		sVrGrabYaw = yaw;
+		/* 1. Filter local hand position in head space (gCtrlPos): deadzone rejects micro-tremors */
+		f32 dx = gCtrlPos[i][0] - sVrGrabLocalHand.x;
+		f32 dy = gCtrlPos[i][1] - sVrGrabLocalHand.y;
+		f32 dz = gCtrlPos[i][2] - sVrGrabLocalHand.z;
+		f32 distSq = dx * dx + dy * dy + dz * dz;
+
+		if (distSq > (VR_GRAB_DEADZONE_CM * VR_GRAB_DEADZONE_CM)) {
+			sVrGrabLocalHand.x += dx * smooth;
+			sVrGrabLocalHand.y += dy * smooth;
+			sVrGrabLocalHand.z += dz * smooth;
+		}
+
+		/* 2. Filter local controller direction in play space */
+		if (len > VR_GRAB_YAW_MIN_XZ) {
+			f32 dnx = nx - sVrGrabLocalDir.x;
+			f32 dnz = nz - sVrGrabLocalDir.z;
+			f32 ddirSq = dnx * dnx + dnz * dnz;
+
+			/* Deadzone for angle jitter (~0.5 degree threshold) */
+			if (ddirSq > 0.0001f) {
+				sVrGrabLocalDir.x += dnx * smooth;
+				sVrGrabLocalDir.z += dnz * smooth;
+				f32 dlen = sqrtf(sVrGrabLocalDir.x * sVrGrabLocalDir.x + sVrGrabLocalDir.z * sVrGrabLocalDir.z);
+				if (dlen > 0.001f) {
+					sVrGrabLocalDir.x /= dlen;
+					sVrGrabLocalDir.z /= dlen;
+				}
+			}
+		}
+	}
+
+	/* Transform filtered local hand position to world space.
+	 * Applying vr_HMD_rot_Q and vr_joy_rot_Q here guarantees that joystick turns and head movements
+	 * never lag behind and never pull the grabbed prop towards the player. */
+	v.x = sVrGrabLocalHand.x;
+	v.y = sVrGrabLocalHand.y;
+	v.z = sVrGrabLocalHand.z;
+	vr_rotate_vector_by_quaternion(&v, &vr_HMD_rot_Q);
+	vr_rotate_vector_by_quaternion(&v, &vr_joy_rot_Q);
+	sVrGrabHandOff.x = -v.x;
+	sVrGrabHandOff.y = 0.0f;
+	sVrGrabHandOff.z = -v.z;
+
+	/* Transform filtered play-space direction to world space with vr_joy_rot_Q */
+	v.x = sVrGrabLocalDir.x;
+	v.y = 0.0f;
+	v.z = sVrGrabLocalDir.z;
+	vr_rotate_vector_by_quaternion(&v, &vr_joy_rot_Q);
+	v.x = -v.x;
+	v.z = -v.z;
+
+	sVrGrabYaw = -atan2f(v.x, v.z) * 180.0f / (f32)M_PI;
+	if (sVrGrabYaw < 0.0f) {
+		sVrGrabYaw += 360.0f;
 	}
 }
 
@@ -190,6 +253,7 @@ void bgrabInit(void)
 	g_Vars.currentplayer->gunextraaimy = 0;
 
 	/* VR: the offset is kept from the grabbing hand, in the frame of its yaw (bgrabVrUpdateHand) */
+	sVrGrabHandValid = false;
 	sVrGrabYaw = g_Vars.currentplayer->vv_theta;
 	bgrabVrUpdateHand();
 	sVrGrabPrevYaw = sVrGrabYaw;
@@ -314,6 +378,7 @@ void bgrabExit(void)
 		g_Vars.currentplayer->grabbedprop = NULL;
 	}
     sVrGrabHeadPosValid = false;
+    sVrGrabHandValid = false;
     vr_grab_release_note(); // VR: PD-VRR "grab release:" lines
 }
 
@@ -473,9 +538,9 @@ s32 bgrabCalculateNewPosition(struct coord *delta, f32 angle, bool arg2)
 	f32 ymax;
 	f32 ymin;
 	f32 radius;
-	f32 rotextrasum;
+	f32 rotextrasum = 0.0f;
 	struct coord posextrasum;
-	f32 rotextra;
+	f32 rotextra = 0.0f;
 	struct coord posextra;
 	struct defaultobj *obj;
 	struct hov *hov;

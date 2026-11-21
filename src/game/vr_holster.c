@@ -565,6 +565,7 @@ static void vrHolsterNoteParks(const s32 *old, const char *why)
 }
 
 static void vrHolsterEquip(s32 weapon, s32 dual);
+static s32 vrHolsterIsPair(const s32 *held);
 
 /* A gun that left the inventory (a deployed laptop gun or Dragon, a stage taking the weapons), a
  * used-up throwable or a worn disguise, or a mine at 0 rounds (vrHolsterUsable) leaves its slot,
@@ -596,6 +597,23 @@ static void vrHolsterSyncInventory(void)
 		vrhOnLost(&sState, w);
 		vrHolsterNoteParks(old, i >= VRH_NUM_GUNS ? "lost item" : "lost");
 		lost = 1;
+	}
+
+	if (sState.held[VRH_L] == VRH_THROW && sState.held[VRH_R] == VRH_THROW
+			&& sState.holster[VRH_THROW] == WEAPON_COMBATKNIFE) {
+		if (bgunGetAmmoCount(AMMOTYPE_KNIFE) < 2) {
+			struct player *player = g_Vars.currentplayer;
+			s32 emptyHand = -1;
+			if (player->hands[HAND_RIGHT].loadedammo[0] == 0) {
+				emptyHand = sState.gunside;
+			} else if (player->hands[HAND_LEFT].loadedammo[0] == 0) {
+				emptyHand = 1 - sState.gunside;
+			} else {
+				emptyHand = 1 - sState.gunside;
+			}
+			sState.held[emptyHand] = -1;
+			lost = 1;
+		}
 	}
 
 	vrHolsterFillItems("sync");
@@ -642,7 +660,7 @@ static void vrHolsterEquip(s32 weapon, s32 dual)
 	s32 target = weapon != WEAPON_NONE ? weapon : WEAPON_UNARMED;
 	s32 cur = ctrl->switchtoweaponnum >= 0 ? ctrl->switchtoweaponnum : ctrl->weaponnum;
 
-	if (!vrHolsterIsGun(target)) {
+	if (!vrHolsterIsGun(target) && target != WEAPON_COMBATKNIFE) {
 		dual = 0;
 	}
 
@@ -656,7 +674,7 @@ static void vrHolsterEquip(s32 weapon, s32 dual)
 	 * switch line does not cover it: log it, then the models line once the left hand is out of
 	 * use. Two cases: a pair down to a single (rule 7: a copy let go; or a copy holstered), left
 	 * hand use1; or a pair draw cancelled before the left hand came up, left hand use0. */
-	if (cur == target && vrHolsterIsGun(target) && ctrl->dualwielding && !dual) {
+	if (cur == target && (vrHolsterIsGun(target) || target == WEAPON_COMBATKNIFE) && ctrl->dualwielding && !dual) {
 		VRH_DIAG("holster single: weapon %d dual wield off (pair let go, or pair draw cancelled),"
 				" gun side %c, left hand use%d st%d/%d",
 				target, "LR"[sState.gunside], g_Vars.currentplayer->hands[HAND_LEFT].inuse,
@@ -833,6 +851,10 @@ static s32 vrHolsterItemBusy(void)
 		return 0;
 	}
 
+	if (w == WEAPON_COMBATKNIFE && vrHolsterIsPair(sState.held)) {
+		return 0;
+	}
+
 	return hand->state == HANDSTATE_ATTACK || hand->state == HANDSTATE_ATTACKEMPTY
 		|| hand->state == HANDSTATE_RELOAD || (w == WEAPON_COMBATKNIFE && vr_R_knife_sec_anim_run);
 }
@@ -913,6 +935,9 @@ static void vrHolsterBuildInput(struct vrhinput *in, s32 forcepause)
 
 		in->haspair[i] = w != WEAPON_NONE && invHasDoubleWeaponIncAllGuns(w, w);
 	}
+
+	in->hasknifepair = bgunGetAmmoCount(AMMOTYPE_KNIFE) >= 2
+		|| invHasDoubleWeaponIncAllGuns(WEAPON_COMBATKNIFE, WEAPON_COMBATKNIFE);
 
 	in->reloading = vrHolsterTickReloading() ? 1 : 0;
 	in->paused = forcepause || player->pausemode != PAUSEMODE_UNPAUSED || lvIsPaused();

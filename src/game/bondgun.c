@@ -8627,7 +8627,8 @@ void bgunTickSwitch2(void)
 						}
 #endif
 
-            if (ctrl->dualwielding && !invHasDoubleWeaponIncAllGuns(ctrl->switchtoweaponnum, ctrl->switchtoweaponnum)) {
+            if (ctrl->dualwielding && !invHasDoubleWeaponIncAllGuns(ctrl->switchtoweaponnum, ctrl->switchtoweaponnum)
+                && !(vrHolsterActive() && ctrl->switchtoweaponnum == WEAPON_COMBATKNIFE)) {
                 ctrl->dualwielding = false;
             }
 

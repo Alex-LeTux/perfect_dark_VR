@@ -143,7 +143,7 @@ static void vrhUnpark(struct vrhstate *s, const int32_t *grip, int32_t *fx)
 	int32_t h;
 
 	for (h = 0; h < 2; h++) {
-		if (s->parked[h] && grip[h] && !vrhIsItemSlot(s->held[1 - h])) {
+		if (s->parked[h] && grip[h] && (!vrhIsItemSlot(s->held[1 - h]) || s->held[1 - h] == s->held[h])) {
 			vrhUnparkHand(s, h);
 			vrhFx(fx, h, VRH_FX_DRAW);
 		}
@@ -162,8 +162,11 @@ static int32_t vrhZoneBuzz(const struct vrhstate *s, const struct vrhinput *in, 
 	}
 
 	/* Rule 44: an item slot buzzes only for an empty hand, and never when the other hand holds its
-	 * item (items never pair) */
+	 * item (items never pair, except throwable knife with pair) */
 	if (vrhIsItemSlot(hol)) {
+		if (hol == VRH_THROW && s->held[o] == hol && in->hasknifepair) {
+			return s->held[h] < 0;
+		}
 		return s->held[h] < 0 && s->holster[hol] != 0 && s->held[o] != hol;
 	}
 
@@ -234,12 +237,23 @@ static void vrhRelease(struct vrhstate *s, int32_t h, int32_t hol, int32_t *fx)
 }
 
 /* Rule 37: grip press by empty hand h at item slot hol */
-static void vrhPressItem(struct vrhstate *s, int32_t h, int32_t hol, int32_t *fx)
+static void vrhPressItem(struct vrhstate *s, const struct vrhinput *in, int32_t h, int32_t hol, int32_t *fx)
 {
 	int32_t o = 1 - h;
 
-	/* An empty slot, or the other hand holds this item: no pairs of items */
-	if (s->holster[hol] == 0 || s->held[o] == hol) {
+	/* An empty slot */
+	if (s->holster[hol] == 0) {
+		vrhFx(fx, h, VRH_FX_EMPTY);
+		return;
+	}
+
+	/* The other hand holds this item: no pairs of items, except throwable knife with pair */
+	if (s->held[o] == hol) {
+		if (hol == VRH_THROW && in->hasknifepair) {
+			s->held[h] = hol;
+			vrhFx(fx, h, VRH_FX_DRAW);
+			return;
+		}
 		vrhFx(fx, h, VRH_FX_EMPTY);
 		return;
 	}
@@ -281,7 +295,7 @@ static void vrhPress(struct vrhstate *s, const struct vrhinput *in, int32_t h, i
 	}
 
 	if (vrhIsItemSlot(hol)) {
-		vrhPressItem(s, h, hol, fx);
+		vrhPressItem(s, in, h, hol, fx);
 		return;
 	}
 
@@ -344,7 +358,7 @@ void vrhTick(struct vrhstate *s, const struct vrhinput *in, struct vrhoutput *ou
 		 * gun. */
 		/* A lone gun is always in the gun-side hand, so only the other copy of a pair parks */
 		if (in->reloading) {
-			if (s->held[1 - s->gunside] >= 0) {
+			if (s->held[1 - s->gunside] >= 0 && !vrhIsItemSlot(s->held[1 - s->gunside])) {
 				s->parked[1 - s->gunside] = 1;
 			}
 		} else {

@@ -64,6 +64,7 @@ struct vrhinput {
 	int32_t zone[2];      /* per physical hand: VRH_ZONE_* (a body spot) */
 	int32_t haspair[VRH_NUM_GUNS]; /* per gun holster (items never pair): the inventory holds two of
 	                       * that gun */
+	int32_t hasknifepair; /* player has at least 2 combat knives for dual-wielding */
 	int32_t reloading;    /* the gun side's gun is busy (the adapter's choice: since Task H3d a
 	                       * manual reload only while the free hand holds a clip or round, racks,
 	                       * slaps or an eject is pending, and with a pair any reload state but
