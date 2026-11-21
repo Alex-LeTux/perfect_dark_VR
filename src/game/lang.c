@@ -407,6 +407,70 @@ void langClearBank(s32 bank)
 	g_LangBanks[bank] = NULL;
 }
 
+extern bool VrManualReloading;
+
+/**
+ * VR holsters (Task C6f): the ROM texts that name the controls manual reload and the holsters
+ * changed, with the controls they have now: use is the A or X tap (vrHolsterFaceButtons), the
+ * grab the grip, a held gadget comes from the chest pouch and a device toggle from the pause
+ * menu. langGet returns these only with VrManualReloading on, and only in the NTSC final English
+ * texts (not with the Japanese files, g_Jpn): the other versions and languages keep the ROM's.
+ * Task H1: the texts that name the N64 Z, R and C buttons (the firing range hints, the holotraining
+ * descriptions and hints, the ECM Mine's description and device training tips): fire is the trigger, a fist the grip, aim is pointing the
+ * gun (a grip on a gun only holds it), looking is the head, ducking is the body (or the left stick
+ * click, Seated Mode or "Left Stick Click to Crouch"), sidestepping the left stick.
+ */
+#if VERSION == VERSION_NTSC_FINAL
+struct vrlangoverride {
+	s32 textid;
+	char *text;
+};
+
+static struct vrlangoverride g_VrLangOverrides[] = {
+	{ L_DISH_056, "Select the Uplink.\n- Tap A or X with a hand at your chest to cycle through your gadgets.\n- Grip your chest to equip the gadget.\n" },
+	{ L_DISH_057, "Select the CamSpy.\n- Tap A or X with a hand at your chest to cycle through your gadgets.\n- Grip your chest to equip the gadget.\n- Pull the trigger to switch it on or off.\n" },
+	{ L_DISH_058, "Select the Night Vision.\n- Tap A or X with a hand at your chest to cycle through your gadgets.\n- Grip your chest to equip the gadget.\n- Pull the trigger to switch it on or off.\n" },
+	{ L_DISH_059, "Select the Door Decoder.\n- Tap A or X with a hand at your chest to cycle through your gadgets.\n- Grip your chest to equip the gadget.\n" },
+	{ L_DISH_060, "Select the X-Ray Scanner.\n- Tap A or X with a hand at your chest to cycle through your gadgets.\n- Grip your chest to equip the gadget.\n- Pull the trigger to switch it on or off.\n" },
+	{ L_DISH_061, "Select the Disguise.\n- Tap A or X with a hand at your chest to cycle through your gadgets.\n- Grip your chest to equip the gadget.\n- Pull the trigger to put it on.\n" },
+	{ L_DISH_062, "Select the IR Scanner.\n- Tap A or X with a hand at your chest to cycle through your gadgets.\n- Grip your chest to equip the gadget.\n- Pull the trigger to switch it on or off.\n" },
+	{ L_DISH_063, "Select the Tracker.\n- Tap A or X with a hand at your chest to cycle through your gadgets.\n- Grip your chest to equip the gadget.\n- Pull the trigger to switch it on or off.\n" },
+	{ L_DISH_064, "Select the Cloaking Device.\n- Tap A or X with a hand at your chest to cycle through your gadgets.\n- Grip your chest to equip the gadget.\n- Pull the trigger to switch it on or off.\n" },
+	{ L_DISH_065, "Select the ECM Mine.\n- Tap A or X with a hand at your chest to cycle through your gadgets.\n- Grip your chest to equip the gadget.\n" },
+	{ L_DISH_073, "HOVERCRATE\nGrip with an empty hand next to Hovcrate to grab it...\n" },
+	{ L_DISH_074, "Let go of the grip when crate grabbed to release it.\n" },
+	{ L_DISH_075, "HOVERBIKE\nDouble tap A or X next to Hovbike to ride it...\n" },
+	{ L_DISH_076, "Double tap A or X when on Hovbike to dismount.\n" },
+	{ L_DISH_077, "OPENING DOORS\nPress A or X next to door to open it.\n" },
+	{ L_DISH_078, "A or X will also activate any object nearby.\n" },
+	{ L_DISH_079, "ELEVATORS\nPress A or X next to door to call elevator.\n" },
+	{ L_DISH_095, "DUCK\n- Lower your head to duck.\n- Or click the left stick (with Left Stick Click to Crouch, or Seated Mode).\n" },
+	{ L_DISH_096, "CROUCH\n- When ducking, squat lower to crouch.\n- Or click the left stick again (with Left Stick Click to Crouch, or Seated Mode).\n" },
+	{ L_DISH_107, "Unarmed combat - knock out the target.\n- Hold the grip to make a fist, then punch.\n" },
+	{ L_DISH_114, "TERMINALS\n- Press A or X next to terminal to use it.\n" },
+	{ L_MISC_271, "Description\n- A tiny remote camera for stealthy exploration. Equipped for spectroscopic holography. Opens doors by projecting a human-sized pulse of heat.\n\nTraining Instructions\n- Holograph the hacker's terminal next door in the Info room.\n\nOperation\n- Pull the left trigger to take a holograph. Press A to open any doors in the way, and B to return to Joanna. Move with the left stick, rise and fall with the right stick, and look around with your head.\n" },
+	{ L_MISC_273, "Description\n\n- Stand-alone code-breaking device. Attaches to the control panel and sifts through the possible combinations until the lock is opened.\n\nTraining Instructions\n- Find the pad by the locked door and use the Door Decoder on it to unlock the door.\n\nOperation\n- Stand next to the door pad and press A or X (or pull the trigger) while holding the Door Decoder to use it.\n" },
+	{ L_MISC_279, "Description\n- Emits a constantly shifting signal designed to jam any electronic communications device. Must be placed on the object to be effective.\n\nTraining Instructions\n- Throw the ECM Mine onto the lighting hub located through the secret door.\n\nOperation\n- Hold the trigger, swing your arm toward the target and let go of the trigger to throw the mine.\n" },
+	{ L_MISC_280, "Description\n- Provides a link from the field agent to the Institute hackers back at HQ, who can then download data or crack electronic locks remotely.\n\nTraining Instructions\n- Use the Data Uplink to hack the terminal in the corner, unlocking a secret door.\n\nOperation\n- Stand next to the terminal and press A or X (or pull the trigger) when holding Data Uplink.\n" },
+	{ L_MISC_281, "FIRING\n Pull the trigger to fire gun.\n" },
+	{ L_MISC_282, "RELOAD\n When out of ammo, press B or Y and reload by hand.\n" },
+	{ L_MISC_283, "MANUAL RELOAD\n Press B or Y to drop the clip early if not empty.\n" },
+	{ L_MISC_284, "Aiming: Point the gun where you want to shoot.\n" },
+	{ L_MISC_285, "The aiming sight follows the gun as your hand moves.\n" },
+	{ L_MISC_286, "AUTO FIRE\n Hold the trigger to repeatedly fire automatically.\n" },
+	{ L_MISC_287, "ALTER AIM\n Tilt the gun up or down to move sight up/down.\n" },
+	{ L_MISC_288, "ZOOM\n Look through the gun's scope to zoom in.\n" },
+	{ L_MISC_289, "FAST FIRE\n Pull the trigger quickly to fire faster.\n" },
+	{ L_MISC_336, "Description\n- A good agent notices everything around him or her.\n\nTraining Instructions\n- Examine all of the objects by looking directly at them.\n\nOperation\n-Look up- Tilt your head up.\n-Look down- Tilt your head down.\n-Free Look- Turn your head to look around.\n" },
+	{ L_MISC_337, "Description\n- Sidestepping and strafing can get you out of trouble.\n\nTraining Instructions\n- Activate all of the switches in front. Be quick, though, as each switch will reset on a time limit.\n\nOperation\n- Sidestep left- Push the left stick left\n- Sidestep right- Push the left stick right\n\n" },
+	{ L_MISC_338, "Description\n- Ducking and crouching can open up new areas for exploration.\n\nTraining Instructions\n- Work your way through the obstacles using the moves available to you. Activate the switches.\n\nOperation\n- Duck- Lower your head.\n- Crouch- When ducking, squat lower.\n- Get up- Stand up straight.\n- With Left Stick Click to Crouch, or Seated Mode, each click of the left stick ducks, crouches, then stands.\n\n" },
+	{ L_MISC_339, "Description\n- Fighting multiple opponents in hand-to-hand combat can be difficult.\n\nTraining Instructions\n- Knock out all enemies without getting hit.\n\nOperation\n- Punch - With an empty hand, hold the grip to make a fist and swing it again and again to launch a flurry of punches.\n\n" },
+	{ L_MISC_340, "Description\n- Disarming an enemy can get you a new weapon.\n\nTraining Instructions\n- Knock out/disarm all enemies without getting hit.\n\nOperation\n- Disarm - Hold the B Button and pull the trigger, then punch an enemy to disarm it.\n- Knockout Punch - Punch an unaware enemy from behind.\n" },
+	{ L_MISC_358, "Be sure the mine will land in the correct place by getting as close as you can to the target. Aim the throw by swinging your arm toward the target.\n" },
+	{ L_MISC_368, "Be sure the mine will land in the correct place by getting as close as you can to the target. Aim the throw by swinging your arm toward the target.\n" },
+};
+#endif
+
 /**
  * Resolve a text ID to a string.
  *
@@ -423,6 +487,18 @@ char *langGet(s32 textid)
 	s32 textindex = textid & 0x1ff;
 	uintptr_t *bank = (uintptr_t*)g_LangBanks[bankindex];
 	uintptr_t addr;
+
+#if VERSION == VERSION_NTSC_FINAL
+	if (VrManualReloading && !g_Jpn) {
+		s32 i;
+
+		for (i = 0; i < ARRAYCOUNT(g_VrLangOverrides); i++) {
+			if (g_VrLangOverrides[i].textid == textid) {
+				return g_VrLangOverrides[i].text;
+			}
+		}
+	}
+#endif
 
 	if (bank && bank[textindex]) {
 		addr = (uintptr_t)bank + bank[textindex];

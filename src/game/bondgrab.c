@@ -23,6 +23,15 @@
 
 #include "../../port/vr/vr_openxr.h"
 #include "../../port/vr/vr_log.h"
+#include "game/vr_holster.h"
+#include "game/atan2f.h"
+
+#ifdef ANDROID
+#include <android/log.h>
+#define GRAB_DIAG(...) __android_log_print(ANDROID_LOG_INFO, "PD-VRR", __VA_ARGS__)
+#else
+#define GRAB_DIAG(...) ((void) 0)
+#endif
 
 struct prop *var8009de70;
 u32 var8009de74;
@@ -36,10 +45,82 @@ bool var80070e80 = false;
 
 extern XrQuaternionf vr_joy_rot_Q;
 
-void vr_rotate_vector_by_quaternion(struct coord *v, const XrQuaternionf q);
+/* Takes the quaternion by pointer (bondwalk.c); declared here by value it read a stray pointer */
+void vr_rotate_vector_by_quaternion(struct coord *v, const XrQuaternionf *q);
+void vr_player_pos(void);
+void vr_grab_release_note(void);
+f32 vr_grab_eye_height(void);
 
 static struct coord sVrGrabLastHeadPos = { 0.0f, 0.0f, 0.0f };
 static bool sVrGrabHeadPosValid = false;
+
+/* VR: the grabbed object follows the hand that grabbed it, not the view. vv_theta is the head's
+ * yaw in VR (vr_special_rot_mode), so the original placement (the grab offset turned by vv_theta
+ * about the player) swung the object with every glance. The placement now turns it by the
+ * grabbing controller's yaw (sVrGrabYaw, vv_theta's degrees) and measures it from that hand
+ * (sVrGrabHandOff, world x and z from the head to the hand), so the object keeps its place
+ * relative to the hand: it moves when the hand moves and turns when the hand turns, a stick turn
+ * included, and stays put when only the head turns. */
+static f32 sVrGrabYaw;
+static f32 sVrGrabPrevYaw;          /* sVrGrabYaw at the tick's start: the release's spin */
+static struct coord sVrGrabHandOff;
+
+/* Below this horizontal length of the controller's forward (unit) its yaw is not trusted (the
+ * controller points near straight up or down) and the last one is kept */
+#define VR_GRAB_YAW_MIN_XZ 0.25f
+
+static void bgrabVrUpdateHand(void)
+{
+	s32 i = vrHolsterGrabPose();
+	struct coord v;
+	XrQuaternionf q;
+	f32 len;
+
+	/* Without holsters the logical left grip grabs (bmoveTick) */
+	if (i < 0) {
+		i = 0;
+	}
+
+	/* gCtrlPos is the hand in the head's view space, cm (one cm one world unit): the head's
+	 * rotation, the stick turn and the 180 degree Y basis flip take it to the world, as the
+	 * camera does (mtxf0068 from cam_look and cam_up, vr_special_rot_mode) */
+	v.x = gCtrlPos[i][0];
+	v.y = gCtrlPos[i][1];
+	v.z = gCtrlPos[i][2];
+	vr_rotate_vector_by_quaternion(&v, &vr_HMD_rot_Q);
+	vr_rotate_vector_by_quaternion(&v, &vr_joy_rot_Q);
+	sVrGrabHandOff.x = -v.x;
+	sVrGrabHandOff.y = 0.0f;
+	sVrGrabHandOff.z = -v.z;
+
+	/* The controller's forward (OpenXR -Z) in play space, to the world as vr_throw does: the
+	 * recenter, the stick turn, the basis flip */
+	q.w = vr_ctrl_quat_play[i][0];
+	q.x = vr_ctrl_quat_play[i][1];
+	q.y = vr_ctrl_quat_play[i][2];
+	q.z = vr_ctrl_quat_play[i][3];
+	v.x = 0.0f;
+	v.y = 0.0f;
+	v.z = -1.0f;
+	vr_rotate_vector_by_quaternion(&v, &q);
+	vr_rotate_vector_by_quaternion(&v, &vr_recenter_rot_Q);
+	vr_rotate_vector_by_quaternion(&v, &vr_joy_rot_Q);
+	v.x = -v.x;
+	v.z = -v.z;
+
+	len = sqrtf(v.x * v.x + v.z * v.z);
+
+	if (len > VR_GRAB_YAW_MIN_XZ) {
+		/* vv_theta's convention: minus the look's atan2(x, z) (vr_special_rot_mode) */
+		f32 yaw = -atan2f(v.x, v.z) * 180.0f / M_PI;
+
+		if (yaw < 0.0f) {
+			yaw += 360.0f;
+		}
+
+		sVrGrabYaw = yaw;
+	}
+}
 
 static void bgrabAddVrHeadMovement(struct coord *delta) // VR
 {
@@ -66,7 +147,7 @@ static void bgrabAddVrHeadMovement(struct coord *delta) // VR
      * vrjoyrotQ converts it into the game's world space, exactly
      * as vrplayerpos() did outside of grab mode.
      */
-    vr_rotate_vector_by_quaternion(&vrdelta, vr_joy_rot_Q);
+    vr_rotate_vector_by_quaternion(&vrdelta, &vr_joy_rot_Q);
 
     delta->x += vrdelta.x;
     delta->z += vrdelta.z;
@@ -108,8 +189,19 @@ void bgrabInit(void)
 	g_Vars.currentplayer->gunextraaimx = 0;
 	g_Vars.currentplayer->gunextraaimy = 0;
 
+	/* VR: the offset is kept from the grabbing hand, in the frame of its yaw (bgrabVrUpdateHand) */
+	sVrGrabYaw = g_Vars.currentplayer->vv_theta;
+	bgrabVrUpdateHand();
+	sVrGrabPrevYaw = sVrGrabYaw;
+	g_Vars.currentplayer->grabbedposoffset.x -= sVrGrabHandOff.x;
+	g_Vars.currentplayer->grabbedposoffset.z -= sVrGrabHandOff.z;
 
-	mtx4LoadYRotation((g_Vars.currentplayer->vv_theta * M_BADTAU) / 360.0f, &matrix);
+	GRAB_DIAG("grab: prop %p hand %d yaw %.1f (view %.1f) hand off (%.1f %.1f) held off (%.1f %.1f)",
+			prop, vrHolsterGrabPose(), sVrGrabYaw, g_Vars.currentplayer->vv_theta,
+			sVrGrabHandOff.x, sVrGrabHandOff.z,
+			g_Vars.currentplayer->grabbedposoffset.x, g_Vars.currentplayer->grabbedposoffset.z);
+
+	mtx4LoadYRotation((sVrGrabYaw * M_BADTAU) / 360.0f, &matrix);
 	mtx4RotateVecInPlace(&matrix, &g_Vars.currentplayer->grabbedposoffset);
 
 	g_Vars.currentplayer->bondprevtheta = g_Vars.currentplayer->vv_theta;
@@ -136,7 +228,7 @@ void bgrabInit(void)
 
 		if (hov) {
 			g_Vars.currentplayer->grabbedrotoffset =
-				hov->yrot - (M_BADTAU - (g_Vars.currentplayer->vv_theta * M_BADTAU) / 360.0f);
+				hov->yrot - (M_BADTAU - (sVrGrabYaw * M_BADTAU) / 360.0f);
 
 			if (g_Vars.currentplayer->grabbedrotoffset >= M_BADTAU) {
 				g_Vars.currentplayer->grabbedrotoffset -= M_BADTAU;
@@ -203,7 +295,8 @@ void bgrabExit(void)
 			moveamount.y = 0;
 			moveamount.z = (g_Vars.currentplayer->grabbedprop->pos.z - g_Vars.currentplayer->grabbedprevpos.z) / g_Vars.lvupdate60freal;
 
-			rotateamount = -(g_Vars.currentplayer->vv_theta - g_Vars.currentplayer->bondprevtheta)
+			/* VR: the hand's turn, which turns the object (bgrabVrUpdateHand) */
+			rotateamount = -(sVrGrabYaw - sVrGrabPrevYaw)
 				* M_BADTAU / 360;
 
 			if (rotateamount < -M_PI) {
@@ -221,6 +314,7 @@ void bgrabExit(void)
 		g_Vars.currentplayer->grabbedprop = NULL;
 	}
     sVrGrabHeadPosValid = false;
+    vr_grab_release_note(); // VR: PD-VRR "grab release:" lines
 }
 
 void bgrab0f0ccbf0(struct coord *delta, f32 angle, struct defaultobj *obj)
@@ -500,7 +594,7 @@ s32 bgrabCalculateNewPosition(struct coord *delta, f32 angle, bool arg2)
 
 		if (hov != NULL) {
 			sp78 = M_BADTAU
-				- g_Vars.currentplayer->vv_theta * M_BADTAU / 360.0f
+				- sVrGrabYaw * M_BADTAU / 360.0f
 				+ -angle
 				+ g_Vars.currentplayer->grabbedrotoffset
 				- hov->yrot
@@ -519,7 +613,7 @@ s32 bgrabCalculateNewPosition(struct coord *delta, f32 angle, bool arg2)
 			f32 f12;
 			f32 f18;
 
-			sp74 = M_BADTAU - g_Vars.currentplayer->vv_theta * M_BADTAU / 360.0f - angle;
+			sp74 = M_BADTAU - sVrGrabYaw * M_BADTAU / 360.0f - angle;
 
 			if (sp74 >= M_BADTAU) {
 				sp74 -= M_BADTAU;
@@ -533,8 +627,9 @@ s32 bgrabCalculateNewPosition(struct coord *delta, f32 angle, bool arg2)
 			f12 = g_Vars.currentplayer->grabbedposoffset.f[0] + posextra.f[0];
 			f18 = g_Vars.currentplayer->grabbedposoffset.f[2] + posextra.f[2];
 
-			sp7c.x = pos.f[0] + f12 * sp70 + f18 * sp6c - g_Vars.currentplayer->grabbedprop->pos.f[0];
-			sp7c.z = pos.f[2] + f18 * sp70 - f12 * sp6c - g_Vars.currentplayer->grabbedprop->pos.f[2];
+			/* VR: measured from the grabbing hand (bgrabVrUpdateHand) */
+			sp7c.x = pos.f[0] + sVrGrabHandOff.x + f12 * sp70 + f18 * sp6c - g_Vars.currentplayer->grabbedprop->pos.f[0];
+			sp7c.z = pos.f[2] + sVrGrabHandOff.z + f18 * sp70 - f12 * sp6c - g_Vars.currentplayer->grabbedprop->pos.f[2];
 		}
 
 		var80070e80 = true;
@@ -851,6 +946,7 @@ void bgrabUpdatePrevPos(void)
 	g_Vars.currentplayer->bondprevpos.z = g_Vars.currentplayer->prop->pos.z;
 
 	g_Vars.currentplayer->bondprevtheta = g_Vars.currentplayer->vv_theta;
+	sVrGrabPrevYaw = sVrGrabYaw;
 
 	g_Vars.currentplayer->grabbedprevpos.x = g_Vars.currentplayer->grabbedprop->pos.x;
 	g_Vars.currentplayer->grabbedprevpos.y = g_Vars.currentplayer->grabbedprop->pos.y;
@@ -918,11 +1014,9 @@ void bgrabUpdateVertical(void)
 		fVar3 = (PAL ? 0.94559997320175f : 0.9545f) * fVar3 + g_Vars.currentplayer->vv_ground;
 	}
 
-	f0 = g_Vars.currentplayer->vv_height;
-
-	if (f0 < 30) {
-		f0 = 30;
-	}
+	/* VR: the walk's eye height (the real head's, or seated the original's with its crouch), not
+	 * the character's animated one, so grabbing and letting go leave the view's height alone */
+	f0 = vr_grab_eye_height();
 
 	tmp = fVar3 * (PAL ? 0.054400026798248f : 0.045499980449677f) + f0 - g_Vars.currentplayer->prop->pos.y;
 
@@ -1227,6 +1321,13 @@ void bgrabTick(void)
 {
 
 	bgrabUpdatePrevPos();
+	bgrabVrUpdateHand(); // VR: the hand the grabbed object follows
+
+	/* VR: keeps the walk's room-scale head reference current (its branch for the other modes,
+	 * which zeroes the lean the grab's camera leaves out). Not called during a grab before, so
+	 * the release walked the camera by every step taken while holding (bgrabAddVrHeadMovement
+	 * had already moved the body by them) */
+	vr_player_pos();
 	bgrab0f0cdef0();
 	bmoveUpdateVerta();
 	bgrab0f0ce924();

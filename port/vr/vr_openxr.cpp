@@ -328,14 +328,15 @@ float vr_head_velocity_play[3] = { 0.0f, 0.0f, 0.0f };
 // ============================================================
 #define HMD_SMOOTH_ALPHA_POS  0.05f   // Position
 #define HMD_SMOOTH_ALPHA_ROT  0.05f   // Rotation
+#define HMD_SMOOTH_RELEASE_FRAMES 6   // Frames to blend back to the raw pose when the zoom ends
 
 static float          sSmoothedHeadPos[3]  = {0, 0, 0};
 static XrQuaternionf  sSmoothedHeadQ       = {0, 0, 0, 1};
 static bool           sSmoothedHeadInit    = false;
+static int            sSmoothedHeadRelease = 0;   // frames blended back since the zoom ended
 extern void QuatSlerp(const float a[4], const float b[4], float t, float out[4]);
-extern int vr_button_R_grip;
-extern int vr_button_L_grip;
-extern bool WepCanZoom;
+// bondgun.c: the game's full screen zoom is on (the head is steadied); its bool is s32 (types.h)
+extern "C" int vrZoomViewOn(void);
 // ============================================================================
 // vr_is_initialized
 // ============================================================================
@@ -1610,6 +1611,15 @@ static float GetYawDegreesFromQuaternion(XrQuaternionf q) {
     return std::atan2f(siny_cosp, cosy_cosp) * (180.0f / 3.14159265f);
 }
 
+// A recenter (the Quest's hold-Meta-button recenter, or the runtime's own after a wake) moves the
+// play space, which turns the raw head yaw. The yaw offset is redone so the game view keeps facing
+// where it did (sRealignYaw, the view yaw before the change): the recenter moves the room, not the
+// game. It waits for a head pose located in the new space (at or after changeTime).
+static bool   sRealignPending = false;
+static XrTime sRealignTime    = 0;
+static float  sRealignYaw     = 0.0f;
+static float GetYawDegreesFromQuaternion(XrQuaternionf q);
+
 extern "C" void vr_align_with_game_angle(float target_game_angle) {
     float current_physical_yaw = GetYawDegreesFromQuaternion(gRawHeadQ);
     g_yawOffsetDegrees = target_game_angle - current_physical_yaw;
@@ -1696,6 +1706,14 @@ static void vr_update_head_tracking(XrTime predictedDisplayTime)
     positionValid    = (headLocation.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT)    != 0;
     orientationValid = (headLocation.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT) != 0;
 
+    if (positionValid && orientationValid && sRealignPending && predictedDisplayTime >= sRealignTime) {
+        gRawHeadQ = headLocation.pose.orientation;
+        vr_align_with_game_angle(sRealignYaw);
+        sSmoothedHeadInit = false;
+        sRealignPending = false;
+        LOGI("Recentered: view kept at yaw %.1f, yaw offset %.1f", sRealignYaw, g_yawOffsetDegrees);
+    }
+
     if (positionValid && orientationValid) {
         // Raw position and rotation (with yaw offset) — same calculation as the original
         XrVector3f rawPos = {
@@ -1716,11 +1734,13 @@ static void vr_update_head_tracking(XrTime predictedDisplayTime)
             vr_head_velocity_play[2] = headVelocity.linearVelocity.z;
         }
 
-        // --- Grip pressed on either controller ---
-        bool gripAny = (vr_button_R_grip != 0) || (vr_button_L_grip != 0);
+        // --- The head is steadied only while the game's full screen zoom is on (vrZoomViewOn: the
+        // Farsight aimed with both hands). A grip alone does not count: with holsters it is held the
+        // whole time a gun is in the hand, so the view lagged whenever a zoom gun's lens was hidden ---
+        if (vrZoomViewOn()) {
+            sSmoothedHeadRelease = 0;
 
-        if (gripAny && WepCanZoom && !gevrScopeOn) {
-            // Initialize the buffer on the first frame with grip
+            // Initialize the buffer on the first frame of the zoom
             if (!sSmoothedHeadInit) {
                 sSmoothedHeadPos[0] = rawHead.x;
                 sSmoothedHeadPos[1] = rawHead.y;
@@ -1741,9 +1761,24 @@ static void vr_update_head_tracking(XrTime predictedDisplayTime)
             vr_HMD_rot_Q      = sSmoothedHeadQ;
 
 
+        } else if (sSmoothedHeadInit && sSmoothedHeadRelease < HMD_SMOOTH_RELEASE_FRAMES - 1) {
+            // The zoom ended (released, or the free hand took a clip): blend the smoothed pose to
+            // the raw one over HMD_SMOOTH_RELEASE_FRAMES frames instead of snapping to it
+            sSmoothedHeadRelease++;
+            float t = (float)sSmoothedHeadRelease / (float)HMD_SMOOTH_RELEASE_FRAMES;
+
+            sSmoothedHeadPos[0] += (rawHead.x - sSmoothedHeadPos[0]) * t;
+            sSmoothedHeadPos[1] += (rawHead.y - sSmoothedHeadPos[1]) * t;
+            sSmoothedHeadPos[2] += (rawHead.z - sSmoothedHeadPos[2]) * t;
+            gHeadPos = {sSmoothedHeadPos[0], sSmoothedHeadPos[1], sSmoothedHeadPos[2]};
+
+            sSmoothedHeadQ = SlerpQuaternions(sSmoothedHeadQ, rawQ, t);
+            vr_HMD_rot_Q   = sSmoothedHeadQ;
+
         } else {
-            // Grip released: raw values + reset initialization
-            sSmoothedHeadInit = false;
+            // No zoom (the last release frame lands on the raw pose): raw values + reset initialization
+            sSmoothedHeadInit    = false;
+            sSmoothedHeadRelease = 0;
             gHeadPos          = rawHead;
             vr_HMD_rot_Q         = rawQ;
         }
@@ -2465,10 +2500,13 @@ extern "C" void vr_poll_events(void)
                         break;
                     case XR_SESSION_STATE_STOPPING:
                         if (g_vrState.sessionRunning) {
+                            // The headset went to sleep or the app lost the display: end the
+                            // session and wait for READY to begin it again. The game is held
+                            // meanwhile (mainTick skips ticks without a frame). Exiting here
+                            // killed the game on every headset sleep.
                             xrEndSession(g_vrState.session);
                             g_vrState.sessionRunning = false;
-                            LOGI("Session ended");
-                            exit(0);
+                            LOGI("Session ended, waiting for READY");
                         }
                         break;
                     case XR_SESSION_STATE_EXITING:
@@ -2492,7 +2530,17 @@ extern "C" void vr_poll_events(void)
                 LOGI("Instance loss pending");
                 needs_shutdown = true; // Flag that a restart is required
                 break;
-            case XR_TYPE_EVENT_DATA_REFERENCE_SPACE_CHANGE_PENDING:
+            case XR_TYPE_EVENT_DATA_REFERENCE_SPACE_CHANGE_PENDING: {
+                const XrEventDataReferenceSpaceChangePending* rsEvent =
+                        (const XrEventDataReferenceSpaceChangePending*)baseEvent;
+                // A second change before the first was applied keeps the first view yaw
+                if (!sRealignPending) {
+                    sRealignYaw = GetYawDegreesFromQuaternion(gRawHeadQ) + g_yawOffsetDegrees;
+                }
+                sRealignPending = true;
+                sRealignTime    = rsEvent->changeTime;
+                LOGI("Reference space change pending: type %d", (int)rsEvent->referenceSpaceType);
+
                 if (g_vrState.playSpace != XR_NULL_HANDLE) {
                     xrDestroySpace(g_vrState.playSpace);
                     g_vrState.playSpace = XR_NULL_HANDLE;
@@ -2501,6 +2549,7 @@ extern "C" void vr_poll_events(void)
                     LOGE("REFERENCE_SPACE_CHANGE_PENDING: play space recreate FAILED");
                 }
                 break;
+            }
             default: break;
         }
     }

@@ -16,6 +16,7 @@ void hudmsgRemoveAll(void);
 s32 hudmsgGetNext(s32 refid);
 void hudmsgCreate(char *text, s32 type);
 void hudmsgCreateWithFlags(char *text, s32 type, u32 flags);
+s32 hudmsgCreateReplacing(char *text, s32 type, u32 flags, s32 previd, s32 duration60, s32 colournum);
 void hudmsgCreateWithColour(char *text, s32 type, u8 colour);
 void hudmsgCreateWithDuration(char *text, s32 type, struct hudmsgtype *config, s32 duration60);
 void hudmsgCreateAsSubtitle(char *text, s32 type, u8 colourindex, s32 audiochannelnum);

@@ -47,6 +47,17 @@ u32 g_HudmsgColours[] = {
 	/*10*/ 0xaa55ff00, // purple
 };
 
+// VR: the wrap width cap of every message but the cutscene subtitles (hudmsgCreateFromArgs), in
+// a view about 407 wide: the default leaves 214
+#define VR_HUDMSG_WRAP_MAX 170
+
+// VR: how far the bottom alignment is raised (hudmsgCalculatePosition), in view pixels
+#define VR_HUDMSG_RAISE 70
+
+// VR: how far the in-game subtitles are lowered from their top alignment (hudmsgCalculatePosition), in
+// view pixels: their top at + 170 instead of + 120 (Task H3c)
+#define VR_HUDMSG_SUBTITLE_DROP 50
+
 s32 g_HudPaddingY = 10;
 s32 g_HudPaddingX = 24;
 s32 g_NumHudMessages = 0;
@@ -557,6 +568,50 @@ void hudmsgCreateWithFlags(char *text, s32 type, u32 flags)
 			-1, flags);
 }
 
+/* VR holsters: hudmsgCreateWithFlags that first removes the message previd (queued or showing; -1
+ * or one already gone: nothing), so the new one does not wait behind it. Other messages are left.
+ * duration60: how long it shows, in 60ths (TICKS), as hudmsgCreateWithDuration's; 0: the type's own
+ * duration. colournum: the text and box colour, an index into g_HudmsgColours (COLOR_09_BLUE: the
+ * reload hints, Task F11b); -1: the type's own. Unlike hudmsgCreateWithColour it leaves the type's
+ * colour as it was. Returns the new message's id, -1 when none was created. */
+s32 hudmsgCreateReplacing(char *text, s32 type, u32 flags, s32 previd, s32 duration60, s32 colournum)
+{
+	u32 id = g_NextHudMessageId;
+	s32 i;
+
+	if (previd >= 0) {
+		for (i = 0; i < g_NumHudMessages; i++) {
+			if (g_HudMessages[i].state != HUDMSGSTATE_FREE && g_HudMessages[i].id == previd) {
+				g_HudMessages[i].state = HUDMSGSTATE_FREE;
+				g_HudMessages[i].timer = 0;
+			}
+		}
+	}
+
+	if (duration60 > 0 || colournum >= 0) {
+		/* The message's own duration: HUDMSGFLAG_NOCHANNEL reads the last argument as it (the type's
+		 * path passes channel -1, which a message with no channel has too), so the type's duration
+		 * here is the type's path */
+		hudmsgCreateFromArgs(text, type,
+				g_HudmsgTypes[type].unk00,
+				g_HudmsgTypes[type].unk01,
+				g_HudmsgTypes[type].unk02,
+				g_HudmsgTypes[type].unk04,
+				g_HudmsgTypes[type].unk08,
+				colournum >= 0 ? g_HudmsgColours[colournum] : g_HudmsgTypes[type].colour,
+				g_HudmsgTypes[type].unk10,
+				g_HudmsgTypes[type].alignh,
+				g_HudmsgTypes[type].unk16,
+				g_HudmsgTypes[type].alignv,
+				g_HudmsgTypes[type].unk18,
+				duration60 > 0 ? duration60 : g_HudmsgTypes[type].duration, flags | HUDMSGFLAG_NOCHANNEL);
+	} else {
+		hudmsgCreateWithFlags(text, type, flags);
+	}
+
+	return g_NextHudMessageId != id ? (s32) id : -1;
+}
+
 void hudmsgCreateWithColour(char *text, s32 type, u8 colournum)
 {
 	g_HudmsgTypes[type].colour = g_HudmsgColours[colournum];
@@ -895,6 +950,7 @@ void hudmsgCalculatePosition(struct hudmessage *msg)
 	s32 viewwidth = g_Vars.players[msg->playernum]->viewwidth / g_ScaleX;
 	s32 viewheight = g_Vars.players[msg->playernum]->viewheight;
 	s32 v0;
+	s32 bottom; // VR: the lowest bottom edge of a message (below)
 
 #if VERSION >= VERSION_NTSC_1_0
 	s32 offset = (msg->alignh == HUDMSGALIGN_XMIDDLE) ? 10 : 0;
@@ -965,33 +1021,53 @@ void hudmsgCalculatePosition(struct hudmessage *msg)
 		break;
 	}
 
+	// VR: the HUD panel is head-locked, so its lowest part is outside the clear field of view. The
+	// bottom alignment is raised VR_HUDMSG_RAISE, as the render did for the green type 0 and 9
+	// messages only: the yellow CI training messages (type 8) were drawn that much lower. It is
+	// done here, not in the render, so the overlap check (hudmsgsTick) compares where the messages
+	// are drawn.
+	bottom = viewtop + viewheight - 14 - VR_HUDMSG_RAISE;
+
+	if (PLAYERCOUNT() == 2 && (g_InCutscene == 0 || g_MainIsEndscreen)) {
+		if (IS4MB() || (optionsGetScreenSplit() != SCREENSPLIT_VERTICAL && msg->playernum == 0)) {
+			bottom += 8;
+		} else {
+			bottom += 3;
+		}
+	} else if (PLAYERCOUNT() >= 3) {
+		if (msg->playernum <= 1) {
+			bottom += 8;
+		} else {
+			bottom += 3;
+		}
+	} else {
+		if (optionsGetEffectiveScreenSize() != SCREENSIZE_FULL) {
+			bottom += 8;
+		}
+	}
+
 	switch (msg->alignv) {
 	case HUDMSGALIGN_SCREENTOP:
 		y = msg->ymargin;
 		break;
 	case HUDMSGALIGN_TOP:
         y = viewtop + msg->ymargin + 120; // VR Top Subtitle // y = viewtop + msg->ymargin + 13;
+
+		// VR: the in-game subtitles (Joanna's and Carrington's lines, sky blue) start VR_HUDMSG_SUBTITLE_DROP
+		// lower (Task H3c, the user, run 14: "the blue quest dialog in the first mission ... are for
+		// some reason really high vertically out of eyesight"). Nothing had moved them: + 120 is the
+		// VR port's from its first commit, about 14 degrees above eye level at the default HUD
+		// distance (0.8 m; the panel 1 m high over about 410 lines). Since Task C6e's narrower wrap
+		// (170) a line like "We're getting a positive reading - the internal comms hub is nearby."
+		// takes three lines (27 high) where it took two, so they also reach lower. A three-line
+		// subtitle at + 170, with the health bar's 16 below, ends near + 213, well above the bottom
+		// clamp (about + 320). Other top-aligned messages stay where they were
+		if (msg->type == HUDMSGTYPE_INGAMESUBTITLE) {
+			y += VR_HUDMSG_SUBTITLE_DROP;
+		}
 		break;
 	case HUDMSGALIGN_BOTTOM:
-		y = viewtop + viewheight - msg->height - msg->ymargin - 14;
-
-		if (PLAYERCOUNT() == 2 && (g_InCutscene == 0 || g_MainIsEndscreen)) {
-			if (IS4MB() || (optionsGetScreenSplit() != SCREENSPLIT_VERTICAL && msg->playernum == 0)) {
-				y += 8;
-			} else {
-				y += 3;
-			}
-		} else if (PLAYERCOUNT() >= 3) {
-			if (msg->playernum <= 1) {
-				y += 8;
-			} else {
-				y += 3;
-			}
-		} else {
-			if (optionsGetEffectiveScreenSize() != SCREENSIZE_FULL) {
-				y += 8;
-			}
-		}
+		y = bottom - msg->height - msg->ymargin; // VR (above)
 		break;
 	case HUDMSGALIGN_YMIDDLE:
 		y = (viewheight - msg->height) / 2 + viewtop + msg->ymargin;
@@ -1002,6 +1078,28 @@ void hudmsgCalculatePosition(struct hudmessage *msg)
 	default:
 		y = msg->ymargin;
 		break;
+	}
+
+	// VR: an in-game subtitle moves down while the health bar shows. This was in the render; it is
+	// here so the clamp below sees it.
+	if (msg->type == HUDMSGTYPE_INGAMESUBTITLE && playerIsHealthVisible()) {
+		y += (s32)(16.0f * playerGetHealthBarHeightFrac());
+	}
+
+	// VR: in single player no message ends lower than a bottom-aligned one, whatever its height,
+	// nor starts above the view: a cutscene subtitle is placed by its middle, so one of three or
+	// more lines reached lower, and an in-game subtitle (top + 170, plus the health bar's offset)
+	// would with enough lines. Split screen views are short, and the centred messages
+	// (HUDMSGALIGN_YMIDDLE, objective complete and failed) end near the middle, so neither is
+	// clamped: that would only move them off their place.
+	if (PLAYERCOUNT() == 1 && msg->alignv != HUDMSGALIGN_YMIDDLE) {
+		if (y + msg->height > bottom) {
+			y = bottom - msg->height;
+		}
+
+		if (y < viewtop) {
+			y = viewtop;
+		}
 	}
 
     msg->x = x;
@@ -1023,6 +1121,7 @@ void hudmsgCreateFromArgs(char *text, s32 type, s32 conf00, s32 conf01, s32 conf
 	s32 xmarginaextra;
 	s32 wrapwidth;
 	char stacktext[400];
+	char wrapped[800]; // VR: textWrap's output (below)
 	s32 writeindex;
 
 	if (type == HUDMSGTYPE_INGAMESUBTITLE && !optionsGetInGameSubtitles()) {
@@ -1091,6 +1190,14 @@ void hudmsgCreateFromArgs(char *text, s32 type, s32 conf00, s32 conf01, s32 conf
 			xmarginaextra = 0;
 			msg = &g_HudMessages[index];
 			wrapwidth = hudmsg0f0ddb1c(&xmarginaextra, conf16);
+
+			// VR: the HUD panel is head-locked, so text near its sides is outside the clear field
+			// of view: every message but the cutscene subtitles wraps narrower and is centred
+			// (alignh below)
+			if (type != HUDMSGTYPE_CUTSCENESUBTITLE && wrapwidth > VR_HUDMSG_WRAP_MAX) {
+				wrapwidth = VR_HUDMSG_WRAP_MAX;
+			}
+
 			textMeasure(&textheight, &textwidth, text, *conf04, *conf08, 0);
 
 #if VERSION >= VERSION_JPN_FINAL
@@ -1099,25 +1206,50 @@ void hudmsgCreateFromArgs(char *text, s32 type, s32 conf00, s32 conf01, s32 conf
 			if (textwidth > wrapwidth)
 #endif
 			{
+				// VR: every message but the subtitles keeps its own line breaks: textWrap keeps them
+				// and wraps each line apart, so a list of steps stays one step per line. Subtitles
+				// come as ROM text broken at the N64 width and are wrapped again as one paragraph.
+				// The copy stops two short of the buffer for the '\n' and '\0' after it.
+				bool vrkeepbreaks = type != HUDMSGTYPE_CUTSCENESUBTITLE && type != HUDMSGTYPE_INGAMESUBTITLE;
+
 				i = 0;
 				writeindex = 0;
 
-				while (i < 400 && text[i] != '\0') {
-					if (text[i] != '\n') {
+				while (i < 398 && text[i] != '\0') {
+					if (text[i] != '\n' || vrkeepbreaks) {
 						stacktext[writeindex++] = text[i];
 					}
 
 					i++;
 				}
 
-				stacktext[writeindex++] = '\n';
+				if (!vrkeepbreaks || writeindex == 0 || stacktext[writeindex - 1] != '\n') {
+					stacktext[writeindex++] = '\n';
+				}
+
 				stacktext[writeindex++] = '\0';
 
-				textWrap(wrapwidth, stacktext, msg->text, *conf04, *conf08);
+				// VR: textWrap has no bound and adds a '\n' per wrapped word (no indent: nothing sets
+				// one), so at most twice its input: it writes to wrapped, and msg->text takes 399
+				textWrap(wrapwidth, stacktext, wrapped, *conf04, *conf08);
+				strncpy(msg->text, wrapped, 399);
+				msg->text[399] = '\0';
 				textMeasure(&textheight, &textwidth, msg->text, *conf04, *conf08, 0);
 			} else {
 				strncpy(msg->text, text, 399);
 				msg->text[399] = '\0';
+
+				// VR: textMeasure counts a line's height at its '\n', so a one-line text without one
+				// (the game's own end in one, the VR lines built with snprintf do not) measured 0
+				// high and was drawn in a box 5 pixels high, the text spilling out of it (Task F11b,
+				// the reload hints). A wrapped text has one added above.
+				j = strlen(msg->text);
+
+				if (j > 0 && j < 399 && msg->text[j - 1] != '\n') {
+					msg->text[j] = '\n';
+					msg->text[j + 1] = '\0';
+					textMeasure(&textheight, &textwidth, msg->text, *conf04, *conf08, 0);
+				}
 			}
 
 			msg->flags = flags;
@@ -1133,7 +1265,7 @@ void hudmsgCreateFromArgs(char *text, s32 type, s32 conf00, s32 conf01, s32 conf
 			msg->font2 = *conf08;
 			msg->textcolour = textcolour;
 			msg->glowcolour = glowcolour;
-			msg->alignh = alignh;
+			msg->alignh = type != HUDMSGTYPE_CUTSCENESUBTITLE ? HUDMSGALIGN_XMIDDLE : alignh; // VR
 			msg->alignv = alignv;
 			msg->width = textwidth;
 			msg->height = textheight;
@@ -1488,19 +1620,7 @@ Gfx *hudmsgsRender(Gfx *gdl)
 		}
 
 		x = msg->x;
-		y = msg->y;
-
-
-        // VR type 0 = Grab weapon/ammo
-        if(msg->type == 0 || msg->type == HUDMSGTYPE_MPSCENARIO) {
-            s32 xMiddle = viGetViewLeft() + (viGetViewWidth() >> 1) / 2;
-            x = xMiddle;
-            y -= 70;
-        }
-
-		if (msg->type == HUDMSGTYPE_INGAMESUBTITLE && playerIsHealthVisible()) {
-			y += (s32)(16.0f * playerGetHealthBarHeightFrac());
-		}
+		y = msg->y; // VR: raised, and the health bar's offset added, in hudmsgCalculatePosition
 
 #ifndef PLATFORM_N64
 		const bool doaspectfix = (playercount < 2) || (playercount == 2 && optionsGetScreenSplit() == SCREENSPLIT_HORIZONTAL);

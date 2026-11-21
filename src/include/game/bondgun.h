@@ -61,6 +61,11 @@ void bgunCalculateBlend(s32 hand);
 void bgunUpdateBlend(struct hand *hand, s32 handnum);
 void bgun0f09d8dc(f32 breathing, f32 arg1, f32 arg2, f32 arg3, f32 arg4);
 bool bgunIsLoaded(void);
+void bgunDescribeHandModels(char *buf, s32 len);
+void bgunRequestHandRenderDump(void);
+void bgunFistReset(void);
+void bgunTwoHandReset(void);
+void bgunKnifeReset(void);
 u32 bgunGetGunMemType(void);
 u8 *bgunGetGunMem(void);
 u32 bgunCalculateGunMemCapacity(void);
@@ -98,8 +103,12 @@ s32 bgunGetWeaponNum(s32 handnum);
 bool bgun0f0a1a10(s32 weaponnum);
 s32 bgunGetSwitchToWeapon(s32 handnum);
 void bgunSwitchToPrevious(void);
+/* The weapon bgunCycleForward (forward) or bgunCycleBack would equip in the right hand; reads only.
+ * start >= 0: the cycle starts from that weapon (held single) instead of the current or pending one. */
+s32 bgunGetCycleWeapon(bool forward, s32 start);
 void bgunCycleForward(void);
 void bgunCycleBack(void);
+void bgunWearDisguise(s32 weaponnum);
 bool bgunHasAmmoForWeapon(s32 weaponnum);
 void bgunAutoSwitchWeapon(void);
 void bgunEquipWeapon2(s32 handnum, s32 weaponnum);
@@ -109,6 +118,10 @@ char *bgunGetName(s32 weaponnum);
 u16 bgunGetNameId(s32 weaponnum);
 char *bgunGetShortName(s32 arg0);
 void bgunReloadIfPossible(s32 handnum);
+f32 vrGetBodyYaw(void);
+/* The Laser is worn on the off hand, logical controller 0 (holsters off; with holsters it is on
+ * the gun hand, Task F11h) */
+bool vrLaserOnOffHand(s32 weaponnum);
 void bgunSetAdjustPos(f32 angle);
 void bgunStartSlide(s32 handnum);
 void bgunUpdateSlide(s32 handnum);

@@ -18,6 +18,7 @@
 #include "game/atan2f.h"
 #include "game/quaternion.h"
 #include "game/bondgun.h"
+#include "game/vr_holster.h"
 #include "game/game_0b0fd0.h"
 #include "game/tex.h"
 #include "game/camera.h"
@@ -69,6 +70,8 @@ bool VrSeatedMode = false;
 extern bool vr_grip_for_unarmed;
 extern int vr_button_R_grip;
 extern int vr_button_L_grip;
+extern bool vrTwoHandAiming(void); // bondgun.c: the gun is aimed with both hands (the scopes and the zoom)
+static bool g_VrTwoHandSight = false; // the last tick's two-handed sight mode (below), to end it
 
 static void bgunProcessQuickDetonate(struct movedata *data, u32 c1buttons, u32 c1buttonsthisframe, u32 buttons1, u32 buttons2) {
     if ((((c1buttons & (buttons1)) && (c1buttonsthisframe & (buttons2)))
@@ -736,6 +739,8 @@ void bmoveProcessInput(bool allowc1x, bool allowc1y, bool allowc1buttons, bool i
     u32 inhibitedbuttons;
     bool offbike;
     bool cancycleweapons;
+    s32 vrtriggertaps = 0; // VR: activate-on-trigger presses, apart from B taps with holsters
+    s32 vrdevicetaps = 0; // VR: trigger presses on a device held from the chest pouch
     u32 stack;
     f32 increment2;
     f32 newverta;
@@ -1251,11 +1256,20 @@ void bmoveProcessInput(bool allowc1x, bool allowc1y, bool allowc1buttons, bool i
                     g_Vars.currentplayer->waitforzrelease = false;
                 }
 
-                if (weaponHasFlag(bgunGetWeaponNum(HAND_RIGHT), WEAPONFLAG_FIRETOACTIVATE)) {
+                if (weaponHasFlag(bgunGetWeaponNum(HAND_RIGHT), WEAPONFLAG_FIRETOACTIVATE)
+                        || vrHolsterHoldsDevice()) {
                     if (allowc1buttons
                         && joyGetButtonsPressedThisFrame(shootpad, shootallowedbuttons & Z_TRIG)
                         && g_Vars.currentplayer->pausemode == PAUSEMODE_UNPAUSED) {
-                        movedata.btapcount++;
+                        // VR: a held device's trigger is its switch (vrHolsterDeviceTrigger, below);
+                        // with holsters B only reloads, so the trigger counts apart
+                        if (vrHolsterHoldsDevice()) {
+                            vrdevicetaps++;
+                        } else if (vrHolsterActive()) {
+                            vrtriggertaps++;
+                        } else {
+                            movedata.btapcount++;
+                        }
                     }
                 } else {
                     movedata.triggeron = g_Vars.currentplayer->waitforzrelease == false
@@ -1327,6 +1341,25 @@ void bmoveProcessInput(bool allowc1x, bool allowc1y, bool allowc1buttons, bool i
                         g_Vars.currentplayer->insightaimmode = true;
                     }
 
+                    // VR: the Farsight and the Rocket Launcher aimed with two hands are in sight mode
+                    // (Task J8, secondary functions audit): with holsters no grip holding a gun sends R
+                    // (vrHolsterGripAimBlocked), so the Farsight never zoomed or sought its target and
+                    // the Rocket Launcher's Homing never locked (sightTick locks only in sight mode).
+                    // Its end is undone here too, as a toggle aim setting would keep it
+                    if (controlmode == CONTROLMODE_12) {
+                        bool vrsight = vrTwoHandAiming()
+                            && (bgunGetWeaponNum(HAND_RIGHT) == WEAPON_FARSIGHT
+                                || bgunGetWeaponNum(HAND_RIGHT) == WEAPON_ROCKETLAUNCHER);
+
+                        if (vrsight) {
+                            g_Vars.currentplayer->insightaimmode = true;
+                        } else if (g_VrTwoHandSight && !vr_button_R_grip) {
+                            g_Vars.currentplayer->insightaimmode = false;
+                        }
+
+                        g_VrTwoHandSight = vrsight;
+                    }
+
                     movedata.canswivelgun = !g_Vars.currentplayer->insightaimmode;
                     movedata.canmanualaim = g_Vars.currentplayer->insightaimmode;
                     movedata.canautoaim = !g_Vars.currentplayer->insightaimmode;
@@ -1350,9 +1383,10 @@ void bmoveProcessInput(bool allowc1x, bool allowc1y, bool allowc1buttons, bool i
 
 
 #ifdef ANDROID
-                        //Vr button X prev weapon
-                        bool VR_BUTTON_X = get_button_state(0, "x");
-                        if (VR_BUTTON_X && !Prev_VR_BUTTON_X) {
+                        //Vr button X prev weapon. With holsters X acts for its own hand
+                        // (vrHolsterFaceButtons).
+                        bool VR_BUTTON_X = inputVrFaceButton(0, "x");
+                        if (VR_BUTTON_X && !Prev_VR_BUTTON_X && !vrHolsterActive()) {
                             movedata.weaponbackoffset++;
                         }
                         Prev_VR_BUTTON_X = VR_BUTTON_X;
@@ -1423,9 +1457,9 @@ void bmoveProcessInput(bool allowc1x, bool allowc1y, bool allowc1buttons, bool i
                             // --- JOYSTICK MOVEMENT IMPLEMENTATION ---
                             if (controlmode == CONTROLMODE_12 && g_Vars.tickmode != TICKMODE_AUTOWALK) {
                                 bool isSniper = (bgunGetWeaponNum(HAND_RIGHT) == WEAPON_SNIPERRIFLE);
-                                bool vrManualZoomActive = isSniper && (vr_button_R_grip != 0);
+                                bool vrManualZoomActive = isSniper && vrTwoHandAiming();
                                 if (!vrManualZoomActive) {
-                                    // The Y-axis (forward/backward) is used to move forward/backward unless adjusting manual zoom with grip
+                                    // The Y-axis (forward/backward) is used to move forward/backward unless adjusting manual zoom (two hands)
                                     movedata.analogwalk = c2sticky;
 
                                     // Handle the difference in direction between walking and riding the hoverbike
@@ -1614,8 +1648,9 @@ void bmoveProcessInput(bool allowc1x, bool allowc1y, bool allowc1buttons, bool i
 					}
 #endif
 
-                    // Handle A button
-                    if (allowc1buttons) {
+                    // Handle A button. VR: with holsters A and X act for their own hands
+                    // (vrHolsterFaceButtons, below)
+                    if (allowc1buttons && !vrHolsterActive()) {
                         if (g_Vars.currentplayer->invdowntime < -2) {
                             g_Vars.currentplayer->invdowntime += numsamples;
 
@@ -1735,20 +1770,32 @@ void bmoveProcessInput(bool allowc1x, bool allowc1y, bool allowc1buttons, bool i
                     }
 
 
-                    // VR Grab using grip button
+                    // VR Grab using grip button. With holsters either hand's grip grabs, when it
+                    // is empty and outside the holster zones (vrHolsterGrabEdge).
                     bool gripState = get_button_state(0, "grip");
-                    if (gripState && !sPrevGripState) {
+                    s32 grabedge = vrHolsterActive() ? vrHolsterGrabEdge()
+                            : (gripState && !sPrevGripState) ? 1
+                            : (!gripState && sPrevGripState) ? -1 : 0;
+                    if (grabedge > 0) {
                         if (g_Vars.currentplayer->bondmovemode != MOVEMODE_GRAB) {
                             g_DisableGrabViaB = false;
                             currentPlayerInteract(false);
                             g_DisableGrabViaB = true;
                         }
-                    } else if (!gripState && sPrevGripState) {
+
+                        // VR: a press that grabbed nothing leaves the grab to either hand
+                        vrHolsterGrabResult(g_Vars.currentplayer->bondmovemode == MOVEMODE_GRAB);
+                    } else if (grabedge < 0) {
                         if (g_Vars.currentplayer->bondmovemode == MOVEMODE_GRAB) {
                             bmoveSetMode(MOVEMODE_WALK);
                         }
                     }
                     sPrevGripState = gripState;
+
+                    // VR: the once-per-level grab hint when a grabbable object is in grab reach
+                    if (vrHolsterCrateHintDue() && propFindForGripGrab() != NULL) {
+                        vrHolsterCrateHint();
+                    }
 
 
 #ifndef PLATFORM_N64
@@ -1866,8 +1913,12 @@ void bmoveProcessInput(bool allowc1x, bool allowc1y, bool allowc1buttons, bool i
 #endif
 
                     // Handle manual zoom in and out (sniper, farsight and horizon scanner)
-                    bool vrAllowManualZoom = (controlmode == CONTROLMODE_12 && bgunGetWeaponNum(HAND_RIGHT) == WEAPON_SNIPERRIFLE)
-                        ? (vr_button_R_grip != 0)
+                    // VR: the Sniper Rifle and the Farsight zoom only while aimed with two hands
+                    // (vrTwoHandAiming); the horizon scanner keeps the grip
+                    bool vrAllowManualZoom = (controlmode == CONTROLMODE_12
+                            && (bgunGetWeaponNum(HAND_RIGHT) == WEAPON_SNIPERRIFLE
+                                || bgunGetWeaponNum(HAND_RIGHT) == WEAPON_FARSIGHT))
+                        ? vrTwoHandAiming()
                         : (g_Vars.currentplayer->insightaimmode
                             || (controlmode == CONTROLMODE_12 && (vr_button_R_grip != 0)));
                     if (canmanualzoom && vrAllowManualZoom) {
@@ -2041,10 +2092,19 @@ void bmoveProcessInput(bool allowc1x, bool allowc1y, bool allowc1buttons, bool i
                     g_Vars.currentplayer->waitforzrelease = false;
                 }
 
-                if (weaponHasFlag(bgunGetWeaponNum(HAND_RIGHT), WEAPONFLAG_FIRETOACTIVATE)) {
+                if (weaponHasFlag(bgunGetWeaponNum(HAND_RIGHT), WEAPONFLAG_FIRETOACTIVATE)
+                        || vrHolsterHoldsDevice()) {
                     if ((c1buttonsthisframe & shootbuttons)
                         && g_Vars.currentplayer->pausemode == PAUSEMODE_UNPAUSED) {
-                        movedata.btapcount++;
+                        // VR: a held device's trigger is its switch (vrHolsterDeviceTrigger, below);
+                        // with holsters B only reloads, so the trigger counts apart
+                        if (vrHolsterHoldsDevice()) {
+                            vrdevicetaps++;
+                        } else if (vrHolsterActive()) {
+                            vrtriggertaps++;
+                        } else {
+                            movedata.btapcount++;
+                        }
                     }
                 } else {
                     movedata.triggeron = g_Vars.currentplayer->waitforzrelease == false
@@ -2073,19 +2133,64 @@ void bmoveProcessInput(bool allowc1x, bool allowc1y, bool allowc1buttons, bool i
                 g_Vars.currentplayer->bondactivateorreload | JO_ACTION_RELOAD;
     }
 #endif
-    if (movedata.btapcount) {
+    // VR: with holsters a B tap only reloads (A and X use: vrHolsterFaceButtons, below), and a
+    // trigger press on an activate-on-trigger item activates as a B tap did. A B tap with the remote
+    // mine in hand, or with fists while remote mines are placed, detonates them instead, as the
+    // A + B combo does (the detonation needs only the player's mines, not the mine in hand).
+    s32 activatetaps = movedata.btapcount;
+
+    if (vrHolsterActive()) {
+        if (movedata.btapcount && vrHolsterBTapDetonates()) {
+            movedata.detonating = true;
+            movedata.weaponbackoffset = 0;
+            movedata.weaponforwardoffset = 0;
+        } else if (movedata.btapcount) {
+            g_Vars.currentplayer->bondactivateorreload =
+                    g_Vars.currentplayer->bondactivateorreload | JO_ACTION_RELOAD;
+        }
+
+        activatetaps = vrtriggertaps;
+
+        // A device in the hand (Night Vision, X-Ray, IR, R-Tracker, cloak, CamSpy): the trigger
+        // turns it on or off, as the pause Inventory does. G5 Building's Detonator detonates.
+        if (vrdevicetaps && vrHolsterDeviceTrigger()) {
+            movedata.detonating = true;
+            movedata.weaponbackoffset = 0;
+            movedata.weaponforwardoffset = 0;
+        }
+    }
+
+    if (activatetaps) {
         g_Vars.currentplayer->activatetimelast = g_Vars.currentplayer->activatetimethis;
         g_Vars.currentplayer->activatetimethis = g_Vars.lvframe60;
         if (!usereloads) {
             g_Vars.currentplayer->bondactivateorreload =
                     g_Vars.currentplayer->bondactivateorreload | JO_ACTION_ACTIVATE;
         } else {
-            g_Vars.currentplayer->bondactivateorreload = movedata.btapcount ?
+            g_Vars.currentplayer->bondactivateorreload = activatetaps ?
                                                          (g_Vars.currentplayer->bondactivateorreload |
                                                           JO_ACTION_ACTIVATE | JO_ACTION_RELOAD)
                                                                             : 0;
         }
 
+        bmoveHandleActivate();
+    }
+
+    // VR: with holsters each controller's lower face button acts for its own hand: a tap steps a
+    // holster or uses, a hold opens the weapon menu. Handled when the vanilla A would be.
+    if (vrHolsterFaceButtons(allowc1buttons
+                && g_Vars.currentplayer->pausemode == PAUSEMODE_UNPAUSED
+                && !g_Vars.currentplayer->isdead
+                && !lvIsPaused()
+                && g_Vars.tickmode != TICKMODE_CUTSCENE
+                && g_Vars.lvframenum >= 10
+                && g_Vars.currentplayer->activemenumode == AMMODE_CLOSED
+                && !(g_Vars.currentplayer->eyespy && g_Vars.currentplayer->eyespy->active),
+                movedata.detonating)) {
+        g_Vars.currentplayer->activatetimelast = g_Vars.currentplayer->activatetimethis;
+        g_Vars.currentplayer->activatetimethis = g_Vars.lvframe60;
+        g_Vars.currentplayer->bondactivateorreload =
+                g_Vars.currentplayer->bondactivateorreload | JO_ACTION_ACTIVATE;
         bmoveHandleActivate();
     }
 
@@ -2162,7 +2267,11 @@ void bmoveProcessInput(bool allowc1x, bool allowc1y, bool allowc1buttons, bool i
             }
         }
 
-        if (movedata.zooming) {
+        // VR: the Farsight, the one zoom gun without a lens (the lens guns keep the default view,
+        // playerUpdateZoom), zooms only while aimed with two hands (vrTwoHandAiming)
+        if (movedata.zooming
+                && !(controlmode == CONTROLMODE_12 && bgunGetWeaponNum(HAND_RIGHT) == WEAPON_FARSIGHT
+                    && !vrTwoHandAiming())) {
             zoomfov = currentPlayerGetGunZoomFov();
         }
 
@@ -2375,8 +2484,14 @@ void bmoveProcessInput(bool allowc1x, bool allowc1y, bool allowc1buttons, bool i
     bmoveUpdateSpeedTheta();
 
     if (movedata.detonating) {
-        g_Vars.currentplayer->hands[HAND_RIGHT].mode = HANDMODE_NONE;
-        g_Vars.currentplayer->hands[HAND_RIGHT].modenext = HANDMODE_NONE;
+        // VR: a B tap with fists can land while a holster switch loads the fists (HANDMODE_6, the
+        // load wait of bgunTickIncChangeGun): clearing the mode then would skip the load checks
+        if (!vrHolsterActive()
+            || g_Vars.currentplayer->hands[HAND_RIGHT].state != HANDSTATE_CHANGEGUN) {
+            g_Vars.currentplayer->hands[HAND_RIGHT].mode = HANDMODE_NONE;
+            g_Vars.currentplayer->hands[HAND_RIGHT].modenext = HANDMODE_NONE;
+        }
+
         playerActivateRemoteMineDetonator(g_Vars.currentplayernum);
     }
 
@@ -2387,6 +2502,13 @@ void bmoveProcessInput(bool allowc1x, bool allowc1y, bool allowc1buttons, bool i
     }
 
     if (g_Vars.lvframenum < 10) {
+        cancycleweapons = false;
+    }
+
+    // VR: with holsters guns change only through the holsters (grips, the A and X steps and the
+    // weapon menu), never by a cycle. AI script equips and the firing range still equip directly:
+    // the core resyncs on the next draw or release.
+    if (vrHolsterActive()) {
         cancycleweapons = false;
     }
 

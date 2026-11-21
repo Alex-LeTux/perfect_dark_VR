@@ -48,6 +48,7 @@ struct casing g_Casings[20];
 struct boltbeam g_BoltBeams[8];
 struct lasersight g_LaserSights[MAX_PLAYERS];
 extern float vr_world_scale;
+extern float VrSetWorldScale;
 extern inline f32 sightGetAdjustedX(const f32 x);
 
 void beamCreate(struct beam *beam, s32 weaponnum, struct coord *from, struct coord *to)
@@ -685,6 +686,40 @@ struct casing *casingCreate(struct modeldef *modeldef, Mtxf *mtx)
     return NULL;
 }
 
+#ifdef ANDROID
+#include <android/log.h>
+#define CASING_DIAG(...) __android_log_print(ANDROID_LOG_INFO, "PD-VRR", __VA_ARGS__)
+#else
+#define CASING_DIAG(...) ((void) 0)
+#endif
+
+// VR: the most upward speed a casing takes from the gun's move over the last frame, units a frame
+// (a hand swung up at 3 m/s moves 5)
+#define CASING_MAX_HAND_RISE 6.0f
+
+// The gun's move over the last frame (posmtx against prevmtx) added to a new casing's speed, as the
+// original does. In VR that move also carries a snap turn (the gun swung about the player) and the
+// first frame a hand draws after a switch (prevmtx from its last draw), which threw casings up for
+// seconds; their landing sound has no position, so it played out of nowhere (the user: "something
+// is triggering the 'casings' sound randomly"). Only the rise is capped, as only it delays the
+// landing (casingTick), with a PD-VRR line when it is.
+static void casingAddHandSpeed(struct casing *casing, struct hand *hand, s32 weaponnum)
+{
+    f32 x = (hand->posmtx.m[3][0] - hand->prevmtx.m[3][0]) / g_Vars.lvupdate60freal;
+    f32 y = (hand->posmtx.m[3][1] - hand->prevmtx.m[3][1]) / g_Vars.lvupdate60freal;
+    f32 z = (hand->posmtx.m[3][2] - hand->prevmtx.m[3][2]) / g_Vars.lvupdate60freal;
+
+    if (y > CASING_MAX_HAND_RISE) {
+        CASING_DIAG("casing: weapon %d hand move (%.1f %.1f %.1f) a frame, rise capped to %.1f",
+                weaponnum, x, y, z, CASING_MAX_HAND_RISE);
+        y = CASING_MAX_HAND_RISE;
+    }
+
+    casing->speed.x += x;
+    casing->speed.y += y;
+    casing->speed.z += z;
+}
+
 void casingCreateForHand(s32 handnum, f32 ground, Mtxf *mtx)
 {
     f32 oldyspeed;
@@ -776,9 +811,7 @@ void casingCreateForHand(s32 handnum, f32 ground, Mtxf *mtx)
             casing->speed.y = newyspeed;
 
             if (g_Vars.lvupdate240 > 0) {
-                casing->speed.x += (player->hands[handnum].posmtx.m[3][0] - player->hands[handnum].prevmtx.m[3][0]) / g_Vars.lvupdate60freal;
-                casing->speed.y += (player->hands[handnum].posmtx.m[3][1] - player->hands[handnum].prevmtx.m[3][1]) / g_Vars.lvupdate60freal;
-                casing->speed.z += (player->hands[handnum].posmtx.m[3][2] - player->hands[handnum].prevmtx.m[3][2]) / g_Vars.lvupdate60freal;
+                casingAddHandSpeed(casing, &player->hands[handnum], weaponnum);
             }
         } else {
             if (weaponnum == WEAPON_REAPER) {
@@ -833,9 +866,7 @@ void casingCreateForHand(s32 handnum, f32 ground, Mtxf *mtx)
             casing->speed.y = newyspeed;
 
             if (g_Vars.lvupdate240 > 0) {
-                casing->speed.x += (player->hands[handnum].posmtx.m[3][0] - player->hands[handnum].prevmtx.m[3][0]) / g_Vars.lvupdate60freal;
-                casing->speed.y += (player->hands[handnum].posmtx.m[3][1] - player->hands[handnum].prevmtx.m[3][1]) / g_Vars.lvupdate60freal;
-                casing->speed.z += (player->hands[handnum].posmtx.m[3][2] - player->hands[handnum].prevmtx.m[3][2]) / g_Vars.lvupdate60freal;
+                casingAddHandSpeed(casing, &player->hands[handnum], weaponnum);
             }
         }
     }
@@ -1441,7 +1472,9 @@ Gfx *lasersightRenderBeam(Gfx *gdl)
 
             // VR fix laser beam
             float scale5 = 5.0f;
-            if(vr_world_scale == 42.5f){
+            // The half-scale levels: playerTick sets 42.5f * VrSetWorldScale there, and
+            // the same product compares equal (42.5f alone missed any World Scale but 1.00)
+            if(vr_world_scale == 42.5f * VrSetWorldScale){
                 scale5 = 5.0f / 0.50;
             }
 

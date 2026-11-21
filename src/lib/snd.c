@@ -43,6 +43,78 @@
 #define LOGI(...) printf(__VA_ARGS__)
 #endif
 
+#ifdef ANDROID
+#include <dlfcn.h>
+#include <time.h>
+
+// VR: the recent sound starts with the code that started each, written to the PD-VRR log by the
+// position mark (sndDumpRecent), to name a sound heard in the headset (the user: "it sounds like
+// casing are just falling every now and then"). kind: 0 sndStart, 1 snd00010718, 2 psCreate.
+#define SND_RECENT_COUNT 128
+
+struct sndrecent {
+	s64 ms;
+	s16 sound;
+	s16 kind;
+	void *caller;
+};
+
+static struct sndrecent g_SndRecent[SND_RECENT_COUNT];
+static s32 g_SndRecentNext;
+
+static s64 sndRecentNow(void)
+{
+	struct timespec ts;
+
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+
+	return (s64) ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
+void sndNoteRecent(s32 sound, s32 kind, void *caller)
+{
+	struct sndrecent *r = &g_SndRecent[g_SndRecentNext];
+
+	r->ms = sndRecentNow();
+	r->sound = sound;
+	r->kind = kind;
+	r->caller = caller;
+	g_SndRecentNext = (g_SndRecentNext + 1) % SND_RECENT_COUNT;
+}
+
+void sndDumpRecent(void)
+{
+	static const char *kinds[] = { "sndStart", "snd00010718", "psCreate" };
+	s64 now = sndRecentNow();
+	s32 i;
+
+	for (i = 0; i < SND_RECENT_COUNT; i++) {
+		struct sndrecent *r = &g_SndRecent[(g_SndRecentNext + i) % SND_RECENT_COUNT];
+		Dl_info info;
+		uintptr_t off = 0;
+
+		if (r->caller == NULL || now - r->ms > 10000) {
+			continue;
+		}
+
+		if (dladdr(r->caller, &info) && info.dli_fbase != NULL) {
+			off = (uintptr_t) r->caller - (uintptr_t) info.dli_fbase;
+		}
+
+		__android_log_print(ANDROID_LOG_INFO, "PD-VRR", "sound mark: %lld ms ago: sound 0x%04x %s from +0x%lx",
+				(long long) (now - r->ms), (u16) r->sound, kinds[r->kind], (unsigned long) off);
+	}
+}
+#else
+void sndNoteRecent(s32 sound, s32 kind, void *caller)
+{
+}
+
+void sndDumpRecent(void)
+{
+}
+#endif
+
 struct sndcache {
 	/*0x0000*/ u16 *indexes; // indexed by sfxnum, value is cache index (0-44) or 0xffff
 	/*0x0004*/ u8 refcounts[NUM_CACHE_SLOTS];
@@ -2099,6 +2171,8 @@ struct sndstate *snd00010718(struct sndstate **handle, s32 flags, s32 volume, s3
 	union soundnumhack sp2c;
 	struct audioconfig *config;
 
+	sndNoteRecent(soundnum, 1, __builtin_return_address(0));
+
 	osSetThreadPri(0, osGetThreadPri(&g_AudioManager.thread) + 1);
 
 	if (forcefxmix || fxmixarg != -1) {
@@ -2164,6 +2238,7 @@ struct sndstate *sndStart(s32 arg0, s16 sound, struct sndstate **handle, s32 vol
 	f32 pitch;
 
     LOGI("sound %d, volume %d, pan %d, pitch %f, fxbus %d, fxmix %d\n", sound, volumearg, panarg, pitcharg, fxbusarg, fxmixarg);
+	sndNoteRecent(sound, 0, __builtin_return_address(0));
 
 	fxmix = fxmixarg != -1 ? fxmixarg : 0;
 	fxbus = fxbusarg != -1 ? fxbusarg : 1;

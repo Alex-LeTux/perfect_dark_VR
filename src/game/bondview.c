@@ -191,7 +191,10 @@ Gfx *bviewDrawFisheyeRect(Gfx *gdl, s32 arg1, f32 arg2, s32 arg3, s32 arg4)
         f32 xoffset = 10.0f; // VR - shift the center of the circle to the right (px)
         f32 tmp = arg4 * 0.5f;
         f32 fVar4 = arg3 + tmp + xoffset;
-        f32 fVar7 = (s32)(arg2 * tmp);
+        // VR: arg2 is bview0f142d74's half chord in pixels times 0.003125, so
+        // 320 gives the chord back and the mask is a circle. Scaling by half
+        // the view width made it an oval as narrow as the view is under 640.
+        f32 fVar7 = (s32)(arg2 * 320.0f);
 
         gDPFillRectangle(gdl++, arg3, arg1, fVar4 - fVar7, arg1 + 1);
         gDPFillRectangle(gdl++, fVar4 + fVar7, arg1, arg3 + arg4, arg1 + 1);
@@ -623,30 +626,6 @@ f32 bview0f142d74(s32 arg0, f32 arg1, f32 arg2, f32 arg3)
     return result;
 }
 
-#ifndef PLATFORM_N64
-
-static inline Gfx *bviewDrawFisheyeLine(Gfx *gdl, s32 viewleft, s32 viewwidth, s32 y, f32 scale)
-{
-    if (!videoFramebuffersSupported()) {
-        return gdl;
-    }
-
-    const f32 orighalfw = viewwidth * 0.5f;
-    const f32 xcenter = viewleft + orighalfw;
-    const f32 halfw = orighalfw * scale;
-    const s32 left = xcenter - halfw;
-    const s32 right = xcenter + halfw;
-
-    gSPImageRectangleEXT(gdl++,
-                         left << 2, y << 2, viewleft, y,
-                         right << 2, (y + 1) << 2, viewleft + viewwidth, y + 1,
-                         0, videoGetNativeWidth(), videoGetNativeHeight());
-
-    return gdl;
-}
-
-#endif
-
 /**
  * Draw the fisheye curved effect when using an eyespy.
  *
@@ -760,29 +739,8 @@ Gfx *bviewDrawFisheye(Gfx *gdl, u32 colour, u32 alpha, s32 shuttertime60, s8 sta
 
     gDPPipeSync(gdl++);
 
-#ifndef PLATFORM_N64
-    // make a copy of the current back buffer contents that we will be using as a texture
-    gDPFlushEXT(gdl++);
-    gDPCopyFramebufferEXT(gdl++, g_PrevFrameFb, 0, 0, 0, G_ON);
-
-    // VR: black out the whole field of view, after the snapshot above and
-    // before the lens is drawn from it.
-    //
-    // The camera surround is masked per scanline by bviewDrawFisheyeRect, which
-    // can only ever reach the viewport: fill rect coordinates are packed into 10
-    // bits, so nothing outside 0..1023 can even be addressed. That left the world
-    // showing all around the camera frame in a headset, which sees well past the
-    // viewport. A full-viewport rect is widened by the renderer to cover the eye,
-    // and taking the snapshot first means the lens still samples the clean scene
-    // rather than this black.
-    gdl = playerDrawFade(gdl, 0, 0, 0, 1.0f);
-#endif
-
+#ifdef PLATFORM_N64
     gdl = bviewPrepareStaticRgba16(gdl, colour, alpha);
-
-#ifndef PLATFORM_N64
-    gDPSetFramebufferTextureEXT(gdl++, 0, 0, 0, g_PrevFrameFb);
-#endif
 
     if (starting) {
         for (i = viewtop; i < viewtop + viewheight; i++) {
@@ -791,11 +749,7 @@ Gfx *bviewDrawFisheye(Gfx *gdl, u32 colour, u32 alpha, s32 shuttertime60, s8 sta
                     gDPSetEnvColorViaWord(gdl++, (colour & 0xffffff00) | (spec & 0xff));
 
                     tmp = bview0f142d74(s2, f26, halfheight, sqhalfheight) * startupfrac;
-#ifdef PLATFORM_N64
                     gdl = bviewCopyPixels(gdl, fb, i, 5, i, tmp, viewleft, viewwidth);
-#else
-                    gdl = bviewDrawFisheyeLine(gdl, viewleft, viewwidth, i, tmp);
-#endif
                 }
             }
 
@@ -821,21 +775,13 @@ Gfx *bviewDrawFisheye(Gfx *gdl, u32 colour, u32 alpha, s32 shuttertime60, s8 sta
             }
 
             tmp = bview0f142d74(s2, f26, halfheight, sqhalfheight) * f22;
-#ifdef PLATFORM_N64
             gdl = bviewCopyPixels(gdl, fb, i, 5, i, tmp, viewleft, viewwidth);
-#else
-            gdl = bviewDrawFisheyeLine(gdl, viewleft, viewwidth, i, tmp);
-#endif
 
             if (hit == EYESPYHIT_DAMAGE) {
                 gDPSetEnvColorViaWord(gdl++, 0xddaaaa99);
 
                 tmp = bview0f142d74(s2, f26, halfheight, sqhalfheight) * 1.03f;
-#ifdef PLATFORM_N64
                 gdl = bviewCopyPixels(gdl, fb, i, 5, i, tmp, viewleft, viewwidth);
-#else
-                gdl = bviewDrawFisheyeLine(gdl, viewleft, viewwidth, i, tmp);
-#endif
             }
 
             s2 += s3;
@@ -851,6 +797,33 @@ Gfx *bviewDrawFisheye(Gfx *gdl, u32 colour, u32 alpha, s32 shuttertime60, s8 sta
             }
         }
     }
+
+#else
+    // VR: the scene stays as rendered, in stereo, and only the porthole is
+    // drawn over it. The lens used to be a copy of the frame drawn back row by
+    // row (each row squeezed into the fisheye), but the copy holds the left
+    // eye alone (gfx_opengl_copy_framebuffer reads layer 0 of the swapchain),
+    // so both eyes saw one flat picture of the world: the warp.
+    gDPSetCycleType(gdl++, G_CYC_1CYCLE);
+    gDPSetRenderMode(gdl++, G_RM_XLU_SURF, G_RM_XLU_SURF2);
+    gDPSetCombineMode(gdl++, G_CC_PRIMITIVE, G_CC_PRIMITIVE);
+
+    if (!starting) {
+        if (hit == EYESPYHIT_DAMAGE) {
+            // In place of the copy's red flicker
+            gDPSetPrimColor(gdl++, 0, 0, 0xff, 0x33, 0x00, (rngRandom() % 64) + 48);
+            gDPFillRectangle(gdl++, viewleft, viewtop, viewleft + viewwidth, viewtop + viewheight);
+        }
+
+        gDPSetPrimColor(gdl++, 0, 0, 0x00, 0x00, 0x00, 0x55);
+
+        for (i = viewtop; i < viewtop + viewheight; i++) {
+            if ((i % 2) == 0) {
+                gDPFillRectangle(gdl++, viewleft, i, viewleft + viewwidth, i + 1);
+            }
+        }
+    }
+#endif
 
     gDPPipeSync(gdl++);
     gDPSetCycleType(gdl++, G_CYC_1CYCLE);
@@ -911,6 +884,29 @@ Gfx *bviewDrawFisheye(Gfx *gdl, u32 colour, u32 alpha, s32 shuttertime60, s8 sta
             }
         }
     }
+
+#ifndef PLATFORM_N64
+    {
+        // VR: the headset sees well past the viewport, where the world would
+        // otherwise show around the camera frame. Fill rect coordinates cannot
+        // go below zero, but image rects take signed 16-bit ones, and
+        // G_CC_PRIMITIVE ignores their texture, so these paint plain black
+        // two views out on every side.
+        s32 farx = viewwidth * 2;
+        s32 fary = viewheight * 2;
+        s32 right = viewleft + viewwidth;
+        s32 bottom = viewtop + viewheight;
+
+        gSPImageRectangleEXT(gdl++, (viewleft - farx) << 2, (viewtop - fary) << 2, 0, 0,
+                viewleft << 2, (bottom + fary) << 2, 1, 1, 0, 1, 1);
+        gSPImageRectangleEXT(gdl++, right << 2, (viewtop - fary) << 2, 0, 0,
+                (right + farx) << 2, (bottom + fary) << 2, 1, 1, 0, 1, 1);
+        gSPImageRectangleEXT(gdl++, viewleft << 2, (viewtop - fary) << 2, 0, 0,
+                right << 2, viewtop << 2, 1, 1, 0, 1, 1);
+        gSPImageRectangleEXT(gdl++, viewleft << 2, bottom << 2, 0, 0,
+                right << 2, (bottom + fary) << 2, 1, 1, 0, 1, 1);
+    }
+#endif
 
 #if PAL && defined(PLATFORM_N64)
     s3 = viGetViewTop();

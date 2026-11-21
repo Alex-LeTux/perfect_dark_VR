@@ -397,7 +397,7 @@ endif()
 if(ANDROID)
   message(STATUS "OpenXR: using bundled Android loader")
   add_compile_definitions(XR_USE_PLATFORM_ANDROID=1)
-  include_directories(${CMAKE_SOURCE_DIR}/OpenXR/include)
+  include_directories(${CMAKE_SOURCE_DIR}/OpenXR/Include)
   add_library(openxr_loader SHARED IMPORTED)
   set_target_properties(openxr_loader PROPERTIES
     IMPORTED_LOCATION
@@ -407,7 +407,7 @@ if(ANDROID)
 elseif(WIN32)
   message(STATUS "OpenXR: using bundled Windows loader")
   add_compile_definitions(XR_USE_PLATFORM_WIN32=1)
-  include_directories(${CMAKE_SOURCE_DIR}/OpenXR/include)
+  include_directories(${CMAKE_SOURCE_DIR}/OpenXR/Include)
   add_library(openxr_loader SHARED IMPORTED)
 
   if(TARGET_IS_64BIT)

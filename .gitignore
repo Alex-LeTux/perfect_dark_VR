@@ -50,3 +50,4 @@ android/.gradle/vcs-1/gc.properties
 /android/.gradle
 
 /android/built_apks
+tests/vr/vrtests
