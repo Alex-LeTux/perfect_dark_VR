@@ -138,6 +138,7 @@ bool get_button_state(int hand_index, const char* button_name);
  * @return true if the value is valid, false otherwise
  */
 bool get_2d_input(int hand_index, const char* input_name, XrVector2f* value);
+bool get_2d_input_physical(int hand_index, const char* input_name, XrVector2f* value);
 
 #ifdef __cplusplus
 }

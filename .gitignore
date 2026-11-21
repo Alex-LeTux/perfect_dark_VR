@@ -51,3 +51,4 @@ android/.gradle/vcs-1/gc.properties
 
 /android/built_apks
 tests/vr/vrtests
+.history/

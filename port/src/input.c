@@ -44,6 +44,7 @@ extern bool vr_grip_for_unarmed;
 extern int VrLeftHandedMode;
 extern int VrLeftHandedPref;
 extern bool VrManualReloading;
+extern int VrSwapJoysticks;
 extern bool vrHolsterGripAimBlocked(void); // vr_holster.c: with holsters a grip on a gun only holds it
 extern s32 vrHolsterMenuButton(void);      // vr_holster.c: the button of the hand that opened the weapon menu
 
@@ -855,11 +856,11 @@ s32 inputVrFaceButton(s32 hand, const char *name)
     }
 
     if (mode < 0) {
-        mode = VrLeftHandedMode;
+        mode = VrLeftHandedPref;
     }
 
-    if (VrLeftHandedMode != mode) {
-        mode = VrLeftHandedMode;
+    if (VrLeftHandedPref != mode) {
+        mode = VrLeftHandedPref;
         anylatched = false;
 
         for (h = 0; h < 2; h++) {
@@ -907,14 +908,23 @@ static inline s32 inputAxisScale(s32 x, const s32 deadzone, const f32 scale)
     }
 }
 
+// Seuil / Zone morte sur l'axe Y pour declencher le grand viseur au joystick (valeur entre 0.0f et 1.0f).
+// Modifiez cette valeur pour ajuster la sensibilite : plus la valeur est elevee, plus il faut pousser
+// franchement le joystick vers l'avant. 0.65f (65% de la course) evite les declenchements accidentels en tournant.
+#define VR_STICK_AIM_DEADZONE_Y 0.70f
+
 s32 vrRightStickAiming(void)
 {
     if (!VrManualReloading) {
         return 0;
     }
+    if (g_Vars.currentplayer == NULL || bgunGetWeaponNum(HAND_RIGHT) <= WEAPON_UNARMED) {
+        return 0;
+    }
+    int aim_hand = VrSwapJoysticks ? 0 : 1;
     XrVector2f stick;
-    if (get_2d_input(1, "thumbstick", &stick) || get_2d_input(1, "trackpad", &stick)) {
-        if (stick.y > 0.2f) {
+    if (get_2d_input_physical(aim_hand, "thumbstick", &stick) || get_2d_input_physical(aim_hand, "trackpad", &stick)) {
+        if (stick.y > VR_STICK_AIM_DEADZONE_Y) {
             return 1;
         }
     }
@@ -1084,7 +1094,6 @@ s32 inputReadController(s32 idx, OSContPad *npad)
 
                 if (vrRightStickAiming()) {
                     npad->button |= CONT_R;
-                    vr_button_R_grip = true;
                     npad->stick_y = 0;
                     npad->stick_x = 0;
                 }

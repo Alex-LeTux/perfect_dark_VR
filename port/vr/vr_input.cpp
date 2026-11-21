@@ -695,11 +695,12 @@ extern "C" bool get_button_state(int hand_index, const char* button_name) {
         return false;
     }
 
-    // The menu button and the stick click stay on the controller the user's saved setting
+    // The face buttons, menu button, stick click and trackpad stay on the controller the user's saved setting
     // put them on: they must not move when a holster draw changes the gun hand.
-    int flip = VrLeftHandedMode;
-    if (strcmp(button_name, "menu") == 0 || strcmp(button_name, "thumbstick_click") == 0) {
-        flip = VrLeftHandedPref;
+    // Only weapon manipulation inputs (trigger and grip) follow the dynamic gun side (VrLeftHandedMode).
+    int flip = VrLeftHandedPref;
+    if (strcmp(button_name, "trigger") == 0 || strcmp(button_name, "grip") == 0) {
+        flip = VrLeftHandedMode;
     }
 
     if (flip){
@@ -737,7 +738,7 @@ extern "C" bool get_button_state(int hand_index, const char* button_name) {
         return false;
     }
 
-    if (!VrLeftHandedMode) {
+    if (!VrLeftHandedPref) {
         if (strcmp(button_name, "menu") == 0) return state.menu.currentState;
         if (strcmp(button_name, "a") == 0) return state.button_a.currentState;
         if (strcmp(button_name, "b") == 0) return state.button_b.currentState;
@@ -787,6 +788,35 @@ extern "C" bool get_2d_input(int hand_index, const char* input_name, XrVector2f*
     if(VrSwapJoysticks){
         hand_index = 1 - hand_index;
     }
+
+    const auto& state = gControllerStates[hand_index];
+
+    if (strcmp(input_name, "thumbstick") == 0) {
+        if (state.thumbstick.isActive) {
+            *value = state.thumbstick.currentState;
+            return true;
+        }
+        if (state.trackpad.isActive) {
+            *value = state.trackpad.currentState;
+            return true;
+        }
+    }
+    if (strcmp(input_name, "trackpad") == 0) {
+        if (state.trackpad.isActive) {
+            *value = state.trackpad.currentState;
+            return true;
+        }
+        if (state.thumbstick.isActive) {
+            *value = state.thumbstick.currentState;
+            return true;
+        }
+    }
+
+    return false;
+}
+
+extern "C" bool get_2d_input_physical(int hand_index, const char* input_name, XrVector2f* value) {
+    if (hand_index < 0 || hand_index > 1 || !value) return false;
 
     const auto& state = gControllerStates[hand_index];
 
