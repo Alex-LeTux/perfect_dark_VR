@@ -114,6 +114,9 @@
 extern int vr_get_internal_render_width();
 extern int vr_get_internal_render_height();
 s32 g_LookingAtPropHandMask; // VR
+extern int vr_button_R_grip;
+extern int vr_button_L_grip;
+extern bool VrManualReloading;
 
 struct sndstate *g_MiscSfxAudioHandles[3];
 u32 var800aa5bc;
@@ -1302,7 +1305,7 @@ Gfx *lvRender(Gfx *gdl)
 
                 struct hand *hand;
                 s32 h;
-                struct prop *lookingatprop_result = NULL;
+                struct prop *lookingatprop_hand[2] = { NULL, NULL };
                 g_LookingAtPropHandMask = 0; // VR - one bit per hand (bit 0 = right hand, bit 1 = left hand)
 
                 for (h = 0; h < 2; h++) { // VR
@@ -1341,12 +1344,23 @@ Gfx *lvRender(Gfx *gdl)
                     }
 
                     if (tempprop) {
-                        lookingatprop_result = tempprop;
+                        lookingatprop_hand[h] = tempprop;
                         g_LookingAtPropHandMask |= (1 << h); // VR - set the bit without overwriting the other hand
                     }
                 }
 
-                g_Vars.currentplayer->lookingatprop.prop = lookingatprop_result;
+                bool right_aiming = (vr_button_R_grip || vrRightStickAiming()) && bmoveIsInSightAimMode();
+                bool left_aiming = !VrManualReloading && vr_button_L_grip && bmoveIsInSightAimMode();
+
+                if (right_aiming && !left_aiming) {
+                    g_Vars.currentplayer->lookingatprop.prop = lookingatprop_hand[HAND_RIGHT];
+                } else if (left_aiming && !right_aiming) {
+                    g_Vars.currentplayer->lookingatprop.prop = lookingatprop_hand[HAND_LEFT];
+                } else if (lookingatprop_hand[HAND_RIGHT]) {
+                    g_Vars.currentplayer->lookingatprop.prop = lookingatprop_hand[HAND_RIGHT];
+                } else {
+                    g_Vars.currentplayer->lookingatprop.prop = lookingatprop_hand[HAND_LEFT];
+                }
                 //---
 
 

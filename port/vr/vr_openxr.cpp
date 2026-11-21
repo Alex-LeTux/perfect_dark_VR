@@ -1273,12 +1273,52 @@ static void vr_update_menu_swapchain_R()
     waitInfo.timeout = XR_INFINITE_DURATION;
     xrWaitSwapchainImage(g_menuSwapchainR, &waitInfo);
 
-    static GLuint srcFbo = 0, dstFbo = 0;
+    static GLuint srcFboR = 0, dstFboR = 0;
     vr_copy_menu_layer(gfx_opengl_get_vr_menu_texture_R(),
-                       g_menuSwapchainImagesR[imageIndex].image, srcFbo, dstFbo);
+                       g_menuSwapchainImagesR[imageIndex].image, srcFboR, dstFboR);
 
     XrSwapchainImageReleaseInfo releaseInfo = {XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
     xrReleaseSwapchainImage(g_menuSwapchainR, &releaseInfo);
+}
+
+template <typename ImageType>
+static void vr_touch_swapchain(XrSwapchain swapchain, const std::vector<ImageType>& images)
+{
+    if (swapchain == XR_NULL_HANDLE || images.empty()) return;
+    uint32_t imageIndex = 0;
+    XrSwapchainImageAcquireInfo acquireInfo = {XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
+    if (XR_SUCCEEDED(xrAcquireSwapchainImage(swapchain, &acquireInfo, &imageIndex))) {
+        XrSwapchainImageWaitInfo waitInfo = {XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
+        waitInfo.timeout = XR_INFINITE_DURATION;
+        xrWaitSwapchainImage(swapchain, &waitInfo);
+
+        XrSwapchainImageReleaseInfo releaseInfo = {XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
+        xrReleaseSwapchainImage(swapchain, &releaseInfo);
+    }
+}
+
+template <typename ImageType>
+static void vr_clear_swapchain(XrSwapchain swapchain, const std::vector<ImageType>& images, GLuint& clearFbo)
+{
+    if (swapchain == XR_NULL_HANDLE || images.empty()) return;
+    uint32_t imageIndex = 0;
+    XrSwapchainImageAcquireInfo acquireInfo = {XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
+    if (XR_SUCCEEDED(xrAcquireSwapchainImage(swapchain, &acquireInfo, &imageIndex))) {
+        XrSwapchainImageWaitInfo waitInfo = {XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
+        waitInfo.timeout = XR_INFINITE_DURATION;
+        xrWaitSwapchainImage(swapchain, &waitInfo);
+
+        if (!clearFbo) glGenFramebuffers(1, &clearFbo);
+        glBindFramebuffer(GL_FRAMEBUFFER, clearFbo);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
+                               images[imageIndex].image, 0);
+        glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+        XrSwapchainImageReleaseInfo releaseInfo = {XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
+        xrReleaseSwapchainImage(swapchain, &releaseInfo);
+    }
 }
 
 static void vr_update_menu_swapchain_H()
@@ -2117,7 +2157,6 @@ extern "C" void vr_update_scope_layers(void) {
         XrCompositionLayerQuad& layerQ = g_lastScopeLayer[hand];
         const GLuint scopeTex = gfx_vr_scope_texture(hand);
         if (scopeTex != 0 && sc.gunValid) {
-            vr_update_scope_swapchain(hand, scopeTex);
             const float gp[3] = { sc.gunOrigin[0], sc.gunOrigin[1], sc.gunOrigin[2] };
             const float rx = sc.gunAxes[0][0], ry = sc.gunAxes[0][1], rz = sc.gunAxes[0][2];
             const float ux = sc.gunAxes[1][0], uy = sc.gunAxes[1][1], uz = sc.gunAxes[1][2];
@@ -2154,7 +2193,10 @@ extern "C" void vr_update_scope_layers(void) {
                     lensHidden = true;
                 }
             }
-            g_lastSubmitScope[hand] = !lensHidden;
+            if (!lensHidden) {
+                vr_update_scope_swapchain(hand, scopeTex);
+                g_lastSubmitScope[hand] = true;
+            }
         }
     }
     glFlush();
@@ -2206,47 +2248,108 @@ static void vr_submit_frame(XrFrameState& frameState, const std::array<XrView, 2
     const int ctrlL = 0;
     const int ctrlR = 1;
 
+    bool hasScopeActive = (g_lastSubmitScope[0] && g_scopeSwapchain[0] != XR_NULL_HANDLE)
+                       || (g_lastSubmitScope[1] && g_scopeSwapchain[1] != XR_NULL_HANDLE);
+
+    bool preferLeft = (VrLeftHandedMode != 0);
+
     // --- HUD Left Hand ---
-    bool submitMenuL = (g_menuSwapchain != XR_NULL_HANDLE) && gfx_vr_menu_L_dirty_and_clear();
-
-    if (submitMenuL) vr_update_menu_swapchain_L();
-
+    bool submitMenuL = false;
+    bool showMenuL = false;
+    static int s_menuL_cleared_count = 0;
+    static GLuint s_clearFboL = 0;
     XrCompositionLayerQuad menuLayerL = vr_init_menu_quad(g_menuSwapchain);
 
-    if (is_weapon_hud) {
-        VrMenuResult res = vr_compute_weapon_menu(ctrlL, /*mirror=*/true, 0.0f, 0.0f, 0.0f);
-        menuLayerL.pose = res.pose;
-        menuLayerL.size = {1.0f * XrAspect * 0.8f, 1.0f * 0.8f};
-        submitMenuL = submitMenuL && res.facingPlayer;
-    } else {
-        XrQuaternionf qRaw;
-        qRaw.x = -gCtrlQuatRaw[ctrlL][1];
-        qRaw.y =  gCtrlQuatRaw[ctrlL][2];
-        qRaw.z = -gCtrlQuatRaw[ctrlL][3];
-        qRaw.w =  gCtrlQuatRaw[ctrlL][0];
-        menuLayerL.pose.orientation = qRaw;
-        menuLayerL.pose.position = {
-                gCtrlPos[ctrlL][0] / 100 + 0.2f,
-                gCtrlPos[ctrlL][1] / 100 + 0.2f,
-                gCtrlPos[ctrlL][2] / 100 - 0.2f
-        };
-        menuLayerL.size = {1.0f * XrAspect, 1.0f};
+    if (g_menuSwapchain != XR_NULL_HANDLE) {
+        bool menuL_drawn = gfx_vr_menu_L_dirty_and_clear();
+        if (is_weapon_hud) {
+            VrMenuResult res = vr_compute_weapon_menu(ctrlL, /*mirror=*/true, 0.0f, 0.0f, 0.0f);
+            menuLayerL.pose = res.pose;
+            showMenuL = res.facingPlayer;
+
+            if (showMenuL) {
+                menuLayerL.size = {1.0f * XrAspect * 0.8f, 1.0f * 0.8f};
+                submitMenuL = true;
+                s_menuL_cleared_count = 0;
+                vr_update_menu_swapchain_L();
+            }
+        } else if (menuL_drawn) {
+            XrQuaternionf qRaw;
+            qRaw.x = -gCtrlQuatRaw[ctrlL][1];
+            qRaw.y =  gCtrlQuatRaw[ctrlL][2];
+            qRaw.z = -gCtrlQuatRaw[ctrlL][3];
+            qRaw.w =  gCtrlQuatRaw[ctrlL][0];
+            menuLayerL.pose.orientation = qRaw;
+            menuLayerL.pose.position = {
+                    gCtrlPos[ctrlL][0] / 100 + 0.2f,
+                    gCtrlPos[ctrlL][1] / 100 + 0.2f,
+                    gCtrlPos[ctrlL][2] / 100 - 0.2f
+            };
+            menuLayerL.size = {1.0f * XrAspect, 1.0f};
+            showMenuL = true;
+            submitMenuL = true;
+            s_menuL_cleared_count = 0;
+            vr_update_menu_swapchain_L();
+        }
     }
 
     // --- HUD Right hand ---
-    bool submitMenuR = (g_menuSwapchainR != XR_NULL_HANDLE) && gfx_vr_menu_R_dirty_and_clear();
-
-    if (submitMenuR) vr_update_menu_swapchain_R();
-
+    bool submitMenuR = false;
+    bool showMenuR = false;
+    static int s_menuR_cleared_count = 0;
+    static GLuint s_clearFboR = 0;
     XrCompositionLayerQuad menuLayerR = vr_init_menu_quad(g_menuSwapchainR);
 
-    if (is_weapon_hud) {
-        VrMenuResult res = vr_compute_weapon_menu(ctrlR, /*mirror=*/false, 0.0f, 0.0f, 0.0f);
-        menuLayerR.pose = res.pose;
-        menuLayerR.size = {1.0f * XrAspect * 0.8f, 1.0f * 0.8f};
-        submitMenuR = submitMenuR && res.facingPlayer;
-    } else {
-        submitMenuR = false;
+    if (g_menuSwapchainR != XR_NULL_HANDLE) {
+        bool menuR_drawn = gfx_vr_menu_R_dirty_and_clear();
+        if (is_weapon_hud) {
+            VrMenuResult res = vr_compute_weapon_menu(ctrlR, /*mirror=*/false, 0.0f, 0.0f, 0.0f);
+            menuLayerR.pose = res.pose;
+            showMenuR = res.facingPlayer;
+
+            if (showMenuR) {
+                menuLayerR.size = {1.0f * XrAspect * 0.8f, 1.0f * 0.8f};
+                submitMenuR = true;
+                s_menuR_cleared_count = 0;
+                vr_update_menu_swapchain_R();
+            }
+        }
+    }
+
+    // SteamVR quad-layer bug workaround:
+    // When scope is active, SteamVR requires a preceding quad layer at layers[1]
+    // to composite the scope at layers[2]. If neither hand menu is facing the player,
+    // we submit a 0-sized transparent quad on the active gun hand's swapchain:
+    // zero GPU rasterization overhead.
+    if (hasScopeActive && !submitMenuL && !submitMenuR) {
+        if (preferLeft && g_menuSwapchain != XR_NULL_HANDLE) {
+            menuLayerL.size = {0.0f, 0.0f};
+            submitMenuL = true;
+            if (s_menuL_cleared_count < (int)g_menuSwapchainImages.size()) {
+                vr_clear_swapchain(g_menuSwapchain, g_menuSwapchainImages, s_clearFboL);
+                s_menuL_cleared_count++;
+            } else {
+                vr_touch_swapchain(g_menuSwapchain, g_menuSwapchainImages);
+            }
+        } else if (g_menuSwapchainR != XR_NULL_HANDLE) {
+            menuLayerR.size = {0.0f, 0.0f};
+            submitMenuR = true;
+            if (s_menuR_cleared_count < (int)g_menuSwapchainImagesR.size()) {
+                vr_clear_swapchain(g_menuSwapchainR, g_menuSwapchainImagesR, s_clearFboR);
+                s_menuR_cleared_count++;
+            } else {
+                vr_touch_swapchain(g_menuSwapchainR, g_menuSwapchainImagesR);
+            }
+        } else if (g_menuSwapchain != XR_NULL_HANDLE) {
+            menuLayerL.size = {0.0f, 0.0f};
+            submitMenuL = true;
+            if (s_menuL_cleared_count < (int)g_menuSwapchainImages.size()) {
+                vr_clear_swapchain(g_menuSwapchain, g_menuSwapchainImages, s_clearFboL);
+                s_menuL_cleared_count++;
+            } else {
+                vr_touch_swapchain(g_menuSwapchain, g_menuSwapchainImages);
+            }
+        }
     }
 
     // --- HUD head-locked ---
@@ -2280,8 +2383,8 @@ static void vr_submit_frame(XrFrameState& frameState, const std::array<XrView, 2
     g_lastMenuLayerL   = menuLayerL;
     g_lastMenuLayerR   = menuLayerR;
     g_lastMenuLayerH   = menuLayerH;
-    g_lastSubmitMenuL  = submitMenuL;
-    g_lastSubmitMenuR  = submitMenuR;
+    g_lastSubmitMenuL  = showMenuL;
+    g_lastSubmitMenuR  = showMenuR;
     g_lastSubmitMenuH  = submitMenuH;
     g_lastViews        = views;
 #endif

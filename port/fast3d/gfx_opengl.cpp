@@ -2191,9 +2191,14 @@ static void gfx_opengl_start_frame(void) {
     gVrMenuLWasClearedThisFrame = false;
     gVrMenuLCaptureDepth = 0;
 
+    extern int gVrMenuRCaptureDepth;
+    gVrMenuRCaptureDepth = 0;
+
     gVrMenuHWasClearedThisFrame = false;
     gVrMenuHCaptureDepth = 0;
 
+    gMenuCaptureRefCount = 0;
+    gForceFlatShaderForMenu = false;
 }
 
 static void gfx_opengl_end_frame(void) {
@@ -2475,10 +2480,17 @@ static void gfx_opengl_vr_menu_R_fb_init(void)
             /*rendertarget*/true, /*hasdepth*/true, /*canextractdepth*/true);
 }
 
+int gVrMenuRCaptureDepth = 0;
+
 void gfx_vr_hud_capture_begin_R(void)
 {
     gfx_flush();
     gfx_opengl_vr_menu_R_fb_init();
+
+    if (gVrMenuRCaptureDepth++ > 0) {
+        return;
+    }
+
     gfx_opengl_menu_capture_push();
 
     glGetIntegerv(GL_VIEWPORT, gVrMenuRPrevViewport);
@@ -2500,8 +2512,18 @@ void gfx_vr_hud_capture_begin_R(void)
 
 void gfx_vr_hud_capture_end_R(void)
 {
-    hud_R_was_drawn = true;
     gfx_flush();
+
+    if (gVrMenuRCaptureDepth <= 0) {
+        gVrMenuRCaptureDepth = 0;
+        return;
+    }
+
+    if (--gVrMenuRCaptureDepth > 0) {
+        return;
+    }
+
+    hud_R_was_drawn = true;
     gfx_opengl_menu_capture_pop();
 
     if (gVrMenuRFbPrevious >= 0)
@@ -2511,8 +2533,6 @@ void gfx_vr_hud_capture_end_R(void)
                gVrMenuRPrevViewport[2], gVrMenuRPrevViewport[3]);
     glScissor (gVrMenuRPrevViewport[0], gVrMenuRPrevViewport[1],
                gVrMenuRPrevViewport[2], gVrMenuRPrevViewport[3]);
-
-
 }
 
 GLuint gfx_opengl_get_vr_menu_texture_R(void)

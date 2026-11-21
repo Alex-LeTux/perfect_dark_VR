@@ -13457,15 +13457,10 @@ void objRenderProp(struct prop *prop, struct modelrenderdata *renderdata, bool x
 		}
 
 		if (obj->type == OBJTYPE_DOOR) {
-			struct doorobj *door = prop->door;
-
 			gSPClearGeometryMode(gdl++, G_CULL_BOTH);
 
-			if (door->doorflags & DOORFLAG_FLIP) {
-				renderdata->cullmode = CULLMODE_FRONT;
-			} else {
-				renderdata->cullmode = CULLMODE_BACK;
-			}
+			// Fast3D in this port handles DOORFLAG_FLIP matrix reflection automatically via gfx_is_matrix_inverted()
+			renderdata->cullmode = CULLMODE_BACK;
 
 			if (renderdata->unk30 == 9) {
 				renderdata->envcolour &= 0xffffff00;

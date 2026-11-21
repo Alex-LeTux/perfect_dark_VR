@@ -169,6 +169,9 @@ s32 inputControllerConnected(s32 idx);
 // returns bitmask of players with assigned controllers
 s32 inputControllerMask(void);
 
+// VR right stick forward aiming check
+s32 vrRightStickAiming(void);
+
 // get/set Input.Player%d.SwapSticks
 s32 inputControllerGetSticksSwapped(s32 cidx);
 void inputControllerSetSticksSwapped(s32 cidx, s32 swapped);

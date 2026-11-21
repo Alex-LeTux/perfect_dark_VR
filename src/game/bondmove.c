@@ -1346,18 +1346,21 @@ void bmoveProcessInput(bool allowc1x, bool allowc1y, bool allowc1buttons, bool i
                     // (vrHolsterGripAimBlocked), so the Farsight never zoomed or sought its target and
                     // the Rocket Launcher's Homing never locked (sightTick locks only in sight mode).
                     // Its end is undone here too, as a toggle aim setting would keep it
+                    static bool s_vrStickAimingLast = false;
                     if (controlmode == CONTROLMODE_12) {
                         bool vrsight = vrTwoHandAiming()
                             && (bgunGetWeaponNum(HAND_RIGHT) == WEAPON_FARSIGHT
                                 || bgunGetWeaponNum(HAND_RIGHT) == WEAPON_ROCKETLAUNCHER);
+                        bool stickAim = vrRightStickAiming();
 
-                        if (vrsight) {
+                        if (vrsight || stickAim) {
                             g_Vars.currentplayer->insightaimmode = true;
-                        } else if (g_VrTwoHandSight && !vr_button_R_grip) {
+                        } else if ((g_VrTwoHandSight && !vr_button_R_grip) || s_vrStickAimingLast) {
                             g_Vars.currentplayer->insightaimmode = false;
                         }
 
                         g_VrTwoHandSight = vrsight;
+                        s_vrStickAimingLast = stickAim;
                     }
 
                     movedata.canswivelgun = !g_Vars.currentplayer->insightaimmode;

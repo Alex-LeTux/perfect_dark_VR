@@ -8758,6 +8758,12 @@ void bgunTickSwitch2(void)
             && bgunCanFreeWeapon(HAND_LEFT)) {
             bgunFreeWeapon(HAND_LEFT);
             player->hands[HAND_LEFT].inuse = player->gunctrl.dualwielding;
+            if (player->hands[HAND_LEFT].inuse) {
+                player->hands[HAND_LEFT].gset.weaponnum = ctrl->weaponnum;
+                player->hands[HAND_LEFT].gset.weaponfunc = FUNC_PRIMARY;
+                bgun0f0abd30(HAND_LEFT);
+                animInit(&player->hands[HAND_LEFT].anim);
+            }
         }
     }
 
@@ -8867,12 +8873,18 @@ static void bgunChooseCycleForward(s32 start, s32 *ptr1, s32 *ptr2)
     weaponnum1 = start >= 0 ? start : bgunGetSwitchToWeapon(HAND_RIGHT);
     weaponnum2 = start >= 0 ? WEAPON_NONE : bgunGetSwitchToWeapon(HAND_LEFT);
 
+    // VR
+    if (weaponnum2 == WEAPON_UNARMED) {
+        weaponnum2 = WEAPON_NONE;
+    }
+
     if (weaponnum1 > WEAPON_PSYCHOSISGUN || weaponnum2 > WEAPON_PSYCHOSISGUN) {
         weaponnum1 = player->gunctrl.prevweaponnum;
-        // VR: the A-tap never selects dual wield (pairs come from
-        // holsters), even when returning to a previous weapon that was
-        // held dual
-        weaponnum2 = WEAPON_NONE;
+        if (!VrManualReloading) {
+            weaponnum2 = player->gunctrl.prevweaponnum * player->gunctrl.prevwasdualwielding;
+        } else {
+            weaponnum2 = WEAPON_NONE;
+        }
     }
     else {
         invChooseCycleForwardWeapon(&weaponnum1, &weaponnum2, false);
@@ -8904,11 +8916,11 @@ static void bgunChooseCycleBack(s32 start, s32 *ptr1, s32 *ptr2)
 
     if (weaponnum1 > WEAPON_PSYCHOSISGUN || weaponnum2 > WEAPON_PSYCHOSISGUN) {
         weaponnum1 = player->gunctrl.prevweaponnum;
-        // VR: never select dual wield (pairs come from holsters), even
-        // when returning to a previous weapon that was held dual. This
-        // runs for the A-tap, when a disguise is used up and from
-        // aiChrDropWeapon while holding a gadget
-        weaponnum2 = WEAPON_NONE;
+        if (!VrManualReloading) {
+            weaponnum2 = player->gunctrl.prevweaponnum * player->gunctrl.prevwasdualwielding;
+        } else {
+            weaponnum2 = WEAPON_NONE;
+        }
     }
     else {
         invChooseCycleBackWeapon(&weaponnum1, &weaponnum2, false);
@@ -8941,7 +8953,7 @@ void bgunCycleForward(void)
     if (g_Vars.tickmode != TICKMODE_CUTSCENE) {
         bgunChooseCycleForward(-1, &weaponnum1, &weaponnum2);
 
-        if (weaponnum2 != weaponnum1) {
+        if (weaponnum2 == WEAPON_NONE || weaponnum2 != weaponnum1) {
             player->gunctrl.dualwielding = false;
         }
         else {
@@ -8962,7 +8974,7 @@ void bgunCycleBack(void)
     if (g_Vars.tickmode != TICKMODE_CUTSCENE) {
         bgunChooseCycleBack(-1, &weaponnum1, &weaponnum2);
 
-        if (weaponnum2 == WEAPON_NONE) {
+        if (weaponnum2 == WEAPON_NONE || weaponnum2 != weaponnum1) {
             player->gunctrl.dualwielding = false;
         }
         else {
@@ -19047,9 +19059,11 @@ void bgunSetSightVisible(u32 reason, bool visible)
     g_Vars.currentplayer->gunsightoff |= reason;
 }
 
+extern s32 vrRightStickAiming(void);
+
 Gfx* bgunDrawSight(Gfx * gdl)
 {
-    if (g_Vars.currentplayer->gunsightoff == 0 && !g_Vars.currentplayer->mpmenuon) {
+    if ((g_Vars.currentplayer->gunsightoff == 0 || vrRightStickAiming()) && !g_Vars.currentplayer->mpmenuon) {
         // Player is aiming with R
         gdl = sightDraw(gdl, true, currentPlayerGetSight());
     }
@@ -19342,13 +19356,15 @@ void vrScopeBegin(void)
         st->gunValid = 0;
 
         {
-            /* Only while the gun is aimed with both hands (vrTwoHandAiming), the Sniper Rifle too (shown
-             * always before), never from a grip alone or a pair's left gun. The Falcon 2 Scope's lens
-             * shows one-handed, on either gun of a pair, as before S1 (user, Stage F run 1: "since that
-             * is its purpose"; Task F7f): a pistol is never aimed with both hands, and its aim smoothing
-             * stays the two-handed aim's (vr_input.cpp). Never for a selected function that does not
-             * aim through it (vrScopeFuncZooms: the SuperDragon's grenade launcher, Task F11c) */
-            bool showLens = ((h == HAND_RIGHT && vrTwoHandAiming()) || weaponnum == WEAPON_FALCON2_SCOPE)
+            /* Only while the gun is aimed with both hands (vrTwoHandAiming), except weapons
+             * that display their scope directly (Falcon 2 Scope, Sniper Rifle, MagSec 4).
+             * Never for a selected function that does not aim through it
+             * (vrScopeFuncZooms: the SuperDragon's grenade launcher, Task F11c) */
+            bool directScopeWeapon = (weaponnum == WEAPON_FALCON2_SCOPE
+                                   || weaponnum == WEAPON_SNIPERRIFLE
+                                   || weaponnum == WEAPON_MAGSEC4);
+            bool showLens = ((h == (VrLeftHandedMode ? HAND_LEFT : HAND_RIGHT) && vrTwoHandAiming())
+                             || directScopeWeapon)
                 && vrScopeFuncZooms(hand);
 
             /* Do not display scope while weapon is being switched, unequipped, raised, deployed, or reloaded */

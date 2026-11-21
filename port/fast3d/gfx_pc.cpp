@@ -3016,6 +3016,7 @@ extern "C" struct GfxRenderingAPI* gfx_get_current_rendering_api(void) {
 }
 
 extern "C" void gfx_start_frame(void) {
+    is_weapon_hud = false;
 
     gfx_wapi->handle_events();
     gfx_wapi->get_dimensions(&gfx_current_window_dimensions.width, &gfx_current_window_dimensions.height,

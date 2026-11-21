@@ -790,13 +790,25 @@ extern "C" bool get_2d_input(int hand_index, const char* input_name, XrVector2f*
 
     const auto& state = gControllerStates[hand_index];
 
-    if (strcmp(input_name, "thumbstick") == 0 && state.thumbstick.isActive) {
-        *value = state.thumbstick.currentState;
-        return true;
+    if (strcmp(input_name, "thumbstick") == 0) {
+        if (state.thumbstick.isActive) {
+            *value = state.thumbstick.currentState;
+            return true;
+        }
+        if (state.trackpad.isActive) {
+            *value = state.trackpad.currentState;
+            return true;
+        }
     }
-    if (strcmp(input_name, "trackpad") == 0 && state.trackpad.isActive) {
-        *value = state.trackpad.currentState;
-        return true;
+    if (strcmp(input_name, "trackpad") == 0) {
+        if (state.trackpad.isActive) {
+            *value = state.trackpad.currentState;
+            return true;
+        }
+        if (state.thumbstick.isActive) {
+            *value = state.thumbstick.currentState;
+            return true;
+        }
     }
 
     return false;

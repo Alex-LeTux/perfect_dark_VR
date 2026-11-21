@@ -907,6 +907,20 @@ static inline s32 inputAxisScale(s32 x, const s32 deadzone, const f32 scale)
     }
 }
 
+s32 vrRightStickAiming(void)
+{
+    if (!VrManualReloading) {
+        return 0;
+    }
+    XrVector2f stick;
+    if (get_2d_input(1, "thumbstick", &stick) || get_2d_input(1, "trackpad", &stick)) {
+        if (stick.y > 0.2f) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 s32 inputReadController(s32 idx, OSContPad *npad)
 {
     if (idx < 0 || idx >= INPUT_MAX_CONTROLLERS  || !npad) {
@@ -1066,6 +1080,13 @@ s32 inputReadController(s32 idx, OSContPad *npad)
 
                     if (finalX) npad->stick_x = (finalX == 128) ? 127 : finalX;
                     if (finalY) npad->stick_y = (finalY == 128) ? 127 : finalY;
+                }
+
+                if (vrRightStickAiming()) {
+                    npad->button |= CONT_R;
+                    vr_button_R_grip = true;
+                    npad->stick_y = 0;
+                    npad->stick_x = 0;
                 }
             } else {
                 npad->stick_x = 0.0f;

@@ -23,6 +23,8 @@
 #include "lib/snd.h"
 #include "data.h"
 #include "types.h"
+
+extern bool VrManualReloading;
 #ifndef PLATFORM_N64
 
 #include "video.h"
@@ -50,6 +52,7 @@ extern float  vr_LeftCrossX;
 extern float  vr_LeftCrossY;
 extern bool vr_LeftCrossValid;
 extern int vr_button_R_grip;
+extern s32 vrRightStickAiming(void);
 extern bool vrCmpFollowLockOn(void); // bondgun.c
 static bool g_VrCmpFollowWas = false;
 extern int vr_button_L_grip;
@@ -378,6 +381,20 @@ void sightTick(bool sighton)
 
     if (trackedprop->prop && !sightIsReactiveToProp(trackedprop->prop)) {
         trackedprop->prop = NULL;
+    }
+
+    if (sighton) {
+        bool right_aiming = (vr_button_R_grip || vrRightStickAiming()) && sighton;
+        bool left_aiming = !VrManualReloading && vr_button_L_grip && sighton;
+        s32 aiming_hand_mask = 0;
+        if (right_aiming) aiming_hand_mask |= (1 << HAND_RIGHT);
+        if (left_aiming) aiming_hand_mask |= (1 << HAND_LEFT);
+        if (!aiming_hand_mask) aiming_hand_mask = (1 << HAND_RIGHT);
+
+        if (g_Vars.currentplayer->lookingatprop.prop
+            && (g_LookingAtPropHandMask & aiming_hand_mask) == 0) {
+            g_Vars.currentplayer->lookingatprop.prop = NULL;
+        }
     }
 
     switch (g_Vars.currentplayer->sighttracktype) {
@@ -1709,7 +1726,7 @@ static Gfx *sightDrawLeftHand(Gfx *gdl, s32 L_sight, bool sighton)
 
     g_currentCrosshairHand = HAND_LEFT;
 
-    bool is_aiming = vr_button_L_grip && sighton;
+    bool is_aiming = !VrManualReloading && vr_button_L_grip && sighton;
 
     if ((PLAYER_EXTCFG().crosshairhideunlessaiming) && is_aiming) {
 
@@ -1759,8 +1776,8 @@ static Gfx *sightDrawLeftHand(Gfx *gdl, s32 L_sight, bool sighton)
         }
 
     if (L_sight != SIGHT_NONE && optionsGetSightOnScreen(g_Vars.currentplayerstats->mpindex)) {
-        if ((optionsGetAlwaysShowTarget(g_Vars.currentplayerstats->mpindex) && !sighton)
-            || (sighton && sightHasTargetWhileAiming(L_sight))) {
+        if ((optionsGetAlwaysShowTarget(g_Vars.currentplayerstats->mpindex) && !is_aiming)
+            || (is_aiming && sightHasTargetWhileAiming(L_sight))) {
             gdl = sightDrawTarget(gdl, crossx, crossy);
         }
     }
@@ -1768,6 +1785,7 @@ static Gfx *sightDrawLeftHand(Gfx *gdl, s32 L_sight, bool sighton)
 
     return gdl;
 }
+
 
 
 
@@ -1829,7 +1847,7 @@ Gfx *sightDraw(Gfx *gdl, bool sighton, s32 sight)
 
     sightTick(sighton);
 
-    bool is_aiming = vr_button_R_grip && sighton;
+    bool is_aiming = (vr_button_R_grip || vrRightStickAiming()) && sighton;
 
     if ((PLAYER_EXTCFG().crosshairhideunlessaiming) && is_aiming) {
         gdl = sightDrawTarget(gdl, crossx, crossy);
@@ -1886,8 +1904,8 @@ Gfx *sightDraw(Gfx *gdl, bool sighton, s32 sight)
 
 
     if (sight != SIGHT_NONE && optionsGetSightOnScreen(g_Vars.currentplayerstats->mpindex)) {
-        if ((optionsGetAlwaysShowTarget(g_Vars.currentplayerstats->mpindex) && !sighton)
-            || (sighton && sightHasTargetWhileAiming(sight))) {
+        if ((optionsGetAlwaysShowTarget(g_Vars.currentplayerstats->mpindex) && !is_aiming)
+            || (is_aiming && sightHasTargetWhileAiming(sight))) {
             gdl = sightDrawTarget(gdl, crossx, crossy);
         }
     }
