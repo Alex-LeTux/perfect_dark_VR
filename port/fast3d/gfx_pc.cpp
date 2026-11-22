@@ -90,6 +90,7 @@ void   vr_end_eye_render();
 float* vr_get_eye_proj_mtx(int eye);
 void   vr_get_eye_view_offset(int eye, float* out_tx, float* out_ty, float* out_tz, float *out_tx_HUD);
 bool vr_dl_is_pause_or_menu = false;
+static bool vr_hud_no_parallax = false;
 int VrIsPaused = 0;
 static float s_vr_proj_col_major[16] = {};
 extern "C" int vr_get_internal_render_width();
@@ -1314,7 +1315,7 @@ static void gfx_sp_vertex(size_t n_vertices, size_t dest_index, const Vtx* verti
         d->x = x;
         d->y = y;
         d->z = z;
-        d->w = w;
+        d->w = vr_hud_no_parallax ? 7.0f : w;
 
         if (rsp.geometry_mode & G_FOG) {
             if (fabsf(w) < 0.001f) {
@@ -2354,10 +2355,11 @@ static void gfx_draw_rectangle(int32_t ulx, int32_t uly, int32_t lrx, int32_t lr
     struct LoadedVertex* ur = &rsp.loaded_vertices[MAX_VERTICES + 3];
 
 
-    ul->x = ulxf; ul->y = ulyf; ul->z = -1.0f; ul->w = 1.0f;
-    ll->x = ulxf; ll->y = lryf; ll->z = -1.0f; ll->w = 1.0f;
-    lr->x = lrxf; lr->y = lryf; lr->z = -1.0f; lr->w = 1.0f;
-    ur->x = lrxf; ur->y = ulyf; ur->z = -1.0f; ur->w = 1.0f;
+    const float w_rect = vr_hud_no_parallax ? 7.0f : 1.0f;
+    ul->x = ulxf; ul->y = ulyf; ul->z = -1.0f; ul->w = w_rect;
+    ll->x = ulxf; ll->y = lryf; ll->z = -1.0f; ll->w = w_rect;
+    lr->x = lrxf; lr->y = lryf; lr->z = -1.0f; lr->w = w_rect;
+    ur->x = lrxf; ur->y = ulyf; ur->z = -1.0f; ur->w = w_rect;
 
     // The coordinates for texture rectangle shall bypass the viewport setting
     struct XYWidthHeight default_viewport = {
@@ -2666,6 +2668,16 @@ static void gfx_run_dl(Gfx* cmd) {
                         gfx_vr_hud_capture_end_H();
                         break;
 
+                    case VR_HUD_NO_PARALLAX_BEGIN:
+                        gfx_flush();
+                        vr_hud_no_parallax = true;
+                        break;
+
+                    case VR_HUD_NO_PARALLAX_END:
+                        gfx_flush();
+                        vr_hud_no_parallax = false;
+                        break;
+
                     case VR_SCOPE_REC_BEGIN:
                         gfx_flush();
                         gfx_vr_scope_record(true, gfx_rapi->get_clip_parameters().invert_y);
@@ -2959,6 +2971,7 @@ static void gfx_run_dl(Gfx* cmd) {
 }
 
 static void gfx_sp_reset() {
+    vr_hud_no_parallax = false;
     rsp.modelview_matrix_stack_size = 1;
     rsp.modelview_hidden_stack[0] = false; //VR
     rsp.current_num_lights = 2;

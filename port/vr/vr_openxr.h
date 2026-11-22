@@ -110,6 +110,9 @@ extern void gfx_vr_hud_capture_end_R(void);
 extern void gfx_vr_hud_capture_begin_H(void);
 extern void gfx_vr_hud_capture_end_H(void);
 
+#define VR_HUD_NO_PARALLAX_BEGIN 0x56570002
+#define VR_HUD_NO_PARALLAX_END   0x56570003
+
 #define VR_SCOPE_REC_BEGIN    0x56580000
 #define VR_SCOPE_REC_END      0x56580001
 #define VR_SCOPE_ONLY_BEGIN   0x56580002

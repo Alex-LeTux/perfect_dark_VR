@@ -844,6 +844,7 @@ bool vr_is_Menu_or_HUD = (abs(mvPos.w - 1.0) == 0.0);
 bool vr_is_Menu_or_crosshair_right = (abs(mvPos.w - 1.0) == 9.0);
 bool vr_is_crosshair_left = (abs(mvPos.w - 1.0) == 7.0);
 bool vr_is_Menu_blur = (abs(mvPos.w - 1.0) == 8.0);
+bool vr_is_HUD_no_parallax = (abs(mvPos.w - 7.0) < 0.1);
 
 vec4 eyeOffset = (gl_ViewID_OVR == 0u) ? uEyeOffsetLeft : uEyeOffsetRight;
 
@@ -856,10 +857,20 @@ if (uIsMenu == 1){
 }
 
 // --------------------
+// GAME (uIsMenu == 0): NO-PARALLAX HUD
+// --------------------
+
+else if (uIsMenu == 0 && vr_is_HUD_no_parallax) {
+    mvPos.w = 0.90f;
+    mvPos.x -= eyeOffset.y * mvPos.w;
+    mvPos.y -= eyeOffset.w * mvPos.w;
+}
+
+// --------------------
 // GAME (uIsMenu == 0): HUD
 // --------------------
 
-if (uIsMenu == 0 && vr_is_Menu_or_HUD) {
+else if (uIsMenu == 0 && vr_is_Menu_or_HUD) {
     mvPos.w *= 0.90f;
     mvPos.x -= eyeOffset.z * mvPos.w;
     mvPos.y -= eyeOffset.w * mvPos.w;
@@ -1630,7 +1641,7 @@ void gfx_vr_scope_only(int hand)
 
 static void gevr_scope_keep(GLint first, const float* buf_vbo, size_t buf_vbo_len, size_t buf_vbo_num_tris)
 {
-    if (s_curPrg == nullptr || gForceFlatShaderForMenu || vr_dl_is_pause_or_menu || buf_vbo[3] == 1.0f) {
+    if (s_curPrg == nullptr || gForceFlatShaderForMenu || vr_dl_is_pause_or_menu || buf_vbo[3] == 1.0f || buf_vbo[3] == 7.0f) {
         return;
     }
     uint8_t mask = s_scopeOnlyMask;

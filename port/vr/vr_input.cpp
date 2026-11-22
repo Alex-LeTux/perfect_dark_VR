@@ -18,6 +18,7 @@
 #include "vr_input.h"
 #include "vr_log.h"
 #include "vr_openxr.h"
+#include "vr_settings.h"
 
 
 #ifdef ANDROID
@@ -698,7 +699,8 @@ extern "C" bool get_button_state(int hand_index, const char* button_name) {
     // The face buttons, menu button, stick click and trackpad stay on the controller the user's saved setting
     // put them on: they must not move when a holster draw changes the gun hand.
     // Only weapon manipulation inputs (trigger and grip) follow the dynamic gun side (VrLeftHandedMode).
-    int flip = VrLeftHandedPref;
+    // In manual reloading, the face buttons stay fixed to their physical controllers.
+    int flip = VrManualReloading ? 0 : VrLeftHandedPref;
     if (strcmp(button_name, "trigger") == 0 || strcmp(button_name, "grip") == 0) {
         flip = VrLeftHandedMode;
     }
@@ -738,7 +740,7 @@ extern "C" bool get_button_state(int hand_index, const char* button_name) {
         return false;
     }
 
-    if (!VrLeftHandedPref) {
+    if (!VrLeftHandedPref || VrManualReloading) {
         if (strcmp(button_name, "menu") == 0) return state.menu.currentState;
         if (strcmp(button_name, "a") == 0) return state.button_a.currentState;
         if (strcmp(button_name, "b") == 0) return state.button_b.currentState;

@@ -117,6 +117,7 @@ s32 g_LookingAtPropHandMask; // VR
 extern int vr_button_R_grip;
 extern int vr_button_L_grip;
 extern bool VrManualReloading;
+extern int VrLeftHandedMode;
 
 struct sndstate *g_MiscSfxAudioHandles[3];
 u32 var800aa5bc;
@@ -1438,10 +1439,13 @@ Gfx *lvRender(Gfx *gdl)
                     g_Vars.currentplayer->bondactivateorreload = (g_Vars.currentplayer->bondactivateorreload & ~JO_ACTION_RELOAD);
                 }
 
+                s32 rhandnum = VrLeftHandedMode ? HAND_LEFT : HAND_RIGHT;
+                s32 lhandnum = VrLeftHandedMode ? HAND_RIGHT : HAND_LEFT;
+
                 if (g_Vars.currentplayer->bondactivateorreload & JO_ACTION_RELOAD) {
-                    if (!vrReloadEjectButton(HAND_RIGHT)
-                            && g_Vars.currentplayer->hands[HAND_RIGHT].state != HANDSTATE_RELOAD) {
-                        bgunReloadIfPossible(HAND_RIGHT);
+                    if (!vrReloadEjectButton(rhandnum)
+                            && g_Vars.currentplayer->hands[rhandnum].state != HANDSTATE_RELOAD) {
+                        bgunReloadIfPossible(rhandnum);
                     }
                     //if (g_Vars.currentplayer->hands[HAND_LEFT].state != HANDSTATE_RELOAD) { Removed for VR
                     //		bgunReloadIfPossible(HAND_LEFT);
@@ -1452,11 +1456,11 @@ Gfx *lvRender(Gfx *gdl)
                 // VR BUTTON Y RELOAD LEFT HAND. A press on a gun manual reload owns goes to it
                 // (vrReloadEjectButton); a gun it does not own reloads as before while Y is held.
                 {
-                    if (vrYPress && vrReloadEjectButton(HAND_LEFT)) {
+                    if (vrYPress && vrReloadEjectButton(lhandnum)) {
                         g_Vars.currentplayer->bondactivateorreload = (g_Vars.currentplayer->bondactivateorreload & ~JO_ACTION_RELOAD);
-                    } else if (vrYHeld && !vrReloadOwnsGun(HAND_LEFT)
-                            && g_Vars.currentplayer->hands[HAND_LEFT].state != HANDSTATE_RELOAD) {
-                        bgunReloadIfPossible(HAND_LEFT);
+                    } else if (vrYHeld && !vrReloadOwnsGun(lhandnum)
+                            && g_Vars.currentplayer->hands[lhandnum].state != HANDSTATE_RELOAD) {
+                        bgunReloadIfPossible(lhandnum);
                         g_Vars.currentplayer->bondactivateorreload = (g_Vars.currentplayer->bondactivateorreload & ~JO_ACTION_RELOAD);
                     }
                 }

@@ -1149,27 +1149,31 @@ Gfx *bviewDrawEyespyMetrics(Gfx *gdl)
     }
 
     if (g_Vars.currentplayer->eyespy->mode == EYESPYMODE_DRUGSPY) {
-        // Render crosshair
-        s32 x = viewleft + (viewwidth >> 1) + 10.0f; // VR small offset correction
-        s32 y = viewtop + (viewheight >> 1) - 5.0f; // VR small offset correction
+        gDPNoOpTag(gdl++, VR_HUD_NO_PARALLAX_BEGIN);
+        gdl = textSetPrimColour(gdl, 0x2244ffa0);
 
+        // Render crosshair
+        s32 x = viewleft + (viewwidth >> 1);
+        s32 y = viewtop + (viewheight >> 1);
 
 #ifndef PLATFORM_N64
         gDPSetSubpixelOffsetEXT(gdl++, -2, -2);
 #endif
 
-        gDPFillRectangle(gdl++, x + 2, y + 0, x + 7, y + 1);
         gDPFillRectangle(gdl++, x + 2, y + 0, x + 5, y + 1);
-        gDPFillRectangle(gdl++, x - 6, y + 0, x - 1, y + 1);
+        gDPFillRectangle(gdl++, x + 2, y + 0, x + 4, y + 1);
         gDPFillRectangle(gdl++, x - 4, y + 0, x - 1, y + 1);
-        gDPFillRectangle(gdl++, x + 0, y + 2, x + 1, y + 7);
+        gDPFillRectangle(gdl++, x - 3, y + 0, x - 1, y + 1);
         gDPFillRectangle(gdl++, x + 0, y + 2, x + 1, y + 5);
-        gDPFillRectangle(gdl++, x + 0, y - 6, x + 1, y - 1);
+        gDPFillRectangle(gdl++, x + 0, y + 2, x + 1, y + 4);
         gDPFillRectangle(gdl++, x + 0, y - 4, x + 1, y - 1);
+        gDPFillRectangle(gdl++, x + 0, y - 3, x + 1, y - 1);
 
 #ifndef PLATFORM_N64
         gDPSetSubpixelOffsetEXT(gdl++, 0, 0);
 #endif
+
+        gDPNoOpTag(gdl++, VR_HUD_NO_PARALLAX_END);
     }
 
 

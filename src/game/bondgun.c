@@ -15624,7 +15624,7 @@ void bgunRender(Gfx * *gdlptr)
                 {
                     f32 want = (VrFistClench
                                 && !VrTwoHandsGun(g_Vars.currentplayer->gunctrl.weaponnum)
-                                && get_button_state(0, "grip")) ? 1.0f : 0.0f;
+                                && get_button_state(VrLeftHandedMode ? 1 : 0, "grip")) ? 1.0f : 0.0f;
                     VrFistClenchAmt += (want - VrFistClenchAmt) * 0.35f;
                 }
 
@@ -15969,10 +15969,12 @@ void bgunRender(Gfx * *gdlptr)
                     // Note the grip is read there from the RAW left button, not vr_button_L_grip:
                     // that flag is gated on vr_leftHasWeapon (port/src/input.c:884) and so is
                     // permanently false for a FREE off-hand -- exactly our case.
-                    if (VrFistClenchAmt > 0.02f) {
-                        modelSetAnimation(&g_VrFistModel, 1002, false, VrFistClenchAmt * 28.0f, 0.0f, 0.0f);
+                    if (VrFistClenchAmt > 0.5f) {
+                        modelSetAnimation(&g_VrFistModel, 1002, false, 29.0f, 0.0f, 0.0f);
                     } else {
                         g_VrFistAnim.animnum = 0;   // inert -> modeldef rest pose (open hand)
+                        g_VrFistAnim.animnum2 = 0;
+                        g_VrFistAnim.fracmerge = 0.0f;
                     }
 
                     g_VrFistModel.matrices = fm;
